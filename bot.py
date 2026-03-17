@@ -29,8 +29,8 @@ FILE_MANGA     = "underrated_manga.json"
 FILE_USERS     = "users.json"
 
 # ── PERMISSION SETTINGS ────────────────────────────────────────────────────────
-# Add Discord role names that can use restricted commands
-# Example: "ALLOWED_ROLE_NAMES=Maintainer,Admin,Developer"
+# Role names that can use restricted commands
+# Example: "ALLOWED_ROLE_NAMES=Maintainer,Developer"
 ALLOWED_ROLE_NAMES = set()
 try:
     allowed_roles_str = os.environ.get("ALLOWED_ROLE_NAMES", "")
@@ -218,15 +218,11 @@ async def setup(
         )
 
     if success:
-        embed = discord.Embed(
-            title="✅ Profile Setup Complete",
-            description=f"Your profile has been linked!",
-            color=0x2EA043
-        )
-        embed.add_field(name="📺 AniList User ID", value=f"`{anilist_user_id}`", inline=True)
-        embed.add_field(name="📜 MAL User ID", value=f"`{mal_user_id}`", inline=True)
-        embed.add_field(name="👤 Display Name", value=f"`{author_display}`", inline=True)
-        embed.set_footer(text=f"Discord ID: {discord_id}")
+        embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
+        embed.add_field(name="AniList ID", value=f"`{anilist_user_id}`", inline=True)
+        embed.add_field(name="MAL ID", value=f"`{mal_user_id}`", inline=True)
+        embed.add_field(name="Author Name", value=author_display, inline=True)
+        embed.set_footer(text="You can now use /add_anime, /add_manga and /build!")
     else:
         embed = discord.Embed(
             title="❌ Setup Failed",
@@ -237,7 +233,7 @@ async def setup(
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /add_anime — Anyone can use
+# /add_anime & /add_manga handler
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_add(interaction: discord.Interaction, anilist_link: str, mal_link: str, reason: str, author: str, anilist_user_id: int, mal_user_id: int, media_type: str):
@@ -276,18 +272,22 @@ async def handle_add(interaction: discord.Interaction, anilist_link: str, mal_li
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
+    # Get title
+    titles = media_data.get("title", {})
+    title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
+    cover_url = media_data.get("coverImage", {}).get("large", "")
+    score = media_data.get("averageScore") or "N/A"
+
     # Create entry
     entry = {
         "anilist_id": media_anilist_id,
         "mal_id": media_mal_id,
         "anilist_user_id": anilist_id,
         "mal_user_id": mal_id,
-        "title": media_data.get("title", {}).get("romaji", "Unknown"),
+        "title": title,
         "reason": reason,
         "author": author_name,
-        "score": media_data.get("averageScore", 0),
-        "cover": media_data.get("coverImage", {}).get("large", ""),
-        "genres": media_data.get("genres", []),
+        "score": score,
     }
 
     async with aiohttp.ClientSession() as session:
@@ -305,17 +305,13 @@ async def handle_add(interaction: discord.Interaction, anilist_link: str, mal_li
         )
 
     if success:
-        embed = discord.Embed(
-            title=f"✅ {media_type.capitalize()} Added!",
-            description=entry["title"],
-            color=0x2EA043
-        )
-        embed.add_field(name="👤 Author", value=author_name, inline=True)
-        embed.add_field(name="⭐ Score", value=f"{entry['score']}/100", inline=True)
-        embed.add_field(name="💭 Reason", value=reason, inline=False)
-        if entry["cover"]:
-            embed.set_thumbnail(url=entry["cover"])
-        embed.set_footer(text=f"Discord ID: {interaction.user.id}")
+        embed = discord.Embed(title=f"✅ {title}", color=0x2EA043)
+        embed.add_field(name="Author", value=author_name, inline=True)
+        embed.add_field(name="Score", value=f"{score}/100" if isinstance(score, (int, float)) else score, inline=True)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        if cover_url:
+            embed.set_thumbnail(url=cover_url)
+        embed.set_footer(text=f"Added to {filename}")
     else:
         embed = discord.Embed(
             title="❌ Failed to Add",
@@ -336,10 +332,6 @@ async def handle_add(interaction: discord.Interaction, anilist_link: str, mal_li
 )
 async def add_anime(interaction: discord.Interaction, anilist_link: str, mal_link: str, reason: str, author: str = "", anilist_user_id: int = None, mal_user_id: int = None):
     await handle_add(interaction, anilist_link, mal_link, reason, author, anilist_user_id, mal_user_id, "ANIME")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# /add_manga — Anyone can use
-# ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="add_manga", description="Add an underrated manga to the list")
 @app_commands.describe(
@@ -366,7 +358,7 @@ async def list_anime(interaction: discord.Interaction):
         entries, _ = await github_read_json(session, FILE_ANIME)
 
     if not entries:
-        embed = discord.Embed(title="📺 Anime List", description="No anime added yet.", color=0x0066FF)
+        embed = discord.Embed(title="Anime List", description="No anime added yet.", color=0x0066FF)
         await interaction.followup.send(embed=embed)
         return
 
@@ -374,20 +366,18 @@ async def list_anime(interaction: discord.Interaction):
     embeds = []
     for i, entry in enumerate(entries, 1):
         embed = discord.Embed(
-            title=f"📺 {entry.get('title', 'Unknown')}",
+            title=entry.get("title", "Unknown"),
             description=entry.get("reason", "No reason provided"),
             color=0x0066FF
         )
-        embed.add_field(name="👤 Author", value=entry.get("author", "Unknown"), inline=True)
-        embed.add_field(name="⭐ Score", value=f"{entry.get('score', 0)}/100", inline=True)
-        embed.add_field(name="🎌 AniList ID", value=entry.get("anilist_id", "N/A"), inline=True)
-        embed.add_field(name="📜 MAL ID", value=entry.get("mal_id", "N/A"), inline=True)
+        embed.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True)
+        embed.add_field(name="AniList ID", value=entry.get("anilist_id", "N/A"), inline=True)
+        embed.add_field(name="MAL ID", value=entry.get("mal_id", "N/A"), inline=True)
         embed.set_footer(text=f"{i}/{len(entries)}")
-        if entry.get("cover"):
-            embed.set_thumbnail(url=entry["cover"])
         embeds.append(embed)
 
-    await interaction.followup.send(embeds=embeds[:10])  # Discord limits to 10 embeds per message
+    await interaction.followup.send(embeds=embeds[:10])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /list_manga — Restricted
@@ -402,7 +392,7 @@ async def list_manga(interaction: discord.Interaction):
         entries, _ = await github_read_json(session, FILE_MANGA)
 
     if not entries:
-        embed = discord.Embed(title="📚 Manga List", description="No manga added yet.", color=0xFF6B6B)
+        embed = discord.Embed(title="Manga List", description="No manga added yet.", color=0xFF6B6B)
         await interaction.followup.send(embed=embed)
         return
 
@@ -410,29 +400,25 @@ async def list_manga(interaction: discord.Interaction):
     embeds = []
     for i, entry in enumerate(entries, 1):
         embed = discord.Embed(
-            title=f"📚 {entry.get('title', 'Unknown')}",
+            title=entry.get("title", "Unknown"),
             description=entry.get("reason", "No reason provided"),
             color=0xFF6B6B
         )
-        embed.add_field(name="👤 Author", value=entry.get("author", "Unknown"), inline=True)
-        embed.add_field(name="⭐ Score", value=f"{entry.get('score', 0)}/100", inline=True)
-        embed.add_field(name="🎌 AniList ID", value=entry.get("anilist_id", "N/A"), inline=True)
-        embed.add_field(name="📜 MAL ID", value=entry.get("mal_id", "N/A"), inline=True)
+        embed.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True)
+        embed.add_field(name="AniList ID", value=entry.get("anilist_id", "N/A"), inline=True)
+        embed.add_field(name="MAL ID", value=entry.get("mal_id", "N/A"), inline=True)
         embed.set_footer(text=f"{i}/{len(entries)}")
-        if entry.get("cover"):
-            embed.set_thumbnail(url=entry["cover"])
         embeds.append(embed)
 
-    await interaction.followup.send(embeds=embeds[:10])  # Discord limits to 10 embeds per message
+    await interaction.followup.send(embeds=embeds[:10])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /remove_anime — Restricted
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="remove_anime", description="Remove an anime from the list")
-@app_commands.describe(
-    search_term="Title or AniList ID to remove"
-)
+@app_commands.describe(search_term="Title or AniList ID to remove")
 @has_allowed_role()
 async def remove_anime(interaction: discord.Interaction, search_term: str):
     await interaction.response.defer(ephemeral=True)
@@ -471,13 +457,12 @@ async def remove_anime(interaction: discord.Interaction, search_term: str):
 
     if success:
         embed = discord.Embed(
-            title="✅ Anime Removed",
+            title="✅ Removed",
             description=removed_entry.get("title", "Unknown"),
             color=0x2EA043
         )
-        embed.add_field(name="👤 Author", value=removed_entry.get("author", "Unknown"), inline=True)
-        embed.add_field(name="🎌 AniList ID", value=removed_entry.get("anilist_id", "N/A"), inline=True)
-        embed.set_footer(text=f"Removed by {interaction.user.display_name}")
+        embed.add_field(name="Author", value=removed_entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="AniList ID", value=removed_entry.get("anilist_id", "N/A"), inline=True)
     else:
         embed = discord.Embed(
             title="❌ Failed to Remove",
@@ -492,9 +477,7 @@ async def remove_anime(interaction: discord.Interaction, search_term: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="remove_manga", description="Remove a manga from the list")
-@app_commands.describe(
-    search_term="Title or AniList ID to remove"
-)
+@app_commands.describe(search_term="Title or AniList ID to remove")
 @has_allowed_role()
 async def remove_manga(interaction: discord.Interaction, search_term: str):
     await interaction.response.defer(ephemeral=True)
@@ -533,13 +516,12 @@ async def remove_manga(interaction: discord.Interaction, search_term: str):
 
     if success:
         embed = discord.Embed(
-            title="✅ Manga Removed",
+            title="✅ Removed",
             description=removed_entry.get("title", "Unknown"),
             color=0x2EA043
         )
-        embed.add_field(name="👤 Author", value=removed_entry.get("author", "Unknown"), inline=True)
-        embed.add_field(name="🎌 AniList ID", value=removed_entry.get("anilist_id", "N/A"), inline=True)
-        embed.set_footer(text=f"Removed by {interaction.user.display_name}")
+        embed.add_field(name="Author", value=removed_entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="AniList ID", value=removed_entry.get("anilist_id", "N/A"), inline=True)
     else:
         embed = discord.Embed(
             title="❌ Failed to Remove",
@@ -550,7 +532,7 @@ async def remove_manga(interaction: discord.Interaction, search_term: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /build — Restricted (GH username auto-detected from Discord ID)
+# /build — Restricted
 # ══════════════════════════════════════════════════════════════════════════════
 
 PLATFORM_CHOICES = [
@@ -582,7 +564,6 @@ BUILD_TYPE_CHOICES = [
 async def build(interaction: discord.Interaction, platforms: app_commands.Choice[str], build_type: app_commands.Choice[str], pr_numbers: str = "", tag_override: str = ""):
     await interaction.response.defer()
 
-    # Pass Discord user ID as triggered_by (bot will resolve on GitHub side)
     discord_user_id = str(interaction.user.id)
 
     payload = {
@@ -592,7 +573,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
             "build_type":   build_type.value,
             "pr_numbers":   pr_numbers,
             "tag_override": tag_override,
-            "triggered_by": discord_user_id,  # Pass Discord ID instead of GitHub username
+            "triggered_by": discord_user_id,
         }
     }
 
@@ -602,22 +583,20 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
             headers=gh_headers(), json=payload,
         ) as r:
             status = r.status
-            body   = await r.text()
 
     if status == 204:
-        embed = discord.Embed(title="🚀 Build Triggered!", color=0x2EA043)
-        embed.add_field(name="📦 Repo",       value=f"`{GITHUB_OWNER}/{GITHUB_REPO}`", inline=True)
-        embed.add_field(name="🌿 Branch",     value=f"`{GITHUB_BRANCH}`",              inline=True)
-        embed.add_field(name="🏗️ Build Type", value=f"`{build_type.value}`",           inline=True)
-        embed.add_field(name="🖥️ Platforms",  value=f"`{platforms.value}`",            inline=True)
+        embed = discord.Embed(title="Build Triggered!", color=0x2EA043)
+        embed.add_field(name="Repo", value=f"`{GITHUB_OWNER}/{GITHUB_REPO}`", inline=True)
+        embed.add_field(name="Branch", value=f"`{GITHUB_BRANCH}`", inline=True)
+        embed.add_field(name="Build Type", value=f"`{build_type.value}`", inline=True)
+        embed.add_field(name="Platforms", value=f"`{platforms.value}`", inline=True)
         if pr_numbers:
-            embed.add_field(name="🔀 PRs",    value=pr_numbers,     inline=True)
-        embed.add_field(name="🏷️ Tag",        value=f"`{tag_override}`" if tag_override else "Auto-detect", inline=True)
-        embed.add_field(name="👤 Triggered by", value=f"`{interaction.user.display_name}`", inline=True)
-        embed.add_field(name="🔗 View Run", value=f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)", inline=False)
-        embed.set_footer(text=f"Discord ID: {discord_user_id}")
+            embed.add_field(name="PRs", value=pr_numbers, inline=True)
+        embed.add_field(name="Tag", value=f"`{tag_override}`" if tag_override else "Auto-detect", inline=True)
+        embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
     else:
-        embed = discord.Embed(title="❌ Failed to Trigger Build", description=f"**Status:** `{status}`\n```{body[:1000]}```", color=0xDA3633)
+        embed = discord.Embed(title="❌ Failed to Trigger Build", color=0xDA3633)
+
     await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -634,30 +613,31 @@ async def create_tag(interaction: discord.Interaction, tag: str, message: str):
         async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/ref/heads/{GITHUB_BRANCH}", headers=gh_headers()) as r:
             status = r.status; ref_data = await r.json()
         if status != 200:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Branch not found", description=ref_data.get("message"), color=0xDA3633)); return
+            await interaction.followup.send(embed=discord.Embed(title="❌ Branch not found", color=0xDA3633)); return
 
         sha = ref_data["object"]["sha"]
         async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/tags", headers=gh_headers(), json={"tag": tag, "message": message, "object": sha, "type": "commit"}) as r:
             status = r.status; tag_data = await r.json()
         if status not in (200, 201):
-            await interaction.followup.send(embed=discord.Embed(title="❌ Tag creation failed", description=tag_data.get("message"), color=0xDA3633)); return
+            await interaction.followup.send(embed=discord.Embed(title="❌ Tag creation failed", color=0xDA3633)); return
 
         async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs", headers=gh_headers(), json={"ref": f"refs/tags/{tag}", "sha": tag_data["sha"]}) as r:
             status = r.status; ref_result = await r.json()
 
     if status in (200, 201):
-        embed = discord.Embed(title="🏷️ Tag Created!", color=0x2EA043)
+        embed = discord.Embed(title="Tag Created!", color=0x2EA043)
         embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
         embed.add_field(name="Branch", value=f"`{GITHUB_BRANCH}`", inline=True)
         embed.add_field(name="SHA", value=f"`{sha[:7]}`", inline=True)
         embed.add_field(name="Message", value=message, inline=False)
         embed.set_footer(text=f"Created by {interaction.user.display_name}")
     else:
-        embed = discord.Embed(title="❌ Ref creation failed", description=ref_result.get("message"), color=0xDA3633)
+        embed = discord.Embed(title="❌ Ref creation failed", color=0xDA3633)
+
     await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /delete_tag — Restricted (deletes tag + release if exists)
+# /delete_tag — Restricted
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="delete_tag", description="Delete a Git tag and its release if it exists")
@@ -667,14 +647,12 @@ async def delete_tag(interaction: discord.Interaction, tag: str):
     await interaction.response.defer()
 
     async with aiohttp.ClientSession() as session:
-        # Delete the tag ref
         async with session.delete(
             f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs/tags/{tag}",
             headers=gh_headers()
         ) as r:
             tag_status = r.status
 
-        # Try to delete the release if it exists
         release_status = 404
         if tag_status in (200, 204):
             async with session.delete(
@@ -684,27 +662,22 @@ async def delete_tag(interaction: discord.Interaction, tag: str):
                 release_status = r.status
 
     if tag_status in (200, 204):
-        embed = discord.Embed(title="✅ Tag Deleted!", color=0x2EA043)
-        embed.add_field(name="🏷️ Tag", value=f"`{tag}`", inline=True)
+        embed = discord.Embed(title="Tag Deleted!", color=0x2EA043)
+        embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
         embed.add_field(name="Branch", value=f"`{GITHUB_BRANCH}`", inline=True)
-        
-        if release_status in (200, 204):
-            embed.add_field(name="🔖 Release", value="Deleted", inline=True)
-        else:
-            embed.add_field(name="🔖 Release", value="Not found (OK)", inline=True)
-        
+        embed.add_field(name="Release", value="Deleted" if release_status in (200, 204) else "Not found", inline=True)
         embed.set_footer(text=f"Deleted by {interaction.user.display_name}")
     else:
         embed = discord.Embed(
             title="❌ Failed to Delete Tag",
-            description=f"Tag `{tag}` not found or deletion failed.",
+            description=f"Tag `{tag}` not found.",
             color=0xDA3633
         )
-    
+
     await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /latest_run — Restricted (shows latest run for all main workflows)
+# /latest_run — Restricted
 # ══════════════════════════════════════════════════════════════════════════════
 
 WORKFLOWS_TO_CHECK = ["beta_manual.yml", "Notify.yml", "build.yml", "changelog.yaml"]
@@ -743,7 +716,7 @@ async def latest_run(interaction: discord.Interaction):
             embed.add_field(name="Status", value=f"`{conclusion}`", inline=True)
             embed.add_field(name="Branch", value=f"`{run['head_branch']}`", inline=True)
             embed.add_field(name="Run #", value=f"`{run['run_number']}`", inline=True)
-            embed.add_field(name="🔗 Link", value=f"[View Run]({run['html_url']})", inline=False)
+            embed.add_field(name="Link", value=f"[View Run]({run['html_url']})", inline=False)
             embed.set_footer(text=f"Workflow: {workflow_file}")
             embeds.append(embed)
 
