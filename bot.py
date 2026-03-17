@@ -177,62 +177,42 @@ async def on_ready():
 # /setup
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="setup", description="Link your AniList, MAL and GitHub accounts to your Discord")
+@bot.tree.command(name="setup", description="Link your AniList and MAL accounts to your Discord")
 @app_commands.describe(
     anilist_user_id="Your AniList user ID",
     mal_user_id="Your MyAnimeList user ID",
-    github_username="Your GitHub username (used to ping you after builds)",
     author_name="Display name for list entries (defaults to Discord username)",
 )
 async def setup(
     interaction: discord.Interaction,
     anilist_user_id: int,
     mal_user_id: int,
-    github_username: str,
     author_name: str = "",
 ):
     await interaction.response.defer(ephemeral=True)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{GITHUB_API}/users/{github_username}",
-            headers=gh_headers(),
-        ) as r:
-            if r.status != 200:
-                await interaction.followup.send(
-                    embed=discord.Embed(
-                        title="❌ GitHub user not found",
-                        description=f"`{github_username}` doesn't exist on GitHub.",
-                        color=0xDA3633,
-                    ),
-                    ephemeral=True,
-                )
-                return
-            gh_data = await r.json()
-            gh_avatar = gh_data.get("avatar_url", "")
+    discord_id = str(interaction.user.id)
+    author_display = author_name or interaction.user.display_name
 
+    async with aiohttp.ClientSession() as session:
         users, sha = await github_read_json(session, FILE_USERS)
-        discord_id = str(interaction.user.id)
+
         users[discord_id] = {
             "anilist_user_id": anilist_user_id,
             "mal_user_id":     mal_user_id,
-            "github_username": github_username,
-            "author":          author_name or interaction.user.display_name,
-            "discord_tag":     str(interaction.user),
+            "author_name":     author_display,
         }
+
         ok = await github_write_json(
             session, FILE_USERS, users, sha,
-            f"chore: register user {interaction.user} ({discord_id})"
+            f"Setup profile for {interaction.user.display_name}"
         )
 
     if ok:
         embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
-        embed.add_field(name="AniList ID",  value=f"`{anilist_user_id}`", inline=True)
-        embed.add_field(name="MAL ID",      value=f"`{mal_user_id}`",     inline=True)
-        embed.add_field(name="GitHub",      value=f"`{github_username}`", inline=True)
-        embed.add_field(name="Author Name", value=author_name or interaction.user.display_name, inline=True)
-        if gh_avatar:
-            embed.set_thumbnail(url=gh_avatar)
+        embed.add_field(name="AniList ID", value=f"`{anilist_user_id}`", inline=True)
+        embed.add_field(name="MAL ID", value=f"`{mal_user_id}`", inline=True)
+        embed.add_field(name="Author Name", value=author_display, inline=True)
         embed.set_footer(text="You can now use /add_anime, /add_manga and /build!")
     else:
         embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
