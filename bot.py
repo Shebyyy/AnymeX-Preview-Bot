@@ -570,8 +570,7 @@ BUILD_TYPE_CHOICES = [
 async def build(interaction: discord.Interaction, platforms: app_commands.Choice[str], build_type: app_commands.Choice[str], pr_numbers: str = "", tag_override: str = ""):
     await interaction.response.defer()
 
-    profile = await get_profile(str(interaction.user.id))
-    github_username = profile.get("github_username", "") if profile else ""
+    discord_user_id = str(interaction.user.id)
 
     payload = {
         "ref": GITHUB_BRANCH,
@@ -580,7 +579,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
             "build_type":   build_type.value,
             "pr_numbers":   pr_numbers,
             "tag_override": tag_override,
-            "triggered_by": github_username,
+            "triggered_by": discord_user_id,
         }
     }
 
@@ -593,19 +592,15 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
             body   = await r.text()
 
     if status == 204:
-        embed = discord.Embed(title="🚀 Build Triggered!", color=0x2EA043)
-        embed.add_field(name="📦 Repo",       value=f"`{GITHUB_OWNER}/{GITHUB_REPO}`", inline=True)
-        embed.add_field(name="🌿 Branch",     value=f"`{GITHUB_BRANCH}`",              inline=True)
-        embed.add_field(name="🏗️ Build Type", value=f"`{build_type.value}`",           inline=True)
-        embed.add_field(name="🖥️ Platforms",  value=f"`{platforms.value}`",            inline=True)
+        embed = discord.Embed(title="Build Triggered!", color=0x2EA043)
+        embed.add_field(name="Repo", value=f"`{GITHUB_OWNER}/{GITHUB_REPO}`", inline=True)
+        embed.add_field(name="Branch", value=f"`{GITHUB_BRANCH}`", inline=True)
+        embed.add_field(name="Build Type", value=f"`{build_type.value}`", inline=True)
+        embed.add_field(name="Platforms", value=f"`{platforms.value}`", inline=True)
         if pr_numbers:
-            embed.add_field(name="🔀 PRs",    value=pr_numbers,     inline=True)
-        embed.add_field(name="🏷️ Tag",        value=f"`{tag_override}`" if tag_override else "Auto-detect", inline=True)
-        if github_username:
-            embed.add_field(name="👤 Triggered by", value=f"`{github_username}`", inline=True)
-        else:
-            embed.add_field(name="⚠️ Note", value="Run `/setup` with your GitHub username so the workflow pings you!", inline=False)
-        embed.add_field(name="🔗 View Run", value=f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)", inline=False)
+            embed.add_field(name="PRs", value=pr_numbers, inline=True)
+        embed.add_field(name="Tag", value=f"`{tag_override}`" if tag_override else "Auto-detect", inline=True)
+        embed.add_field(name="View Run", value=f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)", inline=False)
         embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
     else:
         embed = discord.Embed(title="❌ Failed to Trigger Build", description=f"**Status:** `{status}`\n```{body[:1000]}```", color=0xDA3633)
