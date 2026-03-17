@@ -28,6 +28,38 @@ FILE_ANIME     = "underrated_anime.json"
 FILE_MANGA     = "underrated_manga.json"
 FILE_USERS     = "users.json"
 
+# ── PERMISSION SETTINGS ────────────────────────────────────────────────────────
+# Role names that can use restricted commands
+ALLOWED_ROLE_NAMES = set()
+try:
+    allowed_roles_str = os.environ.get("ALLOWED_ROLE_NAMES", "")
+    if allowed_roles_str:
+        ALLOWED_ROLE_NAMES = set(role.strip() for role in allowed_roles_str.split(","))
+except:
+    pass
+
+# ── Permission Decorators ──────────────────────────────────────────────────────
+
+def has_allowed_role():
+    """Check if user has any of the allowed roles"""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        user_roles = {role.name for role in interaction.user.roles}
+        has_role = bool(user_roles & ALLOWED_ROLE_NAMES)
+        
+        if has_role:
+            return True
+        
+        if ALLOWED_ROLE_NAMES:
+            roles_list = ", ".join(sorted(ALLOWED_ROLE_NAMES))
+            await interaction.response.send_message(
+                f"❌ You need one of these roles: `{roles_list}`",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("❌ This command is restricted.", ephemeral=True)
+        return False
+    return app_commands.check(predicate)
+
 # ── Health check server (keeps Render awake) ───────────────────────────────────
 
 async def health(request):
@@ -135,6 +167,11 @@ async def get_profile(discord_id: str):
 async def on_ready():
     await bot.tree.sync()
     print(f"✅ Logged in as {bot.user} — slash commands synced")
+    if ALLOWED_ROLE_NAMES:
+        roles_list = ", ".join(sorted(ALLOWED_ROLE_NAMES))
+        print(f"🔐 Restricted commands require role: {roles_list}")
+    else:
+        print(f"⚠️  ALLOWED_ROLE_NAMES not configured")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /setup
@@ -385,6 +422,142 @@ async def add_manga(interaction: discord.Interaction, anilist_link: str, mal_lin
     await handle_add(interaction, anilist_link, mal_link, reason, author, anilist_user_id, mal_user_id, "MANGA")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# /list_anime — Restricted
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="list_anime", description="View the underrated anime list")
+@has_allowed_role()
+async def list_anime(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_ANIME)
+
+    if not entries:
+        embed = discord.Embed(title="Anime List", description="No anime added yet.", color=0x0066FF)
+        await interaction.followup.send(embed=embed)
+        return
+
+    embeds = []
+    for i, entry in enumerate(entries, 1):
+        embed = discord.Embed(
+            title=entry.get("title", "Unknown"),
+            description=entry.get("reason", "No reason"),
+            color=0x0066FF
+        )
+        embed.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True)
+        embed.set_footer(text=f"{i}/{len(entries)}")
+        embeds.append(embed)
+
+    await interaction.followup.send(embeds=embeds[:10])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /list_manga — Restricted
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="list_manga", description="View the underrated manga list")
+@has_allowed_role()
+async def list_manga(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_MANGA)
+
+    if not entries:
+        embed = discord.Embed(title="Manga List", description="No manga added yet.", color=0xFF6B6B)
+        await interaction.followup.send(embed=embed)
+        return
+
+    embeds = []
+    for i, entry in enumerate(entries, 1):
+        embed = discord.Embed(
+            title=entry.get("title", "Unknown"),
+            description=entry.get("reason", "No reason"),
+            color=0xFF6B6B
+        )
+        embed.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True)
+        embed.set_footer(text=f"{i}/{len(entries)}")
+        embeds.append(embed)
+
+    await interaction.followup.send(embeds=embeds[:10])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /remove_anime — Restricted
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="remove_anime", description="Remove an anime from the list")
+@app_commands.describe(search_term="Title or AniList ID")
+@has_allowed_role()
+async def remove_anime(interaction: discord.Interaction, search_term: str):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, FILE_ANIME)
+
+    found_index = None
+    for i, entry in enumerate(entries):
+        if search_term.isdigit() and str(entry.get("anilist_id")) == search_term:
+            found_index = i
+            break
+        elif search_term.lower() in entry.get("title", "").lower():
+            found_index = i
+            break
+
+    if found_index is None:
+        await interaction.followup.send(embed=discord.Embed(title="Not Found", description=f"No anime matching `{search_term}`", color=0xDA3633), ephemeral=True)
+        return
+
+    removed = entries.pop(found_index)
+    async with aiohttp.ClientSession() as session:
+        success = await github_write_json(session, FILE_ANIME, entries, sha, f"Remove anime: {removed.get('title')}")
+
+    if success:
+        embed = discord.Embed(title="Removed", description=removed.get("title"), color=0x2EA043)
+    else:
+        embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /remove_manga — Restricted
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="remove_manga", description="Remove a manga from the list")
+@app_commands.describe(search_term="Title or AniList ID")
+@has_allowed_role()
+async def remove_manga(interaction: discord.Interaction, search_term: str):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, FILE_MANGA)
+
+    found_index = None
+    for i, entry in enumerate(entries):
+        if search_term.isdigit() and str(entry.get("anilist_id")) == search_term:
+            found_index = i
+            break
+        elif search_term.lower() in entry.get("title", "").lower():
+            found_index = i
+            break
+
+    if found_index is None:
+        await interaction.followup.send(embed=discord.Embed(title="Not Found", description=f"No manga matching `{search_term}`", color=0xDA3633), ephemeral=True)
+        return
+
+    removed = entries.pop(found_index)
+    async with aiohttp.ClientSession() as session:
+        success = await github_write_json(session, FILE_MANGA, entries, sha, f"Remove manga: {removed.get('title')}")
+
+    if success:
+        embed = discord.Embed(title="Removed", description=removed.get("title"), color=0x2EA043)
+    else:
+        embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
 # /build
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -413,6 +586,7 @@ BUILD_TYPE_CHOICES = [
 @bot.tree.command(name="build", description="Trigger the AnymeX-Preview build workflow")
 @app_commands.describe(platforms="Platforms to build", build_type="Build type", pr_numbers="PR numbers (comma-separated)", tag_override="Version tag override")
 @app_commands.choices(platforms=PLATFORM_CHOICES, build_type=BUILD_TYPE_CHOICES)
+@has_allowed_role()
 async def build(interaction: discord.Interaction, platforms: app_commands.Choice[str], build_type: app_commands.Choice[str], pr_numbers: str = "", tag_override: str = ""):
     await interaction.response.defer()
 
@@ -463,6 +637,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
 
 @bot.tree.command(name="create_tag", description="Create a new Git tag on the beta branch")
 @app_commands.describe(tag="Tag name (e.g. v3.0.4-alpha)", message="Tag message")
+@has_allowed_role()
 async def create_tag(interaction: discord.Interaction, tag: str, message: str):
     await interaction.response.defer()
 
@@ -493,33 +668,93 @@ async def create_tag(interaction: discord.Interaction, tag: str, message: str):
     await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /latest_run
+# /delete_tag — Restricted
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="latest_run", description="Check the latest build run status")
-async def latest_run(interaction: discord.Interaction):
+@bot.tree.command(name="delete_tag", description="Delete a Git tag and its release")
+@app_commands.describe(tag="Tag name to delete")
+@has_allowed_role()
+async def delete_tag(interaction: discord.Interaction, tag: str):
     await interaction.response.defer()
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?per_page=1&branch={GITHUB_BRANCH}", headers=gh_headers()) as r:
-            status = r.status; data = await r.json()
+        async with session.delete(
+            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs/tags/{tag}",
+            headers=gh_headers()
+        ) as r:
+            tag_status = r.status
 
-    if status != 200 or not data.get("workflow_runs"):
-        await interaction.followup.send("❌ Could not fetch runs."); return
+        release_status = 404
+        if tag_status in (200, 204):
+            async with session.delete(
+                f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tags/{tag}",
+                headers=gh_headers()
+            ) as r:
+                release_status = r.status
 
-    run = data["workflow_runs"][0]
-    conclusion = run.get("conclusion") or "in_progress"
-    EMOJI_MAP = {"success": "✅", "failure": "❌", "cancelled": "🚫", "in_progress": "⏳"}
-    emoji = EMOJI_MAP.get(conclusion, "❓")
-    color = 0x2EA043 if conclusion == "success" else (0xDA3633 if conclusion == "failure" else 0xFFA500)
+    if tag_status in (200, 204):
+        embed = discord.Embed(title="Tag Deleted!", color=0x2EA043)
+        embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
+        embed.add_field(name="Release", value="Deleted" if release_status in (200, 204) else "Not found", inline=True)
+    else:
+        embed = discord.Embed(title="Failed to Delete", description=f"Tag `{tag}` not found", color=0xDA3633)
 
-    embed = discord.Embed(title=f"{emoji} Latest Build Run", color=color)
-    embed.add_field(name="Workflow", value=run["name"],                      inline=True)
-    embed.add_field(name="Status",   value=f"`{conclusion}`",                inline=True)
-    embed.add_field(name="Branch",   value=f"`{run['head_branch']}`",        inline=True)
-    embed.add_field(name="Run #",    value=f"`{run['run_number']}`",         inline=True)
-    embed.add_field(name="🔗 Link",  value=f"[View Run]({run['html_url']})", inline=False)
     await interaction.followup.send(embed=embed)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /latest_run
+# ══════════════════════════════════════════════════════════════════════════════
+
+WORKFLOWS_TO_CHECK = ["beta_manual.yml", "Notify.yml", "build.yml", "changelog.yaml"]
+
+@bot.tree.command(name="latest_run", description="Check the latest run for all workflows")
+@has_allowed_role()
+async def latest_run(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    embeds = []
+    
+    async with aiohttp.ClientSession() as session:
+        for workflow_file in WORKFLOWS_TO_CHECK:
+            async with session.get(
+                f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{workflow_file}/runs?per_page=1&branch={GITHUB_BRANCH}",
+                headers=gh_headers()
+            ) as r:
+                if r.status != 200:
+                    continue
+                data = await r.json()
+
+            if not data.get("workflow_runs"):
+                continue
+
+            run = data["workflow_runs"][0]
+            conclusion = run.get("conclusion") or "in_progress"
+            
+            EMOJI_MAP = {"success": "✅", "failure": "❌", "cancelled": "🚫", "in_progress": "⏳"}
+            emoji = EMOJI_MAP.get(conclusion, "❓")
+            color = 0x2EA043 if conclusion == "success" else (0xDA3633 if conclusion == "failure" else 0xFFA500)
+
+            embed = discord.Embed(
+                title=f"{emoji} {run['name']}",
+                color=color
+            )
+            embed.add_field(name="Status", value=f"`{conclusion}`", inline=True)
+            embed.add_field(name="Branch", value=f"`{run['head_branch']}`", inline=True)
+            embed.add_field(name="Run #", value=f"`{run['run_number']}`", inline=True)
+            embed.add_field(name="Link", value=f"[View Run]({run['html_url']})", inline=False)
+            embed.set_footer(text=f"Workflow: {workflow_file}")
+            embeds.append(embed)
+
+    if not embeds:
+        embed = discord.Embed(
+            title="❌ No Runs Found",
+            description="Could not fetch workflow runs.",
+            color=0xDA3633
+        )
+        await interaction.followup.send(embed=embed)
+        return
+
+    await interaction.followup.send(embeds=embeds)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Run bot + health server together
