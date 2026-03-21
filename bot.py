@@ -132,6 +132,39 @@ def has_allowed_role():
         return False
     return app_commands.check(predicate)
 
+# ── Timezone Autocomplete ──────────────────────────────────────────────────────
+
+async def timezone_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for timezone selection"""
+    if not current:
+        # Show first 25 timezones if nothing typed
+        choices = [
+            app_commands.Choice(
+                name=f"{tz} ({TIMEZONES[tz]['name']}, UTC{'+' if TIMEZONES[tz]['offset'] >= 0 else ''}{TIMEZONES[tz]['offset']})",
+                value=tz
+            )
+            for tz in sorted(TIMEZONES.keys())[:25]
+        ]
+    else:
+        # Filter by what user typed
+        current_upper = current.upper()
+        matching = [
+            tz for tz in TIMEZONES.keys()
+            if current_upper in tz or current_upper in TIMEZONES[tz]['name'].upper()
+        ]
+        choices = [
+            app_commands.Choice(
+                name=f"{tz} ({TIMEZONES[tz]['name']}, UTC{'+' if TIMEZONES[tz]['offset'] >= 0 else ''}{TIMEZONES[tz]['offset']})",
+                value=tz
+            )
+            for tz in sorted(matching)[:25]
+        ]
+    
+    return choices
+
 # ── Health check server (keeps Render awake) ───────────────────────────────────
 
 async def health(request):
@@ -899,7 +932,8 @@ async def timezone_list(interaction: discord.Interaction):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="set_timezone", description="Set your timezone")
-@app_commands.describe(timezone="Your timezone code (e.g. IST, EST, PST)")
+@app_commands.describe(timezone="Your timezone code (autocomplete available)")
+@app_commands.autocomplete(timezone=timezone_autocomplete)
 async def set_timezone(interaction: discord.Interaction, timezone: str):
     await interaction.response.defer(ephemeral=True)
 
@@ -942,6 +976,104 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
         )
     else:
         embed = discord.Embed(title="❌ Failed to save timezone", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /add_friend_timezone
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="add_friend_timezone", description="Add a friend's timezone")
+@app_commands.describe(
+    user="The friend's Discord user",
+    timezone="Their timezone code (autocomplete available)"
+)
+@app_commands.autocomplete(timezone=timezone_autocomplete)
+async def add_friend_timezone(interaction: discord.Interaction, user: discord.User, timezone: str):
+    await interaction.response.defer(ephemeral=True)
+
+    tz_upper = timezone.upper()
+    
+    if tz_upper not in TIMEZONES:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Invalid Timezone",
+                description=f"Timezone `{tz_upper}` not found. Use `/timezone_list` to see available timezones.",
+                color=0xDA3633
+            ),
+            ephemeral=True
+        )
+        return
+
+    friend_id = str(user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        
+        timezones[friend_id] = {
+            "timezone": tz_upper,
+            "offset": TIMEZONES[tz_upper]["offset"]
+        }
+        
+        success = await github_write_json(
+            session, FILE_TIMEZONES, timezones, sha,
+            f"Set timezone for {user.display_name} (added by {interaction.user.display_name})"
+        )
+
+    if success:
+        tz_info = TIMEZONES[tz_upper]
+        offset = tz_info["offset"]
+        sign = "+" if offset >= 0 else ""
+        embed = discord.Embed(
+            title="✅ Friend's Timezone Added!",
+            description=f"**{user.mention}** → **{tz_upper}** (UTC{sign}{offset}) - {tz_info['name']}",
+            color=0x2EA043
+        )
+    else:
+        embed = discord.Embed(title="❌ Failed to save timezone", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /remove_friend_timezone
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="remove_friend_timezone", description="Remove a friend's timezone")
+@app_commands.describe(user="The friend's Discord user")
+async def remove_friend_timezone(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.defer(ephemeral=True)
+
+    friend_id = str(user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        
+        if friend_id not in timezones:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="❌ Friend's Timezone Not Set",
+                    description=f"{user.mention}'s timezone hasn't been set.",
+                    color=0xDA3633
+                ),
+                ephemeral=True
+            )
+            return
+        
+        del timezones[friend_id]
+        
+        success = await github_write_json(
+            session, FILE_TIMEZONES, timezones, sha,
+            f"Remove timezone for {user.display_name}"
+        )
+
+    if success:
+        embed = discord.Embed(
+            title="✅ Removed!",
+            description=f"**{user.mention}**'s timezone has been removed.",
+            color=0x2EA043
+        )
+    else:
+        embed = discord.Embed(title="❌ Failed to remove timezone", color=0xDA3633)
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
