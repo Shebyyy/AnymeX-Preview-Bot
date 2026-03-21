@@ -1340,66 +1340,123 @@ async def world_clock(interaction: discord.Interaction):
 # TIMEZONE MENU - Single Command Setup (Admin Only)
 # ══════════════════════════════════════════════════════════════════════════════
 
+def build_tz_options(filter_text: str = "") -> list:
+    """Build SelectOption list from TIMEZONES, optionally filtered by search text."""
+    results = []
+    query = filter_text.lower().strip()
+    for tz_key in sorted(TIMEZONES.keys()):
+        tz = TIMEZONES[tz_key]
+        label = f"{tz['code']} ({tz['utc']}) - {tz['name']}"
+        if query and query not in label.lower() and query not in tz.get("region", "").lower() and query not in tz.get("iana", "").lower():
+            continue
+        results.append(discord.SelectOption(label=label[:100], value=tz_key, emoji="🌍"))
+    return results
+
+
+class TimezoneSearchModal(discord.ui.Modal, title="🔍 Search Timezone"):
+    query = discord.ui.TextInput(
+        label="Search",
+        placeholder="e.g. India, UTC+8, Pacific, IST ...",
+        required=True,
+        max_length=50
+    )
+
+    def __init__(self, all_options: list):
+        super().__init__()
+        self.all_options = all_options  # full unfiltered list (SelectOption objects)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        filtered = build_tz_options(self.query.value)
+        if not filtered:
+            await interaction.response.send_message(
+                embed=discord.Embed(title="❌ No Results", description=f"No timezones found for **{self.query.value}**", color=0xDA3633),
+                ephemeral=True
+            )
+            return
+        new_view = TimezoneSelectView(self.all_options, page=0, filtered_options=filtered, search_query=self.query.value)
+        await interaction.response.edit_message(view=new_view)
+
+
 class TimezoneSelectView(discord.ui.View):
-    """Dropdown select for timezone with pagination"""
-    def __init__(self, options, page=0):
+    """Dropdown select for timezone with pagination + search"""
+    def __init__(self, all_options: list, page: int = 0, filtered_options: list = None, search_query: str = ""):
         super().__init__(timeout=None)
-        self.all_options = options
+        self.all_options = all_options          # full list always kept
         self.page = page
-        self.items_per_page = 25
-        
-        # Add select with current page options
-        current_options = options[page*25:(page+1)*25]
-        self.add_item(TimezoneSelect(current_options, len(options), page))
-        
-        # Add pagination buttons if needed
-        if len(options) > 25:
-            button_row = discord.ui.View()
-            if page > 0:
-                prev_btn = discord.ui.Button(label="← Previous", style=discord.ButtonStyle.primary)
-                async def prev_callback(interaction: discord.Interaction):
-                    await interaction.response.defer()
-                    new_view = TimezoneSelectView(self.all_options, page - 1)
-                    await interaction.message.edit(view=new_view)
-                prev_btn.callback = prev_callback
-                button_row.add_item(prev_btn)
-            
-            if (page + 1) * 25 < len(options):
-                next_btn = discord.ui.Button(label="Next →", style=discord.ButtonStyle.primary)
-                async def next_callback(interaction: discord.Interaction):
-                    await interaction.response.defer()
-                    new_view = TimezoneSelectView(self.all_options, page + 1)
-                    await interaction.message.edit(view=new_view)
-                next_btn.callback = next_callback
-                button_row.add_item(next_btn)
-            
-            if button_row.children:
-                self.add_item(button_row)
+        self.search_query = search_query
+        # displayed list is filtered if a search is active, otherwise full list
+        self.display_options = filtered_options if filtered_options is not None else all_options
+
+        # ── Dropdown ──────────────────────────────────────────────────────────
+        current_page_options = self.display_options[page * 25:(page + 1) * 25]
+        self.add_item(TimezoneSelect(current_page_options, len(self.display_options), page))
+
+        # ── Prev / Next buttons (added directly to self — no nested View) ─────
+        if page > 0:
+            prev_btn = discord.ui.Button(label="← Previous", style=discord.ButtonStyle.primary, row=1)
+            async def prev_callback(interaction: discord.Interaction):
+                await interaction.response.defer()
+                new_view = TimezoneSelectView(self.all_options, page - 1, self.display_options, self.search_query)
+                await interaction.message.edit(view=new_view)
+            prev_btn.callback = prev_callback
+            self.add_item(prev_btn)
+
+        if (page + 1) * 25 < len(self.display_options):
+            next_btn = discord.ui.Button(label="Next →", style=discord.ButtonStyle.primary, row=1)
+            async def next_callback(interaction: discord.Interaction):
+                await interaction.response.defer()
+                new_view = TimezoneSelectView(self.all_options, page + 1, self.display_options, self.search_query)
+                await interaction.message.edit(view=new_view)
+            next_btn.callback = next_callback
+            self.add_item(next_btn)
+
+        # ── Search button ─────────────────────────────────────────────────────
+        search_btn = discord.ui.Button(
+            label="🔍 Search" if not search_query else f"🔍 Search: {search_query[:20]}",
+            style=discord.ButtonStyle.secondary,
+            row=1
+        )
+        async def search_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(TimezoneSearchModal(self.all_options))
+        search_btn.callback = search_callback
+        self.add_item(search_btn)
+
+        # ── Clear search button (only shown when a filter is active) ──────────
+        if search_query:
+            clear_btn = discord.ui.Button(label="✖ Clear Filter", style=discord.ButtonStyle.danger, row=1)
+            async def clear_callback(interaction: discord.Interaction):
+                await interaction.response.defer()
+                new_view = TimezoneSelectView(self.all_options, page=0)
+                await interaction.message.edit(view=new_view)
+            clear_btn.callback = clear_callback
+            self.add_item(clear_btn)
+
 
 class TimezoneSelect(discord.ui.Select):
     """Select dropdown for choosing timezone"""
     def __init__(self, options, total_count, page):
         super().__init__(
-            placeholder=f"Select timezone (Page {page+1} of {(total_count+24)//25})...",
+            placeholder=f"Select timezone (Page {page+1} of {max(1, (total_count+24)//25)}, {total_count} shown)...",
             min_values=1,
             max_values=1,
-            options=options
+            options=options,
+            row=0
         )
         self.total_count = total_count
         self.page = page
-    
+
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        
+
         selected_tz = self.values[0]
         user_id = str(interaction.user.id)
         tz_info = TIMEZONES[selected_tz]
-        
+
         async with aiohttp.ClientSession() as session:
             timezones, sha = await github_read_json(session, FILE_TIMEZONES)
             timezones[user_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
             success = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Set timezone for {interaction.user.display_name}")
-        
+
         if success:
             embed = discord.Embed(
                 title="✅ Timezone Set!",
@@ -1408,7 +1465,7 @@ class TimezoneSelect(discord.ui.Select):
             )
         else:
             embed = discord.Embed(title="❌ Failed to save timezone", color=0xDA3633)
-        
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="setup_timezone_menu", description="Setup timezone selection menu (Admin only)")
@@ -1433,16 +1490,7 @@ async def setup_timezone_menu(
         return
     
     # Build timezone select options for ALL timezones
-    options = []
-    for tz_key in sorted(TIMEZONES.keys()):
-        tz_info = TIMEZONES[tz_key]
-        options.append(
-            discord.SelectOption(
-                label=f"{tz_info['code']} ({tz_info['utc']}) - {tz_info['name']}",
-                value=tz_key,
-                emoji="🌍"
-            )
-        )
+    options = build_tz_options()
     
     # Use custom message or default
     if message:
