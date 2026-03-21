@@ -27,6 +27,78 @@ ANILIST_API    = "https://graphql.anilist.co"
 FILE_ANIME     = "underrated_anime.json"
 FILE_MANGA     = "underrated_manga.json"
 FILE_USERS     = "users.json"
+FILE_TIMEZONES = "timezones.json"
+
+# ── TIMEZONE DATABASE ──────────────────────────────────────────────────────────
+TIMEZONES = {
+    # Asia
+    "IST": {"name": "Indian Standard Time", "offset": 5.5, "region": "Asia"},
+    "PKT": {"name": "Pakistan Standard Time", "offset": 5.0, "region": "Asia"},
+    "AFT": {"name": "Afghanistan Time", "offset": 4.5, "region": "Asia"},
+    "GST": {"name": "Gulf Standard Time", "offset": 4.0, "region": "Asia"},
+    "MSK": {"name": "Moscow Standard Time", "offset": 3.0, "region": "Asia"},
+    "EEST": {"name": "Eastern European Summer Time", "offset": 3.0, "region": "Asia"},
+    "JST": {"name": "Japan Standard Time", "offset": 9.0, "region": "Asia"},
+    "KST": {"name": "Korea Standard Time", "offset": 9.0, "region": "Asia"},
+    "AWST": {"name": "Australian Western Standard Time", "offset": 8.0, "region": "Asia"},
+    "SGT": {"name": "Singapore Standard Time", "offset": 8.0, "region": "Asia"},
+    "MYT": {"name": "Malaysia Time", "offset": 8.0, "region": "Asia"},
+    "PHT": {"name": "Philippine Standard Time", "offset": 8.0, "region": "Asia"},
+    "HKT": {"name": "Hong Kong Time", "offset": 8.0, "region": "Asia"},
+    "CST": {"name": "China Standard Time", "offset": 8.0, "region": "Asia"},
+    "BDT": {"name": "Bangladesh Standard Time", "offset": 6.0, "region": "Asia"},
+    "THA": {"name": "Thailand Standard Time", "offset": 7.0, "region": "Asia"},
+    "ICT": {"name": "Indochina Time", "offset": 7.0, "region": "Asia"},
+    "IDT": {"name": "Indonesia Time", "offset": 7.0, "region": "Asia"},
+    
+    # Americas
+    "EST": {"name": "Eastern Standard Time", "offset": -5.0, "region": "Americas"},
+    "EDT": {"name": "Eastern Daylight Time", "offset": -4.0, "region": "Americas"},
+    "CST_US": {"name": "Central Standard Time (US)", "offset": -6.0, "region": "Americas"},
+    "CDT": {"name": "Central Daylight Time", "offset": -5.0, "region": "Americas"},
+    "MST": {"name": "Mountain Standard Time", "offset": -7.0, "region": "Americas"},
+    "MDT": {"name": "Mountain Daylight Time", "offset": -6.0, "region": "Americas"},
+    "PST": {"name": "Pacific Standard Time", "offset": -8.0, "region": "Americas"},
+    "PDT": {"name": "Pacific Daylight Time", "offset": -7.0, "region": "Americas"},
+    "AKST": {"name": "Alaska Standard Time", "offset": -9.0, "region": "Americas"},
+    "AKDT": {"name": "Alaska Daylight Time", "offset": -8.0, "region": "Americas"},
+    "HST": {"name": "Hawaii Standard Time", "offset": -10.0, "region": "Americas"},
+    "AST": {"name": "Atlantic Standard Time", "offset": -4.0, "region": "Americas"},
+    "ADT": {"name": "Atlantic Daylight Time", "offset": -3.0, "region": "Americas"},
+    "BRT": {"name": "Brasilia Time", "offset": -3.0, "region": "Americas"},
+    "ART": {"name": "Argentina Time", "offset": -3.0, "region": "Americas"},
+    "CLT": {"name": "Chile Standard Time", "offset": -3.0, "region": "Americas"},
+    "CLDT": {"name": "Chile Daylight Time", "offset": -2.0, "region": "Americas"},
+    
+    # Europe
+    "GMT": {"name": "Greenwich Mean Time", "offset": 0.0, "region": "Europe"},
+    "UTC": {"name": "Coordinated Universal Time", "offset": 0.0, "region": "Europe"},
+    "BST": {"name": "British Summer Time", "offset": 1.0, "region": "Europe"},
+    "CET": {"name": "Central European Time", "offset": 1.0, "region": "Europe"},
+    "CEST": {"name": "Central European Summer Time", "offset": 2.0, "region": "Europe"},
+    "EET": {"name": "Eastern European Time", "offset": 2.0, "region": "Europe"},
+    "WEST": {"name": "Western European Summer Time", "offset": 1.0, "region": "Europe"},
+    "WET": {"name": "Western European Time", "offset": 0.0, "region": "Europe"},
+    "IST_EU": {"name": "Irish Standard Time", "offset": 1.0, "region": "Europe"},
+    "CIS": {"name": "Moscow Standard Time (CIS)", "offset": 3.0, "region": "Europe"},
+    
+    # Africa
+    "CAT": {"name": "Central Africa Time", "offset": 2.0, "region": "Africa"},
+    "EAT": {"name": "East Africa Time", "offset": 3.0, "region": "Africa"},
+    "WAT": {"name": "West Africa Time", "offset": 1.0, "region": "Africa"},
+    "SAST": {"name": "South Africa Standard Time", "offset": 2.0, "region": "Africa"},
+    "EGT": {"name": "Egypt Standard Time", "offset": 2.0, "region": "Africa"},
+    
+    # Australia/Pacific
+    "AEST": {"name": "Australian Eastern Standard Time", "offset": 10.0, "region": "Pacific"},
+    "AEDT": {"name": "Australian Eastern Daylight Time", "offset": 11.0, "region": "Pacific"},
+    "ACST": {"name": "Australian Central Standard Time", "offset": 9.5, "region": "Pacific"},
+    "ACDT": {"name": "Australian Central Daylight Time", "offset": 10.5, "region": "Pacific"},
+    "NZST": {"name": "New Zealand Standard Time", "offset": 12.0, "region": "Pacific"},
+    "NZDT": {"name": "New Zealand Daylight Time", "offset": 13.0, "region": "Pacific"},
+    "FJT": {"name": "Fiji Time", "offset": 12.0, "region": "Pacific"},
+    "NACT": {"name": "Norfolk Island Time", "offset": 11.0, "region": "Pacific"},
+}
 
 # ── PERMISSION SETTINGS ────────────────────────────────────────────────────────
 # Role names that can use restricted commands
@@ -797,7 +869,217 @@ async def latest_run(interaction: discord.Interaction):
 # /build (add cancel button for running builds)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Run bot + health server together
+# /timezone_list
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="timezone_list", description="View all available timezones")
+async def timezone_list(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    # Group by region
+    regions = {}
+    for tz, info in TIMEZONES.items():
+        region = info["region"]
+        if region not in regions:
+            regions[region] = []
+        offset = info["offset"]
+        sign = "+" if offset >= 0 else ""
+        regions[region].append(f"**{tz}** (UTC{sign}{offset}) - {info['name']}")
+
+    embeds = []
+    for region in sorted(regions.keys()):
+        embed = discord.Embed(title=f"🌍 {region} Timezones", color=0x0066FF)
+        embed.description = "\n".join(regions[region])
+        embeds.append(embed)
+
+    await interaction.followup.send(embeds=embeds)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /set_timezone
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="set_timezone", description="Set your timezone")
+@app_commands.describe(timezone="Your timezone code (e.g. IST, EST, PST)")
+async def set_timezone(interaction: discord.Interaction, timezone: str):
+    await interaction.response.defer(ephemeral=True)
+
+    tz_upper = timezone.upper()
+    
+    if tz_upper not in TIMEZONES:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Invalid Timezone",
+                description=f"Timezone `{tz_upper}` not found. Use `/timezone_list` to see available timezones.",
+                color=0xDA3633
+            ),
+            ephemeral=True
+        )
+        return
+
+    discord_id = str(interaction.user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        
+        timezones[discord_id] = {
+            "timezone": tz_upper,
+            "offset": TIMEZONES[tz_upper]["offset"]
+        }
+        
+        success = await github_write_json(
+            session, FILE_TIMEZONES, timezones, sha,
+            f"Set timezone for {interaction.user.display_name}"
+        )
+
+    if success:
+        tz_info = TIMEZONES[tz_upper]
+        offset = tz_info["offset"]
+        sign = "+" if offset >= 0 else ""
+        embed = discord.Embed(
+            title="✅ Timezone Set!",
+            description=f"**{tz_upper}** (UTC{sign}{offset}) - {tz_info['name']}",
+            color=0x2EA043
+        )
+    else:
+        embed = discord.Embed(title="❌ Failed to save timezone", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /my_time
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="my_time", description="Show your current time")
+async def my_time(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if discord_id not in timezones:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Timezone Not Set",
+                description="Use `/set_timezone` first to set your timezone.",
+                color=0xDA3633
+            ),
+            ephemeral=True
+        )
+        return
+
+    tz_data = timezones[discord_id]
+    tz_code = tz_data["timezone"]
+    offset = tz_data["offset"]
+    
+    from datetime import datetime, timedelta
+    
+    utc_now = datetime.utcnow()
+    user_time = utc_now + timedelta(hours=offset)
+    time_12 = user_time.strftime("%I:%M %p")
+    
+    tz_info = TIMEZONES[tz_code]
+    sign = "+" if offset >= 0 else ""
+    
+    embed = discord.Embed(
+        title=f"🕐 Your Time",
+        description=f"**{time_12}**",
+        color=0x0066FF
+    )
+    embed.add_field(name="Timezone", value=f"{tz_code} (UTC{sign}{offset})", inline=True)
+    embed.add_field(name="Full Name", value=tz_info["name"], inline=True)
+    embed.set_footer(text=f"{interaction.user.display_name}")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /friend_time
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="friend_time", description="Check a friend's time")
+@app_commands.describe(user="The user to check")
+async def friend_time(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.defer(ephemeral=True)
+
+    friend_id = str(user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if friend_id not in timezones:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Friend's Timezone Not Set",
+                description=f"{user.mention} hasn't set their timezone yet.",
+                color=0xDA3633
+            ),
+            ephemeral=True
+        )
+        return
+
+    tz_data = timezones[friend_id]
+    tz_code = tz_data["timezone"]
+    offset = tz_data["offset"]
+    
+    from datetime import datetime, timedelta
+    
+    utc_now = datetime.utcnow()
+    friend_time = utc_now + timedelta(hours=offset)
+    time_12 = friend_time.strftime("%I:%M %p")
+    
+    tz_info = TIMEZONES[tz_code]
+    sign = "+" if offset >= 0 else ""
+    
+    embed = discord.Embed(
+        title=f"🕐 {user.display_name}'s Time",
+        description=f"**{time_12}**",
+        color=0x0066FF
+    )
+    embed.add_field(name="Timezone", value=f"{tz_code} (UTC{sign}{offset})", inline=True)
+    embed.add_field(name="Full Name", value=tz_info["name"], inline=True)
+    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /remove_timezone
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="remove_timezone", description="Remove your timezone")
+async def remove_timezone(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        
+        if discord_id not in timezones:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="❌ No Timezone Set",
+                    description="You haven't set a timezone yet.",
+                    color=0xDA3633
+                ),
+                ephemeral=True
+            )
+            return
+        
+        del timezones[discord_id]
+        
+        success = await github_write_json(
+            session, FILE_TIMEZONES, timezones, sha,
+            f"Remove timezone for {interaction.user.display_name}"
+        )
+
+    if success:
+        embed = discord.Embed(title="✅ Timezone Removed!", color=0x2EA043)
+    else:
+        embed = discord.Embed(title="❌ Failed to remove timezone", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def main():
