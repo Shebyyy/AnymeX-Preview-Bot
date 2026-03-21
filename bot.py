@@ -28,6 +28,9 @@ FILE_ANIME     = "underrated_anime.json"
 FILE_MANGA     = "underrated_manga.json"
 FILE_USERS     = "users.json"
 FILE_TIMEZONES = "timezones.json"
+FILE_PREFIXES  = "prefixes.json"
+
+DEFAULT_PREFIXES = ["?"]
 
 # ── COMPLETE WORLD TIMEZONE DATABASE (NEW FORMAT ONLY) ────────────────────────
 TIMEZONES = {
@@ -181,7 +184,15 @@ async def start_health_server():
 # ── Intents ────────────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.message_content = True  # required for prefix commands
+
+# In-memory prefix cache (loaded on startup)
+_prefix_cache = ["?"]
+
+async def get_prefix(bot, message):
+    return _prefix_cache
+
+bot = commands.Bot(command_prefix=get_prefix, intents=intents)
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
 
@@ -199,7 +210,12 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tup
         headers=gh_headers(),
     ) as r:
         if r.status == 404:
-            default = {} if filepath == FILE_USERS else []
+            if filepath in (FILE_USERS, FILE_TIMEZONES):
+                default = {}
+            elif filepath == FILE_PREFIXES:
+                default = DEFAULT_PREFIXES[:]
+            else:
+                default = []
             return default, None
         data = await r.json()
         content = base64.b64decode(data["content"]).decode("utf-8")
@@ -275,6 +291,30 @@ async def on_ready():
         print(f"🔐 Restricted commands require role: {roles_list}")
     else:
         print(f"⚠️  ALLOWED_ROLE_NAMES not configured")
+    await ensure_json_files()
+
+async def ensure_json_files():
+    """Auto-create all required JSON files on GitHub if they don't exist."""
+    global _prefix_cache
+    files = {
+        FILE_USERS:     {},
+        FILE_TIMEZONES: {},
+        FILE_ANIME:     [],
+        FILE_MANGA:     [],
+        FILE_PREFIXES:  DEFAULT_PREFIXES[:],
+    }
+    async with aiohttp.ClientSession() as session:
+        for filepath, default in files.items():
+            data, sha = await github_read_json(session, filepath)
+            if sha is None:
+                await github_write_json(session, filepath, default, None, f"init: create {filepath}")
+                print(f"✅ Created {filepath} on GitHub")
+            else:
+                print(f"✅ {filepath} already exists")
+        # Load prefixes into cache
+        prefixes, _ = await github_read_json(session, FILE_PREFIXES)
+        _prefix_cache[:] = prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
+    print(f"✅ Active prefixes: {_prefix_cache}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /setup
@@ -1514,6 +1554,638 @@ async def setup_timezone_menu(
         await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PREFIX COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def is_admin(ctx):
+    return ctx.author.guild_permissions.administrator
+
+def has_allowed_role_prefix():
+    async def predicate(ctx):
+        if not ALLOWED_ROLE_NAMES:
+            return True
+        user_roles = {role.name for role in ctx.author.roles}
+        if user_roles & ALLOWED_ROLE_NAMES:
+            return True
+        roles_list = ", ".join(sorted(ALLOWED_ROLE_NAMES))
+        await ctx.send(f"❌ You need one of these roles: `{roles_list}`")
+        return False
+    return commands.check(predicate)
+
+# ── ?help ─────────────────────────────────────────────────────────────────────
+
+@bot.command(name="help")
+async def prefix_help(ctx, command_name: str = None):
+    prefixes = _prefix_cache
+    p = prefixes[0] if prefixes else "?"
+
+    if command_name:
+        help_map = {
+            "setup":              f"`{p}setup <anilist_id> <mal_id> [author_name]`\nLink your AniList and MAL accounts.",
+            "myprofile":          f"`{p}myprofile`\nView your saved profile.",
+            "add_anime":          f"`{p}add_anime <anilist_url> <mal_url> <reason>`\nAdd an underrated anime.",
+            "add_manga":          f"`{p}add_manga <anilist_url> <mal_url> <reason>`\nAdd an underrated manga.",
+            "list_anime":         f"`{p}list_anime`\nView the underrated anime list.",
+            "list_manga":         f"`{p}list_manga`\nView the underrated manga list.",
+            "remove_anime":       f"`{p}remove_anime <title or id>`\nRemove an anime from the list.",
+            "remove_manga":       f"`{p}remove_manga <title or id>`\nRemove a manga from the list.",
+            "build":              f"`{p}build <platforms> <build_type> [pr_numbers] [tag]`\nTrigger a build. Platforms: all/android/linux/windows/macos/ios. Type: alpha/stable",
+            "create_tag":         f"`{p}create_tag <tag> <message>`\nCreate a Git tag on the beta branch.",
+            "delete_tag":         f"`{p}delete_tag <tag>`\nDelete a Git tag and its release.",
+            "latest_run":         f"`{p}latest_run`\nCheck the latest workflow run.",
+            "set_timezone":       f"`{p}set_timezone <TZ_CODE>`\nSet your timezone. e.g. `{p}set_timezone IST`",
+            "remove_timezone":    f"`{p}remove_timezone`\nRemove your timezone.",
+            "my_time":            f"`{p}my_time`\nCheck your current local time.",
+            "timezone_list":      f"`{p}timezone_list`\nView all available timezones.",
+            "add_friend_timezone":f"`{p}add_friend_timezone @user <TZ_CODE>`\nSet a friend's timezone.",
+            "friend_time":        f"`{p}friend_time @user`\nCheck a friend's current time.",
+            "list_friends":       f"`{p}list_friends`\nShow all team members' times.",
+            "friend_compare":     f"`{p}friend_compare @user`\nCompare time difference with a friend.",
+            "timezone_convert":   f"`{p}timezone_convert <FROM> <TO> <HH:MM>`\ne.g. `{p}timezone_convert IST EST 14:30`",
+            "timezone_stats":     f"`{p}timezone_stats`\nShow timezone distribution across the team.",
+            "night_mode":         f"`{p}night_mode @user`\nCheck if a friend is sleeping (10PM-7AM).",
+            "similar_timezone":   f"`{p}similar_timezone`\nFind members within 2 hours of your timezone.",
+            "world_clock":        f"`{p}world_clock`\nShow current time in all team timezones.",
+            "setprefix":          f"`{p}setprefix add <prefix>` — Add a prefix\n`{p}setprefix remove <prefix>` — Remove a prefix\n`{p}setprefix list` — Show active prefixes\n*(Admin only)*",
+        }
+        info = help_map.get(command_name.lower())
+        if info:
+            embed = discord.Embed(title=f"📖 Help: {command_name}", description=info, color=0x0066FF)
+        else:
+            embed = discord.Embed(title="❌ Unknown command", description=f"No help found for `{command_name}`.", color=0xDA3633)
+        await ctx.send(embed=embed)
+        return
+
+    embed = discord.Embed(title="📖 Bot Commands", description=f"Active prefixes: `{'`, `'.join(prefixes)}`\nUse `{p}help <command>` for details.", color=0x0066FF)
+    embed.add_field(name="👤 Profile", value=f"`setup` `myprofile`", inline=False)
+    embed.add_field(name="🎌 Anime / Manga", value=f"`add_anime` `add_manga` `list_anime` `list_manga` `remove_anime` `remove_manga`", inline=False)
+    embed.add_field(name="🔨 Build / GitHub", value=f"`build` `create_tag` `delete_tag` `latest_run`", inline=False)
+    embed.add_field(name="🌍 Timezone", value=f"`set_timezone` `remove_timezone` `my_time` `timezone_list`\n`add_friend_timezone` `friend_time` `list_friends` `friend_compare`\n`timezone_convert` `timezone_stats` `night_mode` `similar_timezone` `world_clock`", inline=False)
+    embed.add_field(name="⚙️ Admin", value=f"`setprefix`", inline=False)
+    embed.set_footer(text="Slash commands (/) also available for all commands.")
+    await ctx.send(embed=embed)
+
+# ── ?setprefix ────────────────────────────────────────────────────────────────
+
+@bot.command(name="setprefix")
+async def prefix_setprefix(ctx, action: str = None, new_prefix: str = None):
+    if not is_admin(ctx):
+        await ctx.send(embed=discord.Embed(title="❌ Admin only", color=0xDA3633))
+        return
+
+    if action is None or action.lower() not in ("add", "remove", "list"):
+        await ctx.send(embed=discord.Embed(title="Usage", description=f"`{_prefix_cache[0]}setprefix add <prefix>`\n`{_prefix_cache[0]}setprefix remove <prefix>`\n`{_prefix_cache[0]}setprefix list`", color=0x0066FF))
+        return
+
+    async with aiohttp.ClientSession() as session:
+        prefixes, sha = await github_read_json(session, FILE_PREFIXES)
+        if not isinstance(prefixes, list):
+            prefixes = DEFAULT_PREFIXES[:]
+
+        if action.lower() == "list":
+            await ctx.send(embed=discord.Embed(title="⚙️ Active Prefixes", description="\n".join(f"`{p}`" for p in prefixes), color=0x0066FF))
+            return
+
+        if not new_prefix:
+            await ctx.send("❌ Please provide a prefix.")
+            return
+
+        if action.lower() == "add":
+            if new_prefix in prefixes:
+                await ctx.send(embed=discord.Embed(title="⚠️ Already exists", description=f"`{new_prefix}` is already a prefix.", color=0xFFA500))
+                return
+            if len(new_prefix) > 5:
+                await ctx.send("❌ Prefix must be 5 characters or less.")
+                return
+            prefixes.append(new_prefix)
+            ok = await github_write_json(session, FILE_PREFIXES, prefixes, sha, f"Add prefix: {new_prefix}")
+            if ok:
+                _prefix_cache[:] = prefixes
+                await ctx.send(embed=discord.Embed(title="✅ Prefix Added", description=f"Added `{new_prefix}`\nActive: {', '.join(f'`{p}`' for p in prefixes)}", color=0x2EA043))
+            else:
+                await ctx.send(embed=discord.Embed(title="❌ Failed to save", color=0xDA3633))
+
+        elif action.lower() == "remove":
+            if new_prefix not in prefixes:
+                await ctx.send(embed=discord.Embed(title="❌ Not found", description=f"`{new_prefix}` is not an active prefix.", color=0xDA3633))
+                return
+            if len(prefixes) == 1:
+                await ctx.send("❌ Can't remove the last prefix — add another one first.")
+                return
+            prefixes.remove(new_prefix)
+            ok = await github_write_json(session, FILE_PREFIXES, prefixes, sha, f"Remove prefix: {new_prefix}")
+            if ok:
+                _prefix_cache[:] = prefixes
+                await ctx.send(embed=discord.Embed(title="✅ Prefix Removed", description=f"Removed `{new_prefix}`\nActive: {', '.join(f'`{p}`' for p in prefixes)}", color=0x2EA043))
+            else:
+                await ctx.send(embed=discord.Embed(title="❌ Failed to save", color=0xDA3633))
+
+# ── ?setup ────────────────────────────────────────────────────────────────────
+
+@bot.command(name="setup")
+async def prefix_setup(ctx, anilist_user_id: int = None, mal_user_id: int = None, *, author_name: str = ""):
+    if not anilist_user_id or not mal_user_id:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}setup <anilist_id> <mal_id> [author_name]`")
+        return
+    discord_id = str(ctx.author.id)
+    author_display = author_name or ctx.author.display_name
+    async with aiohttp.ClientSession() as session:
+        users, sha = await github_read_json(session, FILE_USERS)
+        users[discord_id] = {"anilist_user_id": anilist_user_id, "mal_user_id": mal_user_id, "author_name": author_display}
+        ok = await github_write_json(session, FILE_USERS, users, sha, f"Setup profile for {ctx.author.display_name}")
+    if ok:
+        embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
+        embed.add_field(name="AniList ID", value=f"`{anilist_user_id}`", inline=True)
+        embed.add_field(name="MAL ID", value=f"`{mal_user_id}`", inline=True)
+        embed.add_field(name="Author Name", value=author_display, inline=True)
+    else:
+        embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
+    await ctx.send(embed=embed)
+
+# ── ?myprofile ────────────────────────────────────────────────────────────────
+
+@bot.command(name="myprofile")
+async def prefix_myprofile(ctx):
+    async with aiohttp.ClientSession() as session:
+        users, _ = await github_read_json(session, FILE_USERS)
+    profile = users.get(str(ctx.author.id))
+    if not profile:
+        await ctx.send(f"❌ No profile found. Run `{_prefix_cache[0]}setup` first!")
+        return
+    embed = discord.Embed(title="👤 Your Profile", color=0x0078D4)
+    embed.add_field(name="Author Name", value=profile.get("author_name", "—"), inline=True)
+    embed.add_field(name="AniList ID",  value=f"`{profile.get('anilist_user_id', '—')}`", inline=True)
+    embed.add_field(name="MAL ID",      value=f"`{profile.get('mal_user_id', '—')}`", inline=True)
+    await ctx.send(embed=embed)
+
+# ── ?add_anime / ?add_manga ───────────────────────────────────────────────────
+
+async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
+    anilist_id = extract_anilist_id(anilist_link)
+    mal_id     = extract_mal_id(mal_link)
+    if not anilist_id:
+        await ctx.send("❌ Invalid AniList link."); return
+    if not mal_id:
+        await ctx.send("❌ Invalid MAL link."); return
+
+    async with aiohttp.ClientSession() as session:
+        users, _ = await github_read_json(session, FILE_USERS)
+        profile  = users.get(str(ctx.author.id))
+        if not profile:
+            await ctx.send(f"❌ Run `{_prefix_cache[0]}setup` first!"); return
+        media = await fetch_anilist(session, anilist_id, media_type)
+
+    if not media:
+        await ctx.send("❌ Could not fetch info from AniList."); return
+
+    titles    = media["title"]
+    title     = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
+    cover_url = media.get("coverImage", {}).get("large", "")
+    score     = media.get("averageScore") or "N/A"
+    author    = profile.get("author_name") or profile.get("author") or ctx.author.display_name
+
+    entry = {
+        "anilist_id":      anilist_id,
+        "mal_id":          mal_id,
+        "title":           title,
+        "anilist_user_id": profile["anilist_user_id"],
+        "mal_user_id":     profile["mal_user_id"],
+        "author":          author,
+        "reason":          reason,
+    }
+    filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
+
+    preview = discord.Embed(title=f"📋 Preview — {title}", description=f"React to confirm adding to `{filepath}`", color=0x0078D4)
+    preview.add_field(name="Score",  value=f"`{score}`", inline=True)
+    preview.add_field(name="Author", value=author,       inline=True)
+    preview.add_field(name="Reason", value=reason,       inline=False)
+    if cover_url:
+        preview.set_thumbnail(url=cover_url)
+
+    class PrefixConfirmView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=120)
+        @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.success)
+        async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Not your confirmation!", ephemeral=True); return
+            await interaction.response.defer()
+            self.stop()
+            async with aiohttp.ClientSession() as session:
+                entries, sha = await github_read_json(session, filepath)
+                if any(e.get("anilist_id") == anilist_id for e in entries):
+                    await interaction.followup.send("⚠️ Already in the list!"); return
+                entries.append(entry)
+                ok = await github_write_json(session, filepath, entries, sha, f"Add {title}")
+            await interaction.followup.send(embed=discord.Embed(title=f"🎉 Added {title}!", color=0x2EA043) if ok else discord.Embed(title="❌ Failed", color=0xDA3633))
+            for child in self.children: child.disabled = True
+            await interaction.message.edit(view=self)
+        @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+        async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("Not your confirmation!", ephemeral=True); return
+            self.stop()
+            await interaction.response.send_message("Cancelled.", ephemeral=True)
+            for child in self.children: child.disabled = True
+            await interaction.message.edit(view=self)
+
+    await ctx.send(embed=preview, view=PrefixConfirmView())
+
+@bot.command(name="add_anime")
+@has_allowed_role_prefix()
+async def prefix_add_anime(ctx, anilist_link: str = None, mal_link: str = None, *, reason: str = None):
+    if not anilist_link or not mal_link or not reason:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}add_anime <anilist_url> <mal_url> <reason>`"); return
+    await prefix_handle_add(ctx, anilist_link, mal_link, reason, "ANIME")
+
+@bot.command(name="add_manga")
+@has_allowed_role_prefix()
+async def prefix_add_manga(ctx, anilist_link: str = None, mal_link: str = None, *, reason: str = None):
+    if not anilist_link or not mal_link or not reason:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}add_manga <anilist_url> <mal_url> <reason>`"); return
+    await prefix_handle_add(ctx, anilist_link, mal_link, reason, "MANGA")
+
+# ── ?list_anime / ?list_manga ─────────────────────────────────────────────────
+
+@bot.command(name="list_anime")
+@has_allowed_role_prefix()
+async def prefix_list_anime(ctx):
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_ANIME)
+    if not entries:
+        await ctx.send(embed=discord.Embed(title="Anime List", description="No anime added yet.", color=0x0066FF)); return
+    embeds = []
+    for i, entry in enumerate(entries, 1):
+        e = discord.Embed(title=entry.get("title", "Unknown"), description=entry.get("reason", "No reason"), color=0x0066FF)
+        e.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        e.set_footer(text=f"{i}/{len(entries)}")
+        embeds.append(e)
+    await ctx.send(embeds=embeds[:10])
+
+@bot.command(name="list_manga")
+@has_allowed_role_prefix()
+async def prefix_list_manga(ctx):
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_MANGA)
+    if not entries:
+        await ctx.send(embed=discord.Embed(title="Manga List", description="No manga added yet.", color=0xFF6B6B)); return
+    embeds = []
+    for i, entry in enumerate(entries, 1):
+        e = discord.Embed(title=entry.get("title", "Unknown"), description=entry.get("reason", "No reason"), color=0xFF6B6B)
+        e.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        e.set_footer(text=f"{i}/{len(entries)}")
+        embeds.append(e)
+    await ctx.send(embeds=embeds[:10])
+
+# ── ?remove_anime / ?remove_manga ─────────────────────────────────────────────
+
+async def prefix_remove(ctx, search_term, filepath, label):
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+    found = next((i for i, e in enumerate(entries) if (search_term.isdigit() and str(e.get("anilist_id")) == search_term) or search_term.lower() in e.get("title", "").lower()), None)
+    if found is None:
+        await ctx.send(embed=discord.Embed(title="Not Found", description=f"No {label} matching `{search_term}`", color=0xDA3633)); return
+    removed = entries.pop(found)
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(session, filepath, entries, sha, f"Remove {label}: {removed.get('title')}")
+    await ctx.send(embed=discord.Embed(title="✅ Removed" if ok else "❌ Failed", description=removed.get("title") if ok else None, color=0x2EA043 if ok else 0xDA3633))
+
+@bot.command(name="remove_anime")
+@has_allowed_role_prefix()
+async def prefix_remove_anime(ctx, *, search_term: str = None):
+    if not search_term:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}remove_anime <title or id>`"); return
+    await prefix_remove(ctx, search_term, FILE_ANIME, "anime")
+
+@bot.command(name="remove_manga")
+@has_allowed_role_prefix()
+async def prefix_remove_manga(ctx, *, search_term: str = None):
+    if not search_term:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}remove_manga <title or id>`"); return
+    await prefix_remove(ctx, search_term, FILE_MANGA, "manga")
+
+# ── ?build ────────────────────────────────────────────────────────────────────
+
+VALID_PLATFORMS = {"all","android","linux","windows","macos","ios","android,linux,ios","android,ios","android,windows","android,linux","android,macos","linux,windows","linux,macos","windows,macos","ios,macos"}
+VALID_BUILD_TYPES = {"alpha", "stable"}
+
+@bot.command(name="build")
+@has_allowed_role_prefix()
+async def prefix_build(ctx, platforms: str = None, build_type: str = None, pr_numbers: str = "", tag_override: str = ""):
+    if not platforms or not build_type:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}build <platforms> <build_type> [pr_numbers] [tag]`\nPlatforms: `all`, `android`, `linux`, `windows`, `macos`, `ios`\nType: `alpha`, `stable`"); return
+    if platforms not in VALID_PLATFORMS:
+        await ctx.send(f"❌ Invalid platform. Valid: {', '.join(sorted(VALID_PLATFORMS))}"); return
+    if build_type not in VALID_BUILD_TYPES:
+        await ctx.send(f"❌ Invalid build type. Use `alpha` or `stable`."); return
+    payload = {"ref": GITHUB_BRANCH, "inputs": {"platforms": platforms, "build_type": build_type, "pr_numbers": pr_numbers, "tag_override": tag_override, "triggered_by": str(ctx.author.id)}}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches", headers=gh_headers(), json=payload) as r:
+            status = r.status; body = await r.text()
+    if status == 204:
+        embed = discord.Embed(title="🔨 Build Triggered!", color=0x2EA043)
+        embed.add_field(name="Platforms", value=f"`{platforms}`", inline=True)
+        embed.add_field(name="Type", value=f"`{build_type}`", inline=True)
+        if pr_numbers: embed.add_field(name="PRs", value=pr_numbers, inline=True)
+        if tag_override: embed.add_field(name="Tag", value=f"`{tag_override}`", inline=True)
+        embed.set_footer(text=f"Triggered by {ctx.author.display_name}")
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(embed=discord.Embed(title="❌ Build Failed", description=f"Status: `{status}`\n```{body[:500]}```", color=0xDA3633))
+
+# ── ?create_tag / ?delete_tag ─────────────────────────────────────────────────
+
+@bot.command(name="create_tag")
+@has_allowed_role_prefix()
+async def prefix_create_tag(ctx, tag: str = None, *, message: str = ""):
+    if not tag:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}create_tag <tag> <message>`"); return
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/ref/heads/{GITHUB_BRANCH}", headers=gh_headers()) as r:
+            if r.status != 200: await ctx.send("❌ Branch not found."); return
+            sha = (await r.json())["object"]["sha"]
+        async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/tags", headers=gh_headers(), json={"tag": tag, "message": message, "object": sha, "type": "commit"}) as r:
+            if r.status not in (200, 201): await ctx.send("❌ Tag creation failed."); return
+            tag_sha = (await r.json())["sha"]
+        async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs", headers=gh_headers(), json={"ref": f"refs/tags/{tag}", "sha": tag_sha}) as r:
+            ok = r.status in (200, 201)
+    if ok:
+        embed = discord.Embed(title="🏷️ Tag Created!", color=0x2EA043)
+        embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
+        embed.add_field(name="SHA", value=f"`{sha[:7]}`", inline=True)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("❌ Failed to create ref.")
+
+@bot.command(name="delete_tag")
+@has_allowed_role_prefix()
+async def prefix_delete_tag(ctx, tag: str = None):
+    if not tag:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}delete_tag <tag>`"); return
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs/tags/{tag}", headers=gh_headers()) as r:
+            tag_status = r.status
+        if tag_status in (200, 204):
+            async with session.delete(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tags/{tag}", headers=gh_headers()) as r:
+                rel_status = r.status
+        else:
+            rel_status = 404
+    if tag_status in (200, 204):
+        embed = discord.Embed(title="✅ Tag Deleted!", color=0x2EA043)
+        embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
+        embed.add_field(name="Release", value="Deleted" if rel_status in (200, 204) else "Not found", inline=True)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(embed=discord.Embed(title="❌ Tag not found", description=f"`{tag}`", color=0xDA3633))
+
+# ── ?latest_run ───────────────────────────────────────────────────────────────
+
+@bot.command(name="latest_run")
+@has_allowed_role_prefix()
+async def prefix_latest_run(ctx):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/beta_manual.yml/runs?per_page=1&branch={GITHUB_BRANCH}", headers=gh_headers()) as r:
+            if r.status != 200: await ctx.send("❌ Error fetching runs."); return
+            data = await r.json()
+    if not data.get("workflow_runs"):
+        await ctx.send("❌ No runs found."); return
+    run = data["workflow_runs"][0]
+    conclusion = run.get("conclusion") or "in_progress"
+    EMOJI_MAP = {"success": "✅", "failure": "❌", "cancelled": "🚫", "in_progress": "⏳"}
+    embed = discord.Embed(title=f"{EMOJI_MAP.get(conclusion,'❓')} {run['name']}", color=0x2EA043 if conclusion == "success" else (0xDA3633 if conclusion == "failure" else 0xFFA500))
+    embed.add_field(name="Status", value=f"`{conclusion}`", inline=True)
+    embed.add_field(name="Run #", value=f"`{run['run_number']}`", inline=True)
+    embed.add_field(name="Link", value=f"[View Run]({run['html_url']})", inline=False)
+    await ctx.send(embed=embed)
+
+# ── ?set_timezone ─────────────────────────────────────────────────────────────
+
+@bot.command(name="set_timezone")
+async def prefix_set_timezone(ctx, timezone: str = None):
+    if not timezone:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}set_timezone <TZ_CODE>` e.g. `{_prefix_cache[0]}set_timezone IST`"); return
+    tz_upper = timezone.upper()
+    if tz_upper not in TIMEZONES:
+        await ctx.send(embed=discord.Embed(title="❌ Invalid Timezone", description=f"`{tz_upper}` not found. Use `{_prefix_cache[0]}timezone_list` to see all.", color=0xDA3633)); return
+    discord_id = str(ctx.author.id)
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        tz_info = TIMEZONES[tz_upper]
+        timezones[discord_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
+        ok = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Set timezone for {ctx.author.display_name}")
+    await ctx.send(embed=discord.Embed(title="✅ Timezone Set!", description=f"**{tz_info['code']}** ({tz_info['utc']}) - {tz_info['name']}", color=0x2EA043) if ok else discord.Embed(title="❌ Failed", color=0xDA3633))
+
+# ── ?remove_timezone ──────────────────────────────────────────────────────────
+
+@bot.command(name="remove_timezone")
+async def prefix_remove_timezone(ctx):
+    discord_id = str(ctx.author.id)
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        if discord_id not in timezones:
+            await ctx.send("❌ No timezone set."); return
+        del timezones[discord_id]
+        ok = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Remove timezone for {ctx.author.display_name}")
+    await ctx.send(embed=discord.Embed(title="✅ Timezone Removed!" if ok else "❌ Failed", color=0x2EA043 if ok else 0xDA3633))
+
+# ── ?my_time ──────────────────────────────────────────────────────────────────
+
+@bot.command(name="my_time")
+async def prefix_my_time(ctx):
+    from datetime import datetime, timedelta
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    tz_data = timezones.get(str(ctx.author.id))
+    if not tz_data:
+        await ctx.send(f"❌ Timezone not set. Use `{_prefix_cache[0]}set_timezone <TZ_CODE>`"); return
+    your_time = datetime.utcnow() + timedelta(hours=tz_data["offset"])
+    embed = discord.Embed(title="🕐 Your Time", description=f"**{your_time.strftime('%I:%M %p')}**", color=0x0066FF)
+    embed.add_field(name="Timezone", value=f"{tz_data['code']} ({tz_data['utc']})", inline=True)
+    await ctx.send(embed=embed)
+
+# ── ?timezone_list ────────────────────────────────────────────────────────────
+
+@bot.command(name="timezone_list")
+async def prefix_timezone_list(ctx):
+    regions = {}
+    for tz, info in TIMEZONES.items():
+        regions.setdefault(info["region"], []).append(f"**{info['code']}** ({info['utc']}) - {info['name']}")
+    embeds = [discord.Embed(title=f"🌍 {region}", description="\n".join(tzs), color=0x0066FF) for region, tzs in sorted(regions.items())]
+    await ctx.send(embeds=embeds)
+
+# ── ?add_friend_timezone ──────────────────────────────────────────────────────
+
+@bot.command(name="add_friend_timezone")
+async def prefix_add_friend_timezone(ctx, user: discord.User = None, timezone: str = None):
+    if not user or not timezone:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}add_friend_timezone @user <TZ_CODE>`"); return
+    tz_upper = timezone.upper()
+    if tz_upper not in TIMEZONES:
+        await ctx.send(f"❌ Invalid timezone. Use `{_prefix_cache[0]}timezone_list` to see all."); return
+    async with aiohttp.ClientSession() as session:
+        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
+        tz_info = TIMEZONES[tz_upper]
+        timezones[str(user.id)] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
+        ok = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Add timezone for {user.display_name}")
+    await ctx.send(embed=discord.Embed(title="✅ Friend's Timezone Added!" if ok else "❌ Failed", description=f"{user.mention} → **{tz_info['code']}** ({tz_info['utc']})" if ok else None, color=0x2EA043 if ok else 0xDA3633))
+
+# ── ?friend_time ──────────────────────────────────────────────────────────────
+
+@bot.command(name="friend_time")
+async def prefix_friend_time(ctx, user: discord.User = None):
+    if not user:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}friend_time @user`"); return
+    from datetime import datetime, timedelta
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    tz_data = timezones.get(str(user.id))
+    if not tz_data:
+        await ctx.send(f"❌ {user.display_name} hasn't set their timezone."); return
+    friend_time = datetime.utcnow() + timedelta(hours=tz_data["offset"])
+    embed = discord.Embed(title=f"🕐 {user.display_name}'s Time", description=f"**{friend_time.strftime('%I:%M %p')}**", color=0x0066FF)
+    embed.add_field(name="Timezone", value=f"{tz_data['code']} ({tz_data['utc']})", inline=True)
+    await ctx.send(embed=embed)
+
+# ── ?list_friends ─────────────────────────────────────────────────────────────
+
+@bot.command(name="list_friends")
+async def prefix_list_friends(ctx):
+    from datetime import datetime, timedelta
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    if not timezones:
+        await ctx.send("❌ No timezones set."); return
+    utc_now = datetime.utcnow()
+    embed = discord.Embed(title="🌍 Friends' Times", color=0x0066FF)
+    for user_id, tz_data in sorted(timezones.items()):
+        try:
+            user = await bot.fetch_user(int(user_id))
+            name = user.display_name
+        except:
+            name = f"User {user_id}"
+        t = utc_now + timedelta(hours=tz_data["offset"])
+        embed.add_field(name=f"👤 {name}", value=f"🕐 {t.strftime('%I:%M %p')} ({tz_data['code']})", inline=False)
+    await ctx.send(embed=embed)
+
+# ── ?friend_compare ───────────────────────────────────────────────────────────
+
+@bot.command(name="friend_compare")
+async def prefix_friend_compare(ctx, user: discord.User = None):
+    if not user:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}friend_compare @user`"); return
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    your_tz   = timezones.get(str(ctx.author.id))
+    friend_tz = timezones.get(str(user.id))
+    if not your_tz or not friend_tz:
+        await ctx.send("❌ Both users need a timezone set."); return
+    diff = friend_tz["offset"] - your_tz["offset"]
+    sign = "+" if diff >= 0 else ""
+    embed = discord.Embed(title="⏰ Time Difference", color=0x0066FF)
+    embed.add_field(name="You",                value=f"{your_tz['code']} ({your_tz['utc']})",      inline=True)
+    embed.add_field(name=user.display_name,    value=f"{friend_tz['code']} ({friend_tz['utc']})",  inline=True)
+    embed.add_field(name="Difference",         value=f"{sign}{diff}h",                             inline=False)
+    await ctx.send(embed=embed)
+
+# ── ?timezone_convert ─────────────────────────────────────────────────────────
+
+@bot.command(name="timezone_convert")
+async def prefix_timezone_convert(ctx, from_tz: str = None, to_tz: str = None, time: str = None):
+    if not from_tz or not to_tz or not time:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}timezone_convert <FROM> <TO> <HH:MM>` e.g. `{_prefix_cache[0]}timezone_convert IST EST 14:30`"); return
+    from_upper, to_upper = from_tz.upper(), to_tz.upper()
+    if from_upper not in TIMEZONES or to_upper not in TIMEZONES:
+        await ctx.send("❌ Invalid timezone(s)."); return
+    try:
+        hour, minute = map(int, time.split(":"))
+        diff = TIMEZONES[to_upper]["offset"] - TIMEZONES[from_upper]["offset"]
+        new_hour = (hour + int(diff)) % 24
+        embed = discord.Embed(title="🕐 Time Conversion", color=0x0066FF)
+        embed.add_field(name=TIMEZONES[from_upper]["code"], value=f"{hour:02d}:{minute:02d}", inline=True)
+        embed.add_field(name=TIMEZONES[to_upper]["code"],   value=f"{new_hour:02d}:{minute:02d}", inline=True)
+        await ctx.send(embed=embed)
+    except:
+        await ctx.send("❌ Invalid time format. Use HH:MM (24h).")
+
+# ── ?timezone_stats ───────────────────────────────────────────────────────────
+
+@bot.command(name="timezone_stats")
+async def prefix_timezone_stats(ctx):
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    if not timezones:
+        await ctx.send("❌ No timezones set."); return
+    tz_count = {}
+    for tz_data in timezones.values():
+        tz_count[tz_data["code"]] = tz_count.get(tz_data["code"], 0) + 1
+    embed = discord.Embed(title="📊 Timezone Distribution", color=0x0066FF)
+    for tz, count in sorted(tz_count.items(), key=lambda x: x[1], reverse=True):
+        embed.add_field(name=tz, value=f"{count} member(s)", inline=True)
+    await ctx.send(embed=embed)
+
+# ── ?night_mode ───────────────────────────────────────────────────────────────
+
+@bot.command(name="night_mode")
+async def prefix_night_mode(ctx, user: discord.User = None):
+    if not user:
+        await ctx.send(f"Usage: `{_prefix_cache[0]}night_mode @user`"); return
+    from datetime import datetime, timedelta
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    tz_data = timezones.get(str(user.id))
+    if not tz_data:
+        await ctx.send(f"❌ {user.display_name} hasn't set their timezone."); return
+    friend_time = datetime.utcnow() + timedelta(hours=tz_data["offset"])
+    is_sleeping = friend_time.hour < 7 or friend_time.hour >= 22
+    embed = discord.Embed(title=f"😴 {user.display_name}", description="🔴 SLEEPING" if is_sleeping else "🟢 AWAKE", color=0xDA3633 if is_sleeping else 0x2EA043)
+    embed.add_field(name="Time", value=friend_time.strftime("%I:%M %p"), inline=True)
+    embed.add_field(name="Timezone", value=f"{tz_data['code']} ({tz_data['utc']})", inline=True)
+    await ctx.send(embed=embed)
+
+# ── ?similar_timezone ─────────────────────────────────────────────────────────
+
+@bot.command(name="similar_timezone")
+async def prefix_similar_timezone(ctx):
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    your_id = str(ctx.author.id)
+    if your_id not in timezones:
+        await ctx.send(f"❌ Your timezone not set. Use `{_prefix_cache[0]}set_timezone <TZ_CODE>`"); return
+    your_offset = timezones[your_id]["offset"]
+    similar = [(tz_data["code"], abs(tz_data["offset"] - your_offset), uid) for uid, tz_data in timezones.items() if uid != your_id and abs(tz_data["offset"] - your_offset) <= 2]
+    embed = discord.Embed(title="🌍 Similar Timezones", color=0x0066FF)
+    if similar:
+        for tz, diff, uid in sorted(similar, key=lambda x: x[1]):
+            try:
+                u = await bot.fetch_user(int(uid))
+                name = u.display_name
+            except:
+                name = f"User {uid}"
+            embed.add_field(name=f"👤 {name}", value=f"{tz} ({diff}h diff)", inline=False)
+    else:
+        embed.description = "No one within 2 hours."
+    await ctx.send(embed=embed)
+
+# ── ?world_clock ──────────────────────────────────────────────────────────────
+
+@bot.command(name="world_clock")
+async def prefix_world_clock(ctx):
+    from datetime import datetime, timedelta
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    if not timezones:
+        await ctx.send("❌ No timezones set."); return
+    utc_now = datetime.utcnow()
+    embeds, seen = [], set()
+    for tz_data in timezones.values():
+        if tz_data["code"] in seen: continue
+        seen.add(tz_data["code"])
+        t = utc_now + timedelta(hours=tz_data["offset"])
+        e = discord.Embed(title=f"🕐 {tz_data['code']} ({tz_data['utc']})", color=0x0066FF)
+        e.add_field(name="Time", value=t.strftime("%I:%M %p"), inline=True)
+        e.add_field(name="Date", value=t.strftime("%a, %b %d"), inline=True)
+        embeds.append(e)
+    await ctx.send(embeds=embeds[:10])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Run bot + health server together
