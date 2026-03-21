@@ -979,9 +979,9 @@ async def timezone_list(interaction: discord.Interaction):
         region = info["region"]
         if region not in regions:
             regions[region] = []
-        offset = info["offset"]
-        sign = "+" if offset >= 0 else ""
-        regions[region].append(f"**{tz}** (UTC{sign}{offset}) - {info['name']}")
+        code = info.get("code", tz)
+        utc_offset = info.get("utc", f"UTC{'+' if info['offset'] >= 0 else ''}{info['offset']}")
+        regions[region].append(f"**{code}** ({utc_offset}) - {info['name']}")
 
     embeds = []
     for region in sorted(regions.keys()):
