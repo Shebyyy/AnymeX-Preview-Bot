@@ -29,99 +29,75 @@ FILE_MANGA     = "underrated_manga.json"
 FILE_USERS     = "users.json"
 FILE_TIMEZONES = "timezones.json"
 
-# ── COMPLETE WORLD TIMEZONE DATABASE ───────────────────────────────────────────
+# ── COMPLETE WORLD TIMEZONE DATABASE (NEW FORMAT ONLY) ────────────────────────
 TIMEZONES = {
     # UTC−12:00
     "BIT": {"code": "BIT", "name": "Baker Island Time", "offset": -12.0, "utc": "UTC-12:00", "region": "Pacific", "iana": "Etc/GMT+12"},
-    
     # UTC−11:00
     "SST": {"code": "SST", "name": "Samoa Standard Time", "offset": -11.0, "utc": "UTC-11:00", "region": "Pacific", "iana": "Pacific/Pago_Pago"},
-    
     # UTC−10:00
     "HST": {"code": "HST", "name": "Hawaii-Aleutian Standard Time", "offset": -10.0, "utc": "UTC-10:00", "region": "Americas", "iana": "Pacific/Honolulu"},
-    
     # UTC−09:00
     "AKST": {"code": "AKST", "name": "Alaska Standard Time", "offset": -9.0, "utc": "UTC-09:00", "region": "Americas", "iana": "America/Anchorage"},
     "AKDT": {"code": "AKDT", "name": "Alaska Daylight Time", "offset": -8.0, "utc": "UTC-08:00", "region": "Americas", "iana": "America/Anchorage"},
-    
     # UTC−08:00
     "PST": {"code": "PST", "name": "Pacific Standard Time", "offset": -8.0, "utc": "UTC-08:00", "region": "Americas", "iana": "America/Los_Angeles"},
     "PDT": {"code": "PDT", "name": "Pacific Daylight Time", "offset": -7.0, "utc": "UTC-07:00", "region": "Americas", "iana": "America/Los_Angeles"},
-    
     # UTC−07:00
     "MST": {"code": "MST", "name": "Mountain Standard Time", "offset": -7.0, "utc": "UTC-07:00", "region": "Americas", "iana": "America/Denver"},
     "MDT": {"code": "MDT", "name": "Mountain Daylight Time", "offset": -6.0, "utc": "UTC-06:00", "region": "Americas", "iana": "America/Denver"},
-    
     # UTC−06:00
     "CST_US": {"code": "CST", "name": "Central Standard Time (US)", "offset": -6.0, "utc": "UTC-06:00", "region": "Americas", "iana": "America/Chicago"},
     "CDT": {"code": "CDT", "name": "Central Daylight Time", "offset": -5.0, "utc": "UTC-05:00", "region": "Americas", "iana": "America/Chicago"},
-    
     # UTC−05:00
     "EST": {"code": "EST", "name": "Eastern Standard Time", "offset": -5.0, "utc": "UTC-05:00", "region": "Americas", "iana": "America/New_York"},
     "EDT": {"code": "EDT", "name": "Eastern Daylight Time", "offset": -4.0, "utc": "UTC-04:00", "region": "Americas", "iana": "America/New_York"},
-    
     # UTC−04:00
     "AST": {"code": "AST", "name": "Atlantic Standard Time", "offset": -4.0, "utc": "UTC-04:00", "region": "Americas", "iana": "America/Halifax"},
     "ADT": {"code": "ADT", "name": "Atlantic Daylight Time", "offset": -3.0, "utc": "UTC-03:00", "region": "Americas", "iana": "America/Halifax"},
-    
     # UTC−03:00
     "ART": {"code": "ART", "name": "Argentina Time", "offset": -3.0, "utc": "UTC-03:00", "region": "Americas", "iana": "America/Argentina/Buenos_Aires"},
     "BRT": {"code": "BRT", "name": "Brasilia Time", "offset": -3.0, "utc": "UTC-03:00", "region": "Americas", "iana": "America/Sao_Paulo"},
-    
     # UTC−02:00
     "GMTSG": {"code": "GST", "name": "South Georgia Time", "offset": -2.0, "utc": "UTC-02:00", "region": "Atlantic", "iana": "Atlantic/South_Georgia"},
-    
     # UTC−01:00
     "AZOT": {"code": "AZOT", "name": "Azores Time", "offset": -1.0, "utc": "UTC-01:00", "region": "Atlantic", "iana": "Atlantic/Azores"},
-    
     # UTC±00:00
     "UTC": {"code": "UTC", "name": "Coordinated Universal Time", "offset": 0.0, "utc": "UTC±00:00", "region": "UTC", "iana": "UTC"},
     "GMT": {"code": "GMT", "name": "Greenwich Mean Time", "offset": 0.0, "utc": "UTC±00:00", "region": "Europe", "iana": "Europe/London"},
     "WET": {"code": "WET", "name": "Western European Time", "offset": 0.0, "utc": "UTC±00:00", "region": "Europe", "iana": "Europe/London"},
-    
     # UTC+01:00
     "WAT": {"code": "WAT", "name": "West Africa Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Africa", "iana": "Africa/Lagos"},
     "CET": {"code": "CET", "name": "Central European Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Europe", "iana": "Europe/Paris"},
     "BST": {"code": "BST", "name": "British Summer Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Europe", "iana": "Europe/London"},
     "IST_EU": {"code": "IST", "name": "Irish Standard Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Europe", "iana": "Europe/Dublin"},
-    
     # UTC+02:00
     "CEST": {"code": "CEST", "name": "Central European Summer Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Europe", "iana": "Europe/Paris"},
     "CAT": {"code": "CAT", "name": "Central Africa Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Africa", "iana": "Africa/Johannesburg"},
     "SAST": {"code": "SAST", "name": "South Africa Standard Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Africa", "iana": "Africa/Johannesburg"},
     "EET": {"code": "EET", "name": "Eastern European Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Europe", "iana": "Europe/Athens"},
     "EGT": {"code": "EGT", "name": "Egypt Standard Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Africa", "iana": "Africa/Cairo"},
-    
     # UTC+03:00
     "EAT": {"code": "EAT", "name": "East Africa Time", "offset": 3.0, "utc": "UTC+03:00", "region": "Africa", "iana": "Africa/Nairobi"},
     "MSK": {"code": "MSK", "name": "Moscow Standard Time", "offset": 3.0, "utc": "UTC+03:00", "region": "Europe", "iana": "Europe/Moscow"},
     "EEST": {"code": "EEST", "name": "Eastern European Summer Time", "offset": 3.0, "utc": "UTC+03:00", "region": "Europe", "iana": "Europe/Athens"},
-    
     # UTC+04:00
     "GST": {"code": "GST", "name": "Gulf Standard Time", "offset": 4.0, "utc": "UTC+04:00", "region": "Asia", "iana": "Asia/Dubai"},
-    
     # UTC+04:30
     "AFT": {"code": "AFT", "name": "Afghanistan Time", "offset": 4.5, "utc": "UTC+04:30", "region": "Asia", "iana": "Asia/Kabul"},
-    
     # UTC+05:00
     "PKT": {"code": "PKT", "name": "Pakistan Standard Time", "offset": 5.0, "utc": "UTC+05:00", "region": "Asia", "iana": "Asia/Karachi"},
-    
     # UTC+05:30
     "IST": {"code": "IST", "name": "Indian Standard Time", "offset": 5.5, "utc": "UTC+05:30", "region": "Asia", "iana": "Asia/Kolkata"},
-    
     # UTC+05:45
     "NPT": {"code": "NPT", "name": "Nepal Time", "offset": 5.75, "utc": "UTC+05:45", "region": "Asia", "iana": "Asia/Kathmandu"},
-    
     # UTC+06:00
     "BDT": {"code": "BDT", "name": "Bangladesh Standard Time", "offset": 6.0, "utc": "UTC+06:00", "region": "Asia", "iana": "Asia/Dhaka"},
-    
     # UTC+06:30
     "MMT": {"code": "MMT", "name": "Myanmar Time", "offset": 6.5, "utc": "UTC+06:30", "region": "Asia", "iana": "Asia/Yangon"},
-    
     # UTC+07:00
     "ICT": {"code": "ICT", "name": "Indochina Time", "offset": 7.0, "utc": "UTC+07:00", "region": "Asia", "iana": "Asia/Bangkok"},
     "WIB": {"code": "WIB", "name": "Western Indonesia Time", "offset": 7.0, "utc": "UTC+07:00", "region": "Asia", "iana": "Asia/Jakarta"},
-    
     # UTC+08:00
     "CST": {"code": "CST", "name": "China Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Shanghai"},
     "SGT": {"code": "SGT", "name": "Singapore Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Singapore"},
@@ -129,37 +105,28 @@ TIMEZONES = {
     "PHT": {"code": "PHT", "name": "Philippine Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Manila"},
     "HKT": {"code": "HKT", "name": "Hong Kong Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Hong_Kong"},
     "AWST": {"code": "AWST", "name": "Australian Western Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Australia", "iana": "Australia/Perth"},
-    
     # UTC+09:00
     "JST": {"code": "JST", "name": "Japan Standard Time", "offset": 9.0, "utc": "UTC+09:00", "region": "Asia", "iana": "Asia/Tokyo"},
     "KST": {"code": "KST", "name": "Korea Standard Time", "offset": 9.0, "utc": "UTC+09:00", "region": "Asia", "iana": "Asia/Seoul"},
-    
     # UTC+09:30
     "ACST": {"code": "ACST", "name": "Australian Central Standard Time", "offset": 9.5, "utc": "UTC+09:30", "region": "Australia", "iana": "Australia/Adelaide"},
     "ACDT": {"code": "ACDT", "name": "Australian Central Daylight Time", "offset": 10.5, "utc": "UTC+10:30", "region": "Australia", "iana": "Australia/Adelaide"},
-    
     # UTC+10:00
     "AEST": {"code": "AEST", "name": "Australian Eastern Standard Time", "offset": 10.0, "utc": "UTC+10:00", "region": "Australia", "iana": "Australia/Sydney"},
     "AEDT": {"code": "AEDT", "name": "Australian Eastern Daylight Time", "offset": 11.0, "utc": "UTC+11:00", "region": "Australia", "iana": "Australia/Sydney"},
-    
     # UTC+10:30
     "LHST": {"code": "LHST", "name": "Lord Howe Standard Time", "offset": 10.5, "utc": "UTC+10:30", "region": "Australia", "iana": "Australia/Lord_Howe"},
-    
     # UTC+11:00
     "SBT": {"code": "SBT", "name": "Solomon Islands Time", "offset": 11.0, "utc": "UTC+11:00", "region": "Pacific", "iana": "Pacific/Guadalcanal"},
     "NACT": {"code": "NACT", "name": "Norfolk Island Time", "offset": 11.0, "utc": "UTC+11:00", "region": "Pacific", "iana": "Pacific/Norfolk"},
-    
     # UTC+12:00
     "NZST": {"code": "NZST", "name": "New Zealand Standard Time", "offset": 12.0, "utc": "UTC+12:00", "region": "Pacific", "iana": "Pacific/Auckland"},
     "FJT": {"code": "FJT", "name": "Fiji Time", "offset": 12.0, "utc": "UTC+12:00", "region": "Pacific", "iana": "Pacific/Fiji"},
-    
     # UTC+12:45
     "CHAST": {"code": "CHAST", "name": "Chatham Islands Standard Time", "offset": 12.75, "utc": "UTC+12:45", "region": "Pacific", "iana": "Pacific/Chatham"},
-    
     # UTC+13:00
     "NZDT": {"code": "NZDT", "name": "New Zealand Daylight Time", "offset": 13.0, "utc": "UTC+13:00", "region": "Pacific", "iana": "Pacific/Auckland"},
     "PHOT": {"code": "PHOT", "name": "Phoenix Islands Time", "offset": 13.0, "utc": "UTC+13:00", "region": "Pacific", "iana": "Pacific/Kiritimati"},
-    
     # UTC+14:00
     "LINT": {"code": "LINT", "name": "Line Islands Time", "offset": 14.0, "utc": "UTC+14:00", "region": "Pacific", "iana": "Pacific/Kiritimati"},
 }
@@ -195,39 +162,6 @@ def has_allowed_role():
             await interaction.response.send_message("❌ This command is restricted.", ephemeral=True)
         return False
     return app_commands.check(predicate)
-
-# ── Timezone Autocomplete ──────────────────────────────────────────────────────
-
-async def timezone_autocomplete(
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
-    """Autocomplete for timezone selection"""
-    if not current:
-        # Show first 25 timezones if nothing typed
-        choices = [
-            app_commands.Choice(
-                name=f"{TIMEZONES[tz].get('code', tz)} ({TIMEZONES[tz]['utc']}) - {TIMEZONES[tz]['name']}",
-                value=tz
-            )
-            for tz in sorted(TIMEZONES.keys())[:25]
-        ]
-    else:
-        # Filter by what user typed
-        current_upper = current.upper()
-        matching = [
-            tz for tz in TIMEZONES.keys()
-            if current_upper in tz or current_upper in TIMEZONES[tz]['name'].upper()
-        ]
-        choices = [
-            app_commands.Choice(
-                name=f"{TIMEZONES[tz].get('code', tz)} ({TIMEZONES[tz]['utc']}) - {TIMEZONES[tz]['name']}",
-                value=tz
-            )
-            for tz in sorted(matching)[:25]
-        ]
-    
-    return choices
 
 # ── Health check server (keeps Render awake) ───────────────────────────────────
 
@@ -966,29 +900,52 @@ async def latest_run(interaction: discord.Interaction):
 # /build (add cancel button for running builds)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TIMEZONE AUTOCOMPLETE & HELPER FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def timezone_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Autocomplete for timezone selection - shows format: IST (UTC+05:30) - Indian Standard Time"""
+    if not current:
+        choices = [
+            app_commands.Choice(
+                name=f"{TIMEZONES[tz]['code']} ({TIMEZONES[tz]['utc']}) - {TIMEZONES[tz]['name']}",
+                value=tz
+            )
+            for tz in sorted(TIMEZONES.keys())[:25]
+        ]
+    else:
+        current_upper = current.upper()
+        matching = [tz for tz in TIMEZONES.keys() if current_upper in tz or current_upper in TIMEZONES[tz]['name'].upper()]
+        choices = [
+            app_commands.Choice(
+                name=f"{TIMEZONES[tz]['code']} ({TIMEZONES[tz]['utc']}) - {TIMEZONES[tz]['name']}",
+                value=tz
+            )
+            for tz in sorted(matching)[:25]
+        ]
+    return choices
+
+# ══════════════════════════════════════════════════════════════════════════════
 # /timezone_list
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="timezone_list", description="View all available timezones")
+@bot.tree.command(name="timezone_list", description="View all available timezones grouped by region")
 async def timezone_list(interaction: discord.Interaction):
     await interaction.response.defer()
-
-    # Group by region
+    
     regions = {}
     for tz, info in TIMEZONES.items():
         region = info["region"]
         if region not in regions:
             regions[region] = []
-        code = info["code"]
-        utc_offset = info["utc"]
-        regions[region].append(f"**{code}** ({utc_offset}) - {info['name']}")
-
+        regions[region].append(f"**{info['code']}** ({info['utc']}) - {info['name']}")
+    
     embeds = []
     for region in sorted(regions.keys()):
         embed = discord.Embed(title=f"🌍 {region} Timezones", color=0x0066FF)
         embed.description = "\n".join(regions[region])
         embeds.append(embed)
-
+    
     await interaction.followup.send(embeds=embeds)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1000,46 +957,57 @@ async def timezone_list(interaction: discord.Interaction):
 @app_commands.autocomplete(timezone=timezone_autocomplete)
 async def set_timezone(interaction: discord.Interaction, timezone: str):
     await interaction.response.defer(ephemeral=True)
-
-    tz_upper = timezone.upper()
     
+    tz_upper = timezone.upper()
     if tz_upper not in TIMEZONES:
         await interaction.followup.send(
-            embed=discord.Embed(
-                title="❌ Invalid Timezone",
-                description=f"Timezone `{tz_upper}` not found. Use `/timezone_list` to see available timezones.",
-                color=0xDA3633
-            ),
+            embed=discord.Embed(title="❌ Invalid Timezone", description=f"Timezone `{tz_upper}` not found.", color=0xDA3633),
             ephemeral=True
         )
         return
-
-    discord_id = str(interaction.user.id)
     
+    discord_id = str(interaction.user.id)
     async with aiohttp.ClientSession() as session:
         timezones, sha = await github_read_json(session, FILE_TIMEZONES)
-        
-        timezones[discord_id] = {
-            "timezone": tz_upper,
-            "offset": TIMEZONES[tz_upper]["offset"]
-        }
-        
-        success = await github_write_json(
-            session, FILE_TIMEZONES, timezones, sha,
-            f"Set timezone for {interaction.user.display_name}"
-        )
-
-    if success:
         tz_info = TIMEZONES[tz_upper]
-        utc_offset = tz_info["utc"]
-        embed = discord.Embed(
-            title="✅ Timezone Set!",
-            description=f"**{tz_upper}** ({utc_offset}) - {tz_info['name']}",
-            color=0x2EA043
-        )
+        timezones[discord_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
+        success = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Set timezone for {interaction.user.display_name}")
+    
+    if success:
+        embed = discord.Embed(title="✅ Timezone Set!", description=f"**{tz_info['code']}** ({tz_info['utc']}) - {tz_info['name']}", color=0x2EA043)
     else:
         embed = discord.Embed(title="❌ Failed to save timezone", color=0xDA3633)
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# /my_time
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="my_time", description="Check your current time")
+async def my_time(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    discord_id = str(interaction.user.id)
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if discord_id not in timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Timezone Not Set", description="Use `/set_timezone` first.", color=0xDA3633), ephemeral=True)
+        return
+    
+    tz_data = timezones[discord_id]
+    offset = tz_data["offset"]
+    
+    from datetime import datetime, timedelta
+    utc_now = datetime.utcnow()
+    your_time = utc_now + timedelta(hours=offset)
+    time_12 = your_time.strftime("%I:%M %p")
+    
+    embed = discord.Embed(title="🕐 Your Time", description=f"**{time_12}**", color=0x0066FF)
+    embed.add_field(name="Timezone", value=f"{tz_data['code']} ({tz_data['utc']})", inline=True)
+    embed.add_field(name="Full Name", value=tz_data['name'], inline=True)
+    
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1047,143 +1015,27 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="add_friend_timezone", description="Add a friend's timezone")
-@app_commands.describe(
-    user="The friend's Discord user",
-    timezone="Their timezone code (autocomplete available)"
-)
+@app_commands.describe(user="Friend to add", timezone="Their timezone")
 @app_commands.autocomplete(timezone=timezone_autocomplete)
 async def add_friend_timezone(interaction: discord.Interaction, user: discord.User, timezone: str):
     await interaction.response.defer(ephemeral=True)
-
+    
     tz_upper = timezone.upper()
-    
     if tz_upper not in TIMEZONES:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="❌ Invalid Timezone",
-                description=f"Timezone `{tz_upper}` not found. Use `/timezone_list` to see available timezones.",
-                color=0xDA3633
-            ),
-            ephemeral=True
-        )
+        await interaction.followup.send(embed=discord.Embed(title="❌ Invalid Timezone", color=0xDA3633), ephemeral=True)
         return
-
-    friend_id = str(user.id)
     
+    friend_id = str(user.id)
     async with aiohttp.ClientSession() as session:
         timezones, sha = await github_read_json(session, FILE_TIMEZONES)
-        
-        timezones[friend_id] = {
-            "timezone": tz_upper,
-            "offset": TIMEZONES[tz_upper]["offset"]
-        }
-        
-        success = await github_write_json(
-            session, FILE_TIMEZONES, timezones, sha,
-            f"Set timezone for {user.display_name} (added by {interaction.user.display_name})"
-        )
-
-    if success:
         tz_info = TIMEZONES[tz_upper]
-        utc_offset = tz_info["utc"]
-        embed = discord.Embed(
-            title="✅ Friend's Timezone Added!",
-            description=f"**{user.mention}** → **{tz_upper}** ({utc_offset}) - {tz_info['name']}",
-            color=0x2EA043
-        )
-    else:
-        embed = discord.Embed(title="❌ Failed to save timezone", color=0xDA3633)
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# /remove_friend_timezone
-# ══════════════════════════════════════════════════════════════════════════════
-
-@bot.tree.command(name="remove_friend_timezone", description="Remove a friend's timezone")
-@app_commands.describe(user="The friend's Discord user")
-async def remove_friend_timezone(interaction: discord.Interaction, user: discord.User):
-    await interaction.response.defer(ephemeral=True)
-
-    friend_id = str(user.id)
+        timezones[friend_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
+        success = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Add timezone for {user.display_name}")
     
-    async with aiohttp.ClientSession() as session:
-        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
-        
-        if friend_id not in timezones:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="❌ Friend's Timezone Not Set",
-                    description=f"{user.mention}'s timezone hasn't been set.",
-                    color=0xDA3633
-                ),
-                ephemeral=True
-            )
-            return
-        
-        del timezones[friend_id]
-        
-        success = await github_write_json(
-            session, FILE_TIMEZONES, timezones, sha,
-            f"Remove timezone for {user.display_name}"
-        )
-
     if success:
-        embed = discord.Embed(
-            title="✅ Removed!",
-            description=f"**{user.mention}**'s timezone has been removed.",
-            color=0x2EA043
-        )
+        embed = discord.Embed(title="✅ Friend's Timezone Added!", description=f"**{user.mention}** → **{tz_info['code']}** ({tz_info['utc']}) - {tz_info['name']}", color=0x2EA043)
     else:
-        embed = discord.Embed(title="❌ Failed to remove timezone", color=0xDA3633)
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# /my_time
-# ══════════════════════════════════════════════════════════════════════════════
-
-@bot.tree.command(name="my_time", description="Show your current time")
-async def my_time(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-
-    discord_id = str(interaction.user.id)
-    
-    async with aiohttp.ClientSession() as session:
-        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-    
-    if discord_id not in timezones:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="❌ Timezone Not Set",
-                description="Use `/set_timezone` first to set your timezone.",
-                color=0xDA3633
-            ),
-            ephemeral=True
-        )
-        return
-
-    tz_data = timezones[discord_id]
-    tz_code = tz_data["timezone"]
-    offset = tz_data["offset"]
-    
-    from datetime import datetime, timedelta
-    
-    utc_now = datetime.utcnow()
-    user_time = utc_now + timedelta(hours=offset)
-    time_12 = user_time.strftime("%I:%M %p")
-    
-    tz_info = TIMEZONES[tz_code]
-    utc_offset = tz_info["utc"]
-    
-    embed = discord.Embed(
-        title=f"🕐 Your Time",
-        description=f"**{time_12}**",
-        color=0x0066FF
-    )
-    embed.add_field(name="Timezone", value=f"{tz_code} ({utc_offset})", inline=True)
-    embed.add_field(name="Full Name", value=tz_info["name"], inline=True)
-    embed.set_footer(text=f"{interaction.user.display_name}")
+        embed = discord.Embed(title="❌ Failed to save", color=0xDA3633)
     
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1192,48 +1044,65 @@ async def my_time(interaction: discord.Interaction):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="friend_time", description="Check a friend's time")
-@app_commands.describe(user="The user to check")
+@app_commands.describe(user="Friend to check")
 async def friend_time(interaction: discord.Interaction, user: discord.User):
     await interaction.response.defer(ephemeral=True)
-
-    friend_id = str(user.id)
     
+    friend_id = str(user.id)
     async with aiohttp.ClientSession() as session:
         timezones, _ = await github_read_json(session, FILE_TIMEZONES)
     
     if friend_id not in timezones:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="❌ Friend's Timezone Not Set",
-                description=f"{user.mention} hasn't set their timezone yet.",
-                color=0xDA3633
-            ),
-            ephemeral=True
-        )
+        await interaction.followup.send(embed=discord.Embed(title="❌ Friend's Timezone Not Set", color=0xDA3633), ephemeral=True)
         return
-
+    
     tz_data = timezones[friend_id]
-    tz_code = tz_data["code"]
     offset = tz_data["offset"]
-    utc_offset = tz_data["utc"]
-    tz_name = tz_data["name"]
     
     from datetime import datetime, timedelta
-    
     utc_now = datetime.utcnow()
-    friend_time = utc_now + timedelta(hours=offset)
-    time_12 = friend_time.strftime("%I:%M %p")
+    friend_time_calc = utc_now + timedelta(hours=offset)
+    time_12 = friend_time_calc.strftime("%I:%M %p")
     
-    embed = discord.Embed(
-        title=f"🕐 {user.display_name}'s Time",
-        description=f"**{time_12}**",
-        color=0x0066FF
-    )
-    embed.add_field(name="Timezone", value=f"{tz_code} ({utc_offset})", inline=True)
-    embed.add_field(name="Full Name", value=tz_name, inline=True)
-    embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+    embed = discord.Embed(title=f"🕐 {user.display_name}'s Time", description=f"**{time_12}**", color=0x0066FF)
+    embed.add_field(name="Timezone", value=f"{tz_data['code']} ({tz_data['utc']})", inline=True)
+    embed.add_field(name="Full Name", value=tz_data['name'], inline=True)
     
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /list_friends
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="list_friends", description="Show all friends' timezones and current times")
+async def list_friends(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if not timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
+        return
+    
+    from datetime import datetime, timedelta
+    utc_now = datetime.utcnow()
+    embed = discord.Embed(title="🌍 Friends' Times", color=0x0066FF)
+    
+    for user_id, tz_data in sorted(timezones.items()):
+        try:
+            user = await interaction.client.fetch_user(int(user_id))
+            user_name = user.display_name
+        except:
+            user_name = f"User {user_id}"
+        
+        offset = tz_data["offset"]
+        user_time = utc_now + timedelta(hours=offset)
+        time_12 = user_time.strftime("%I:%M %p")
+        
+        embed.add_field(name=f"👤 {user_name}", value=f"🕐 {time_12} ({tz_data['code']})", inline=False)
+    
+    await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /remove_timezone
@@ -1242,137 +1111,86 @@ async def friend_time(interaction: discord.Interaction, user: discord.User):
 @bot.tree.command(name="remove_timezone", description="Remove your timezone")
 async def remove_timezone(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-
-    discord_id = str(interaction.user.id)
     
+    discord_id = str(interaction.user.id)
     async with aiohttp.ClientSession() as session:
         timezones, sha = await github_read_json(session, FILE_TIMEZONES)
         
         if discord_id not in timezones:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="❌ No Timezone Set",
-                    description="You haven't set a timezone yet.",
-                    color=0xDA3633
-                ),
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=discord.Embed(title="❌ No Timezone Set", color=0xDA3633), ephemeral=True)
             return
         
         del timezones[discord_id]
-        
-        success = await github_write_json(
-            session, FILE_TIMEZONES, timezones, sha,
-            f"Remove timezone for {interaction.user.display_name}"
-        )
-
+        success = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Remove timezone for {interaction.user.display_name}")
+    
     if success:
         embed = discord.Embed(title="✅ Timezone Removed!", color=0x2EA043)
     else:
         embed = discord.Embed(title="❌ Failed to remove timezone", color=0xDA3633)
-
+    
     await interaction.followup.send(embed=embed, ephemeral=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# /list_friends - Show all friends with times
-# ══════════════════════════════════════════════════════════════════════════════
-
-@bot.tree.command(name="list_friends", description="Show all friends' timezones and current times")
-async def list_friends(interaction: discord.Interaction):
-    await interaction.response.defer()
-    try:
-        from datetime import datetime, timedelta
-        async with aiohttp.ClientSession() as session:
-            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-        if not timezones:
-            await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
-            return
-        
-        utc_now = datetime.utcnow()
-        embed = discord.Embed(title="🌍 Friends' Times", color=0x0066FF)
-        
-        for user_id, tz_data in sorted(timezones.items()):
-            try:
-                # Fetch Discord user to get their name
-                user = await interaction.client.fetch_user(int(user_id))
-                user_name = user.display_name
-            except:
-                user_name = f"User {user_id}"
-            
-            tz_code = tz_data["code"]
-            utc_offset = tz_data["utc"]
-            offset = tz_data["offset"]
-            user_time = utc_now + timedelta(hours=offset)
-            time_12 = user_time.strftime("%I:%M %p")
-            
-            embed.add_field(
-                name=f"👤 {user_name}",
-                value=f"🕐 {time_12} ({tz_code})",
-                inline=False
-            )
-        
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /friend_compare - Compare time difference
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="friend_compare", description="Compare time difference with a friend")
-@app_commands.describe(user="Friend to compare")
+@app_commands.describe(user="Friend to compare with")
 async def friend_compare(interaction: discord.Interaction, user: discord.User):
     await interaction.response.defer(ephemeral=True)
-    try:
-        your_id = str(interaction.user.id)
-        friend_id = str(user.id)
-        async with aiohttp.ClientSession() as session:
-            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-        if your_id not in timezones or friend_id not in timezones:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Timezone not set", description="Both need timezone", color=0xDA3633), ephemeral=True)
-            return
-        your_tz = timezones[your_id]
-        friend_tz = timezones[friend_id]
-        diff = friend_tz["offset"] - your_tz["offset"]
-        sign = "+" if diff >= 0 else ""
-        embed = discord.Embed(title="⏰ Time Difference", color=0x0066FF)
-        your_code = your_tz["code"]
-        friend_code = friend_tz["code"]
-        your_utc = your_tz["utc"]
-        friend_utc = friend_tz["utc"]
-        embed.add_field(name="You", value=f"{your_code} ({your_utc})", inline=True)
-        embed.add_field(name=f"{user.display_name}", value=f"{friend_code} ({friend_utc})", inline=True)
-        embed.add_field(name="Difference", value=f"{sign}{diff}h", inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
+    
+    your_id = str(interaction.user.id)
+    friend_id = str(user.id)
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if your_id not in timezones or friend_id not in timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Timezone not set", description="Both users need timezone set", color=0xDA3633), ephemeral=True)
+        return
+    
+    your_tz = timezones[your_id]
+    friend_tz = timezones[friend_id]
+    diff = friend_tz["offset"] - your_tz["offset"]
+    sign = "+" if diff >= 0 else ""
+    
+    embed = discord.Embed(title="⏰ Time Difference", color=0x0066FF)
+    embed.add_field(name="You", value=f"{your_tz['code']} ({your_tz['utc']})", inline=True)
+    embed.add_field(name=f"{user.display_name}", value=f"{friend_tz['code']} ({friend_tz['utc']})", inline=True)
+    embed.add_field(name="Difference", value=f"{sign}{diff}h", inline=False)
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /timezone_convert - Convert between timezones
+# /timezone_convert - Convert time between timezones
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="timezone_convert", description="Convert time between timezones")
-@app_commands.describe(from_tz="Source", to_tz="Target", time="HH:MM (24-hr)")
+@app_commands.describe(from_tz="Source timezone", to_tz="Target timezone", time="Time HH:MM (24-hour)")
 @app_commands.autocomplete(from_tz=timezone_autocomplete)
 @app_commands.autocomplete(to_tz=timezone_autocomplete)
 async def timezone_convert(interaction: discord.Interaction, from_tz: str, to_tz: str, time: str):
     await interaction.response.defer(ephemeral=True)
+    
+    from_upper = from_tz.upper()
+    to_upper = to_tz.upper()
+    
+    if from_upper not in TIMEZONES or to_upper not in TIMEZONES:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Invalid timezone", color=0xDA3633), ephemeral=True)
+        return
+    
     try:
-        from_upper = from_tz.upper()
-        to_upper = to_tz.upper()
-        if from_upper not in TIMEZONES or to_upper not in TIMEZONES:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Invalid timezone", color=0xDA3633), ephemeral=True)
-            return
         hour, minute = map(int, time.split(":"))
         from_data = TIMEZONES[from_upper]
         to_data = TIMEZONES[to_upper]
+        
         offset_diff = to_data["offset"] - from_data["offset"]
         new_hour = (hour + int(offset_diff)) % 24
+        
         embed = discord.Embed(title="🕐 Time Conversion", color=0x0066FF)
-        from_code = from_data["code"]
-        to_code = to_data["code"]
-        embed.add_field(name=f"{from_code}", value=f"{hour:02d}:{minute:02d}", inline=True)
-        embed.add_field(name=f"{to_code}", value=f"{new_hour:02d}:{minute:02d}", inline=True)
+        embed.add_field(name=f"{from_data['code']}", value=f"{hour:02d}:{minute:02d}", inline=True)
+        embed.add_field(name=f"{to_data['code']}", value=f"{new_hour:02d}:{minute:02d}", inline=True)
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
         await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
@@ -1384,92 +1202,101 @@ async def timezone_convert(interaction: discord.Interaction, from_tz: str, to_tz
 @bot.tree.command(name="timezone_stats", description="Show team timezone distribution")
 async def timezone_stats(interaction: discord.Interaction):
     await interaction.response.defer()
-    try:
-        async with aiohttp.ClientSession() as session:
-            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-        if not timezones:
-            await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
-            return
-        tz_count = {}
-        for tz_data in timezones.values():
-            tz = tz_data["code"]
-            tz_count[tz] = tz_count.get(tz, 0) + 1
-        embed = discord.Embed(title="📊 Timezone Distribution", color=0x0066FF)
-        for tz, count in sorted(tz_count.items(), key=lambda x: x[1], reverse=True):
-            embed.add_field(name=tz, value=f"{count} member(s)", inline=True)
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if not timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
+        return
+    
+    tz_count = {}
+    for tz_data in timezones.values():
+        tz = tz_data["code"]
+        tz_count[tz] = tz_count.get(tz, 0) + 1
+    
+    embed = discord.Embed(title="📊 Timezone Distribution", color=0x0066FF)
+    for tz, count in sorted(tz_count.items(), key=lambda x: x[1], reverse=True):
+        embed.add_field(name=tz, value=f"{count} member(s)", inline=True)
+    
+    await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /night_mode - Check if friend sleeping
+# /night_mode - Check if friend is sleeping (10 PM - 7 AM)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="night_mode", description="Check if friend is sleeping (10 PM - 7 AM)")
 @app_commands.describe(user="Friend to check")
 async def night_mode(interaction: discord.Interaction, user: discord.User):
     await interaction.response.defer(ephemeral=True)
-    try:
-        from datetime import datetime, timedelta
-        friend_id = str(user.id)
-        async with aiohttp.ClientSession() as session:
-            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-        if friend_id not in timezones:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Timezone not set", color=0xDA3633), ephemeral=True)
-            return
-        tz_data = timezones[friend_id]
-        offset = tz_data["offset"]
-        friend_time = datetime.utcnow() + timedelta(hours=offset)
-        hour = friend_time.hour
-        is_sleeping = hour < 7 or hour >= 22
-        embed = discord.Embed(title=f"😴 {user.display_name}", description="🔴 SLEEPING" if is_sleeping else "🟢 AWAKE", color=0xDA3633 if is_sleeping else 0x2EA043)
-        tz_code = tz_data["code"]
-        tz_utc = tz_data["utc"]
-        embed.add_field(name="Timezone", value=f"{tz_code} ({tz_utc})", inline=True)
-        embed.add_field(name="Time", value=friend_time.strftime("%I:%M %p"), inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
+    
+    friend_id = str(user.id)
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if friend_id not in timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Timezone not set", color=0xDA3633), ephemeral=True)
+        return
+    
+    from datetime import datetime, timedelta
+    
+    tz_data = timezones[friend_id]
+    offset = tz_data["offset"]
+    friend_time = datetime.utcnow() + timedelta(hours=offset)
+    hour = friend_time.hour
+    
+    is_sleeping = hour < 7 or hour >= 22
+    
+    embed = discord.Embed(
+        title=f"😴 {user.display_name}",
+        description="🔴 SLEEPING" if is_sleeping else "🟢 AWAKE",
+        color=0xDA3633 if is_sleeping else 0x2EA043
+    )
+    embed.add_field(name="Timezone", value=f"{tz_data['code']} ({tz_data['utc']})", inline=True)
+    embed.add_field(name="Time", value=friend_time.strftime("%I:%M %p"), inline=True)
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /similar_timezone - Find similar timezones
+# /similar_timezone - Find team members within 2 hours
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="similar_timezone", description="Find members within 2 hours of you")
+@bot.tree.command(name="similar_timezone", description="Find team members within 2 hours of your timezone")
 async def similar_timezone(interaction: discord.Interaction):
     await interaction.response.defer()
-    try:
-        your_id = str(interaction.user.id)
-        async with aiohttp.ClientSession() as session:
-            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-        if your_id not in timezones:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Your timezone not set", color=0xDA3633))
-            return
-        your_offset = timezones[your_id]["offset"]
-        similar = []
-        for user_id, tz_data in timezones.items():
-            if user_id == your_id:
-                continue
-            offset = tz_data["offset"]
-            diff = abs(offset - your_offset)
-            if diff <= 2:
-                tz_code = tz_data["code"]
-                similar.append((tz_code, diff, user_id))
-        
-        embed = discord.Embed(title="🌍 Similar Timezones", color=0x0066FF)
-        if similar:
-            for tz, diff, user_id in sorted(similar, key=lambda x: x[1]):
-                try:
-                    user = await interaction.client.fetch_user(int(user_id))
-                    user_name = user.display_name
-                except:
-                    user_name = f"User {user_id}"
-                embed.add_field(name=f"👤 {user_name}", value=f"{tz} ({diff}h diff)", inline=False)
-        else:
-            embed.description = "No one within 2 hours"
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
+    
+    your_id = str(interaction.user.id)
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if your_id not in timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Your timezone not set", color=0xDA3633))
+        return
+    
+    your_offset = timezones[your_id]["offset"]
+    similar = []
+    
+    for user_id, tz_data in timezones.items():
+        if user_id == your_id:
+            continue
+        offset = tz_data["offset"]
+        diff = abs(offset - your_offset)
+        if diff <= 2:
+            similar.append((tz_data["code"], diff, user_id))
+    
+    embed = discord.Embed(title="🌍 Similar Timezones", color=0x0066FF)
+    if similar:
+        for tz, diff, user_id in sorted(similar, key=lambda x: x[1]):
+            try:
+                user = await interaction.client.fetch_user(int(user_id))
+                user_name = user.display_name
+            except:
+                user_name = f"User {user_id}"
+            embed.add_field(name=f"👤 {user_name}", value=f"{tz} ({diff}h diff)", inline=False)
+    else:
+        embed.description = "No one within 2 hours"
+    
+    await interaction.followup.send(embed=embed)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /world_clock - Show all team timezones
@@ -1478,33 +1305,36 @@ async def similar_timezone(interaction: discord.Interaction):
 @bot.tree.command(name="world_clock", description="Show current time in all team timezones")
 async def world_clock(interaction: discord.Interaction):
     await interaction.response.defer()
-    try:
-        from datetime import datetime, timedelta
-        utc_now = datetime.utcnow()
-        async with aiohttp.ClientSession() as session:
-            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
-        if not timezones:
-            await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
-            return
-        embeds = []
-        seen_tz = set()
-        for tz_data in timezones.values():
-            tz_code = tz_data["code"]
-            if tz_code in seen_tz:
-                continue
-            seen_tz.add(tz_code)
-            offset = tz_data["offset"]
-            local_time = utc_now + timedelta(hours=offset)
-            time_12 = local_time.strftime("%I:%M %p")
-            date_str = local_time.strftime("%a, %b %d")
-            tz_utc = tz_data["utc"]
-            embed = discord.Embed(title=f"🕐 {tz_code} ({tz_utc})", color=0x0066FF)
-            embed.add_field(name="Time", value=time_12, inline=True)
-            embed.add_field(name="Date", value=date_str, inline=True)
-            embeds.append(embed)
-        await interaction.followup.send(embeds=embeds[:10])
-    except Exception as e:
-        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
+    
+    async with aiohttp.ClientSession() as session:
+        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    
+    if not timezones:
+        await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
+        return
+    
+    from datetime import datetime, timedelta
+    utc_now = datetime.utcnow()
+    embeds = []
+    seen_tz = set()
+    
+    for tz_data in timezones.values():
+        tz_code = tz_data["code"]
+        if tz_code in seen_tz:
+            continue
+        seen_tz.add(tz_code)
+        
+        offset = tz_data["offset"]
+        local_time = utc_now + timedelta(hours=offset)
+        time_12 = local_time.strftime("%I:%M %p")
+        date_str = local_time.strftime("%a, %b %d")
+        
+        embed = discord.Embed(title=f"🕐 {tz_code} ({tz_data['utc']})", color=0x0066FF)
+        embed.add_field(name="Time", value=time_12, inline=True)
+        embed.add_field(name="Date", value=date_str, inline=True)
+        embeds.append(embed)
+    
+    await interaction.followup.send(embeds=embeds[:10])
 
 # ══════════════════════════════════════════════════════════════════════════════
 
