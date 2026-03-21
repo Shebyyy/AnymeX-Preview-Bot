@@ -1341,15 +1341,52 @@ async def world_clock(interaction: discord.Interaction):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TimezoneSelectView(discord.ui.View):
-    """Dropdown select for timezone"""
-    def __init__(self, options):
+    """Dropdown select for timezone with pagination"""
+    def __init__(self, options, page=0):
         super().__init__(timeout=None)
-        self.add_item(TimezoneSelect(options))
+        self.all_options = options
+        self.page = page
+        self.items_per_page = 25
+        
+        # Add select with current page options
+        current_options = options[page*25:(page+1)*25]
+        self.add_item(TimezoneSelect(current_options, len(options), page))
+        
+        # Add pagination buttons if needed
+        if len(options) > 25:
+            button_row = discord.ui.View()
+            if page > 0:
+                prev_btn = discord.ui.Button(label="← Previous", style=discord.ButtonStyle.primary)
+                async def prev_callback(interaction: discord.Interaction):
+                    await interaction.response.defer()
+                    new_view = TimezoneSelectView(self.all_options, page - 1)
+                    await interaction.message.edit(view=new_view)
+                prev_btn.callback = prev_callback
+                button_row.add_item(prev_btn)
+            
+            if (page + 1) * 25 < len(options):
+                next_btn = discord.ui.Button(label="Next →", style=discord.ButtonStyle.primary)
+                async def next_callback(interaction: discord.Interaction):
+                    await interaction.response.defer()
+                    new_view = TimezoneSelectView(self.all_options, page + 1)
+                    await interaction.message.edit(view=new_view)
+                next_btn.callback = next_callback
+                button_row.add_item(next_btn)
+            
+            if button_row.children:
+                self.add_item(button_row)
 
 class TimezoneSelect(discord.ui.Select):
     """Select dropdown for choosing timezone"""
-    def __init__(self, options):
-        super().__init__(placeholder="Select your timezone...", min_values=1, max_values=1, options=options[:25])
+    def __init__(self, options, total_count, page):
+        super().__init__(
+            placeholder=f"Select timezone (Page {page+1} of {(total_count+24)//25})...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.total_count = total_count
+        self.page = page
     
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -1395,7 +1432,7 @@ async def setup_timezone_menu(
         await interaction.followup.send(embed=discord.Embed(title="❌ Admin only", color=0xDA3633), ephemeral=True)
         return
     
-    # Build timezone select options
+    # Build timezone select options for ALL timezones
     options = []
     for tz_key in sorted(TIMEZONES.keys()):
         tz_info = TIMEZONES[tz_key]
@@ -1411,19 +1448,20 @@ async def setup_timezone_menu(
     if message:
         msg_content = message
     else:
-        msg_content = "WHICH TIMEZONE ARE YOU ROUGHLY?\n\nSelect your timezone from the dropdown below"
+        msg_content = "WHICH TIMEZONE ARE YOU ROUGHLY?\n\nSelect your timezone from the dropdown below\n\n(Scroll through pages to see all timezones)"
     
     # Add role mention if provided
     if role:
         msg_content = f"{role.mention}\n\n{msg_content}"
     
-    # Create and send message with timezone selector
+    # Create and send message with timezone selector (with pagination)
     embed = discord.Embed(title="🌍 Timezone Selector", description=msg_content, color=0x0066FF)
-    view = TimezoneSelectView(options)
+    embed.set_footer(text=f"Total timezones: {len(options)}")
+    view = TimezoneSelectView(options, page=0)
     
     try:
         await channel.send(embed=embed, view=view)
-        await interaction.followup.send(embed=discord.Embed(title="✅ Timezone menu posted!", description=f"Posted to {channel.mention}", color=0x2EA043), ephemeral=True)
+        await interaction.followup.send(embed=discord.Embed(title="✅ Timezone menu posted!", description=f"Posted to {channel.mention}\n({len(options)} timezones available)", color=0x2EA043), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
 
