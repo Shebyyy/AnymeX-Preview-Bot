@@ -1031,11 +1031,10 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
 
     if success:
         tz_info = TIMEZONES[tz_upper]
-        offset = tz_info["offset"]
-        sign = "+" if offset >= 0 else ""
+        utc_offset = tz_info.get("utc", f"UTC{'+' if tz_info['offset'] >= 0 else ''}{tz_info['offset']}")
         embed = discord.Embed(
             title="✅ Timezone Set!",
-            description=f"**{tz_upper}** (UTC{sign}{offset}) - {tz_info['name']}",
+            description=f"**{tz_upper}** ({utc_offset}) - {tz_info['name']}",
             color=0x2EA043
         )
     else:
@@ -1086,11 +1085,10 @@ async def add_friend_timezone(interaction: discord.Interaction, user: discord.Us
 
     if success:
         tz_info = TIMEZONES[tz_upper]
-        offset = tz_info["offset"]
-        sign = "+" if offset >= 0 else ""
+        utc_offset = tz_info.get("utc", f"UTC{'+' if tz_info['offset'] >= 0 else ''}{tz_info['offset']}")
         embed = discord.Embed(
             title="✅ Friend's Timezone Added!",
-            description=f"**{user.mention}** → **{tz_upper}** (UTC{sign}{offset}) - {tz_info['name']}",
+            description=f"**{user.mention}** → **{tz_upper}** ({utc_offset}) - {tz_info['name']}",
             color=0x2EA043
         )
     else:
@@ -1176,14 +1174,14 @@ async def my_time(interaction: discord.Interaction):
     time_12 = user_time.strftime("%I:%M %p")
     
     tz_info = TIMEZONES[tz_code]
-    sign = "+" if offset >= 0 else ""
+    utc_offset = tz_info.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
     
     embed = discord.Embed(
         title=f"🕐 Your Time",
         description=f"**{time_12}**",
         color=0x0066FF
     )
-    embed.add_field(name="Timezone", value=f"{tz_code} (UTC{sign}{offset})", inline=True)
+    embed.add_field(name="Timezone", value=f"{tz_code} ({utc_offset})", inline=True)
     embed.add_field(name="Full Name", value=tz_info["name"], inline=True)
     embed.set_footer(text=f"{interaction.user.display_name}")
     
@@ -1225,14 +1223,14 @@ async def friend_time(interaction: discord.Interaction, user: discord.User):
     time_12 = friend_time.strftime("%I:%M %p")
     
     tz_info = TIMEZONES[tz_code]
-    sign = "+" if offset >= 0 else ""
+    utc_offset = tz_data.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
     
     embed = discord.Embed(
         title=f"🕐 {user.display_name}'s Time",
         description=f"**{time_12}**",
         color=0x0066FF
     )
-    embed.add_field(name="Timezone", value=f"{tz_code} (UTC{sign}{offset})", inline=True)
+    embed.add_field(name="Timezone", value=f"{tz_code} ({utc_offset})", inline=True)
     embed.add_field(name="Full Name", value=tz_info["name"], inline=True)
     embed.set_footer(text=f"Requested by {interaction.user.display_name}")
     
