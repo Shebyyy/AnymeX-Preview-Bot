@@ -1337,59 +1337,8 @@ async def world_clock(interaction: discord.Interaction):
     await interaction.followup.send(embeds=embeds[:10])
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TIMEZONE MENU - Interactive Setup (Admin Only)
+# TIMEZONE MENU - Single Command Setup (Admin Only)
 # ══════════════════════════════════════════════════════════════════════════════
-
-class TimezoneMenuModal(discord.ui.Modal):
-    """Modal to get custom message for timezone menu"""
-    message_text = discord.ui.TextInput(label="Message (optional - leave blank for default)", placeholder="Enter your message here (supports multiple lines)", style=discord.TextStyle.paragraph, required=False)
-    
-    def __init__(self, channel, role):
-        super().__init__(title="Timezone Menu Setup")
-        self.channel = channel
-        self.role = role
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        
-        # Build timezone select options
-        options = []
-        for tz_key in sorted(TIMEZONES.keys()):
-            tz_info = TIMEZONES[tz_key]
-            options.append(
-                discord.SelectOption(
-                    label=f"{tz_info['code']} ({tz_info['utc']}) - {tz_info['name']}",
-                    value=tz_key,
-                    emoji="🌍"
-                )
-            )
-        
-        # Use custom message or default
-        if self.message_text.value.strip():
-            msg_content = self.message_text.value
-        else:
-            msg_content = "WHICH TIMEZONE ARE YOU ROUGHLY?\n\nSelect your timezone from the dropdown below"
-        
-        # Add role mention if selected (not "none")
-        if self.role and self.role != "none":
-            if self.role == "everyone":
-                msg_content = f"@everyone\n\n{msg_content}"
-            elif self.role == "here":
-                msg_content = f"@here\n\n{msg_content}"
-            else:
-                role_obj = interaction.guild.get_role(int(self.role))
-                if role_obj:
-                    msg_content = f"{role_obj.mention}\n\n{msg_content}"
-        
-        # Send message with timezone selector
-        embed = discord.Embed(title="🌍 Timezone Selector", description=msg_content, color=0x0066FF)
-        view = TimezoneSelectView(options)
-        
-        try:
-            await self.channel.send(embed=embed, view=view)
-            await interaction.followup.send(embed=discord.Embed(title="✅ Timezone menu posted!", description=f"Posted to {self.channel.mention}", color=0x2EA043), ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
 
 class TimezoneSelectView(discord.ui.View):
     """Dropdown select for timezone"""
@@ -1426,74 +1375,59 @@ class TimezoneSelect(discord.ui.Select):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="setup_timezone_menu", description="Setup timezone selection menu (Admin only)")
+@app_commands.describe(
+    channel="Channel to post in (required)",
+    role="Role to mention (optional)",
+    message="Custom message (optional - leave blank for default)"
+)
 @app_commands.default_permissions(administrator=True)
-async def setup_timezone_menu(interaction: discord.Interaction):
-    """Admin command to setup timezone menu"""
+async def setup_timezone_menu(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    role: discord.Role = None,
+    message: str = None
+):
+    """Admin command to setup timezone menu - all in one command"""
     await interaction.response.defer(ephemeral=True)
     
-    # Create channel select
-    channel_options = [
-        discord.SelectOption(label=f"#{channel.name}", value=str(channel.id))
-        for channel in interaction.guild.text_channels[:20]
-    ]
-    
-    if not channel_options:
-        await interaction.followup.send(embed=discord.Embed(title="❌ No text channels found", color=0xDA3633), ephemeral=True)
+    # Check if user is admin
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Admin only", color=0xDA3633), ephemeral=True)
         return
     
-    # Create role options
-    role_options = [
-        discord.SelectOption(label="@everyone", value="everyone"),
-        discord.SelectOption(label="@here", value="here"),
-        discord.SelectOption(label="No mention", value="none"),
-    ]
+    # Build timezone select options
+    options = []
+    for tz_key in sorted(TIMEZONES.keys()):
+        tz_info = TIMEZONES[tz_key]
+        options.append(
+            discord.SelectOption(
+                label=f"{tz_info['code']} ({tz_info['utc']}) - {tz_info['name']}",
+                value=tz_key,
+                emoji="🌍"
+            )
+        )
     
-    for role in interaction.guild.roles[1:20]:
-        if role.name != "@everyone":
-            role_options.append(discord.SelectOption(label=f"@{role.name}", value=str(role.id)))
+    # Use custom message or default
+    if message:
+        msg_content = message
+    else:
+        msg_content = "WHICH TIMEZONE ARE YOU ROUGHLY?\n\nSelect your timezone from the dropdown below"
     
-    # Step 1: Select Channel
-    channel_select = discord.ui.Select(placeholder="Select a channel...", min_values=1, max_values=1, options=channel_options)
+    # Add role mention if provided
+    if role:
+        msg_content = f"{role.mention}\n\n{msg_content}"
     
-    async def channel_callback(inner_interaction: discord.Interaction):
-        await inner_interaction.response.defer()
-        selected_channel = interaction.guild.get_channel(int(channel_select.values[0]))
-        
-        # Step 2: Select Role (Optional)
-        role_select = discord.ui.Select(placeholder="Select a role to mention (optional)...", min_values=1, max_values=1, options=role_options)
-        
-        async def role_callback(role_interaction: discord.Interaction):
-            await role_interaction.response.defer()
-            
-            selection = role_select.values[0]
-            selected_role = selection
-            
-            # Step 3: Enter Message (Optional - will use default if blank)
-            modal = TimezoneMenuModal(selected_channel, selected_role)
-            await role_interaction.response.send_modal(modal)
-        
-        role_select.callback = role_callback
-        role_view = discord.ui.View()
-        role_view.add_item(role_select)
-        
-        # Add Skip button to skip role selection
-        skip_button = discord.ui.Button(label="Skip (No mention)", style=discord.ButtonStyle.secondary)
-        
-        async def skip_callback(skip_interaction: discord.Interaction):
-            await skip_interaction.response.defer()
-            # Go directly to message modal with no role
-            modal = TimezoneMenuModal(selected_channel, "none")
-            await skip_interaction.response.send_modal(modal)
-        
-        skip_button.callback = skip_callback
-        role_view.add_item(skip_button)
-        
-        await inner_interaction.followup.send("📝 Step 2: Select a role to mention (or skip):", view=role_view, ephemeral=True)
+    # Create and send message with timezone selector
+    embed = discord.Embed(title="🌍 Timezone Selector", description=msg_content, color=0x0066FF)
+    view = TimezoneSelectView(options)
     
-    channel_select.callback = channel_callback
-    channel_view = discord.ui.View()
-    channel_view.add_item(channel_select)
-    await interaction.followup.send("📍 Step 1: Select a channel", view=channel_view, ephemeral=True)
+    try:
+        await channel.send(embed=embed, view=view)
+        await interaction.followup.send(embed=discord.Embed(title="✅ Timezone menu posted!", description=f"Posted to {channel.mention}", color=0x2EA043), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Run bot + health server together
