@@ -1392,7 +1392,7 @@ async def timezone_stats(interaction: discord.Interaction):
             return
         tz_count = {}
         for tz_data in timezones.values():
-            tz = tz_data["code"]))
+            tz = tz_data["code"]
             tz_count[tz] = tz_count.get(tz, 0) + 1
         embed = discord.Embed(title="📊 Timezone Distribution", color=0x0066FF)
         for tz, count in sorted(tz_count.items(), key=lambda x: x[1], reverse=True):
