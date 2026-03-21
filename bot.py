@@ -29,75 +29,139 @@ FILE_MANGA     = "underrated_manga.json"
 FILE_USERS     = "users.json"
 FILE_TIMEZONES = "timezones.json"
 
-# ── TIMEZONE DATABASE ──────────────────────────────────────────────────────────
+# ── COMPLETE WORLD TIMEZONE DATABASE ───────────────────────────────────────────
 TIMEZONES = {
-    # Asia
-    "IST": {"name": "Indian Standard Time", "offset": 5.5, "region": "Asia"},
-    "PKT": {"name": "Pakistan Standard Time", "offset": 5.0, "region": "Asia"},
-    "AFT": {"name": "Afghanistan Time", "offset": 4.5, "region": "Asia"},
-    "GST": {"name": "Gulf Standard Time", "offset": 4.0, "region": "Asia"},
-    "MSK": {"name": "Moscow Standard Time", "offset": 3.0, "region": "Asia"},
-    "EEST": {"name": "Eastern European Summer Time", "offset": 3.0, "region": "Asia"},
-    "JST": {"name": "Japan Standard Time", "offset": 9.0, "region": "Asia"},
-    "KST": {"name": "Korea Standard Time", "offset": 9.0, "region": "Asia"},
-    "AWST": {"name": "Australian Western Standard Time", "offset": 8.0, "region": "Asia"},
-    "SGT": {"name": "Singapore Standard Time", "offset": 8.0, "region": "Asia"},
-    "MYT": {"name": "Malaysia Time", "offset": 8.0, "region": "Asia"},
-    "PHT": {"name": "Philippine Standard Time", "offset": 8.0, "region": "Asia"},
-    "HKT": {"name": "Hong Kong Time", "offset": 8.0, "region": "Asia"},
-    "CST": {"name": "China Standard Time", "offset": 8.0, "region": "Asia"},
-    "BDT": {"name": "Bangladesh Standard Time", "offset": 6.0, "region": "Asia"},
-    "THA": {"name": "Thailand Standard Time", "offset": 7.0, "region": "Asia"},
-    "ICT": {"name": "Indochina Time", "offset": 7.0, "region": "Asia"},
-    "IDT": {"name": "Indonesia Time", "offset": 7.0, "region": "Asia"},
+    # UTC−12:00
+    "BIT": {"code": "BIT", "name": "Baker Island Time", "offset": -12.0, "utc": "UTC-12:00", "region": "Pacific", "iana": "Etc/GMT+12"},
     
-    # Americas
-    "EST": {"name": "Eastern Standard Time", "offset": -5.0, "region": "Americas"},
-    "EDT": {"name": "Eastern Daylight Time", "offset": -4.0, "region": "Americas"},
-    "CST_US": {"name": "Central Standard Time (US)", "offset": -6.0, "region": "Americas"},
-    "CDT": {"name": "Central Daylight Time", "offset": -5.0, "region": "Americas"},
-    "MST": {"name": "Mountain Standard Time", "offset": -7.0, "region": "Americas"},
-    "MDT": {"name": "Mountain Daylight Time", "offset": -6.0, "region": "Americas"},
-    "PST": {"name": "Pacific Standard Time", "offset": -8.0, "region": "Americas"},
-    "PDT": {"name": "Pacific Daylight Time", "offset": -7.0, "region": "Americas"},
-    "AKST": {"name": "Alaska Standard Time", "offset": -9.0, "region": "Americas"},
-    "AKDT": {"name": "Alaska Daylight Time", "offset": -8.0, "region": "Americas"},
-    "HST": {"name": "Hawaii Standard Time", "offset": -10.0, "region": "Americas"},
-    "AST": {"name": "Atlantic Standard Time", "offset": -4.0, "region": "Americas"},
-    "ADT": {"name": "Atlantic Daylight Time", "offset": -3.0, "region": "Americas"},
-    "BRT": {"name": "Brasilia Time", "offset": -3.0, "region": "Americas"},
-    "ART": {"name": "Argentina Time", "offset": -3.0, "region": "Americas"},
-    "CLT": {"name": "Chile Standard Time", "offset": -3.0, "region": "Americas"},
-    "CLDT": {"name": "Chile Daylight Time", "offset": -2.0, "region": "Americas"},
+    # UTC−11:00
+    "SST": {"code": "SST", "name": "Samoa Standard Time", "offset": -11.0, "utc": "UTC-11:00", "region": "Pacific", "iana": "Pacific/Pago_Pago"},
     
-    # Europe
-    "GMT": {"name": "Greenwich Mean Time", "offset": 0.0, "region": "Europe"},
-    "UTC": {"name": "Coordinated Universal Time", "offset": 0.0, "region": "Europe"},
-    "BST": {"name": "British Summer Time", "offset": 1.0, "region": "Europe"},
-    "CET": {"name": "Central European Time", "offset": 1.0, "region": "Europe"},
-    "CEST": {"name": "Central European Summer Time", "offset": 2.0, "region": "Europe"},
-    "EET": {"name": "Eastern European Time", "offset": 2.0, "region": "Europe"},
-    "WEST": {"name": "Western European Summer Time", "offset": 1.0, "region": "Europe"},
-    "WET": {"name": "Western European Time", "offset": 0.0, "region": "Europe"},
-    "IST_EU": {"name": "Irish Standard Time", "offset": 1.0, "region": "Europe"},
-    "CIS": {"name": "Moscow Standard Time (CIS)", "offset": 3.0, "region": "Europe"},
+    # UTC−10:00
+    "HST": {"code": "HST", "name": "Hawaii-Aleutian Standard Time", "offset": -10.0, "utc": "UTC-10:00", "region": "Americas", "iana": "Pacific/Honolulu"},
     
-    # Africa
-    "CAT": {"name": "Central Africa Time", "offset": 2.0, "region": "Africa"},
-    "EAT": {"name": "East Africa Time", "offset": 3.0, "region": "Africa"},
-    "WAT": {"name": "West Africa Time", "offset": 1.0, "region": "Africa"},
-    "SAST": {"name": "South Africa Standard Time", "offset": 2.0, "region": "Africa"},
-    "EGT": {"name": "Egypt Standard Time", "offset": 2.0, "region": "Africa"},
+    # UTC−09:00
+    "AKST": {"code": "AKST", "name": "Alaska Standard Time", "offset": -9.0, "utc": "UTC-09:00", "region": "Americas", "iana": "America/Anchorage"},
+    "AKDT": {"code": "AKDT", "name": "Alaska Daylight Time", "offset": -8.0, "utc": "UTC-08:00", "region": "Americas", "iana": "America/Anchorage"},
     
-    # Australia/Pacific
-    "AEST": {"name": "Australian Eastern Standard Time", "offset": 10.0, "region": "Pacific"},
-    "AEDT": {"name": "Australian Eastern Daylight Time", "offset": 11.0, "region": "Pacific"},
-    "ACST": {"name": "Australian Central Standard Time", "offset": 9.5, "region": "Pacific"},
-    "ACDT": {"name": "Australian Central Daylight Time", "offset": 10.5, "region": "Pacific"},
-    "NZST": {"name": "New Zealand Standard Time", "offset": 12.0, "region": "Pacific"},
-    "NZDT": {"name": "New Zealand Daylight Time", "offset": 13.0, "region": "Pacific"},
-    "FJT": {"name": "Fiji Time", "offset": 12.0, "region": "Pacific"},
-    "NACT": {"name": "Norfolk Island Time", "offset": 11.0, "region": "Pacific"},
+    # UTC−08:00
+    "PST": {"code": "PST", "name": "Pacific Standard Time", "offset": -8.0, "utc": "UTC-08:00", "region": "Americas", "iana": "America/Los_Angeles"},
+    "PDT": {"code": "PDT", "name": "Pacific Daylight Time", "offset": -7.0, "utc": "UTC-07:00", "region": "Americas", "iana": "America/Los_Angeles"},
+    
+    # UTC−07:00
+    "MST": {"code": "MST", "name": "Mountain Standard Time", "offset": -7.0, "utc": "UTC-07:00", "region": "Americas", "iana": "America/Denver"},
+    "MDT": {"code": "MDT", "name": "Mountain Daylight Time", "offset": -6.0, "utc": "UTC-06:00", "region": "Americas", "iana": "America/Denver"},
+    
+    # UTC−06:00
+    "CST_US": {"code": "CST", "name": "Central Standard Time (US)", "offset": -6.0, "utc": "UTC-06:00", "region": "Americas", "iana": "America/Chicago"},
+    "CDT": {"code": "CDT", "name": "Central Daylight Time", "offset": -5.0, "utc": "UTC-05:00", "region": "Americas", "iana": "America/Chicago"},
+    
+    # UTC−05:00
+    "EST": {"code": "EST", "name": "Eastern Standard Time", "offset": -5.0, "utc": "UTC-05:00", "region": "Americas", "iana": "America/New_York"},
+    "EDT": {"code": "EDT", "name": "Eastern Daylight Time", "offset": -4.0, "utc": "UTC-04:00", "region": "Americas", "iana": "America/New_York"},
+    
+    # UTC−04:00
+    "AST": {"code": "AST", "name": "Atlantic Standard Time", "offset": -4.0, "utc": "UTC-04:00", "region": "Americas", "iana": "America/Halifax"},
+    "ADT": {"code": "ADT", "name": "Atlantic Daylight Time", "offset": -3.0, "utc": "UTC-03:00", "region": "Americas", "iana": "America/Halifax"},
+    
+    # UTC−03:00
+    "ART": {"code": "ART", "name": "Argentina Time", "offset": -3.0, "utc": "UTC-03:00", "region": "Americas", "iana": "America/Argentina/Buenos_Aires"},
+    "BRT": {"code": "BRT", "name": "Brasilia Time", "offset": -3.0, "utc": "UTC-03:00", "region": "Americas", "iana": "America/Sao_Paulo"},
+    
+    # UTC−02:00
+    "GMTSG": {"code": "GST", "name": "South Georgia Time", "offset": -2.0, "utc": "UTC-02:00", "region": "Atlantic", "iana": "Atlantic/South_Georgia"},
+    
+    # UTC−01:00
+    "AZOT": {"code": "AZOT", "name": "Azores Time", "offset": -1.0, "utc": "UTC-01:00", "region": "Atlantic", "iana": "Atlantic/Azores"},
+    
+    # UTC±00:00
+    "UTC": {"code": "UTC", "name": "Coordinated Universal Time", "offset": 0.0, "utc": "UTC±00:00", "region": "UTC", "iana": "UTC"},
+    "GMT": {"code": "GMT", "name": "Greenwich Mean Time", "offset": 0.0, "utc": "UTC±00:00", "region": "Europe", "iana": "Europe/London"},
+    "WET": {"code": "WET", "name": "Western European Time", "offset": 0.0, "utc": "UTC±00:00", "region": "Europe", "iana": "Europe/London"},
+    
+    # UTC+01:00
+    "WAT": {"code": "WAT", "name": "West Africa Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Africa", "iana": "Africa/Lagos"},
+    "CET": {"code": "CET", "name": "Central European Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Europe", "iana": "Europe/Paris"},
+    "BST": {"code": "BST", "name": "British Summer Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Europe", "iana": "Europe/London"},
+    "IST_EU": {"code": "IST", "name": "Irish Standard Time", "offset": 1.0, "utc": "UTC+01:00", "region": "Europe", "iana": "Europe/Dublin"},
+    
+    # UTC+02:00
+    "CEST": {"code": "CEST", "name": "Central European Summer Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Europe", "iana": "Europe/Paris"},
+    "CAT": {"code": "CAT", "name": "Central Africa Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Africa", "iana": "Africa/Johannesburg"},
+    "SAST": {"code": "SAST", "name": "South Africa Standard Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Africa", "iana": "Africa/Johannesburg"},
+    "EET": {"code": "EET", "name": "Eastern European Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Europe", "iana": "Europe/Athens"},
+    "EGT": {"code": "EGT", "name": "Egypt Standard Time", "offset": 2.0, "utc": "UTC+02:00", "region": "Africa", "iana": "Africa/Cairo"},
+    
+    # UTC+03:00
+    "EAT": {"code": "EAT", "name": "East Africa Time", "offset": 3.0, "utc": "UTC+03:00", "region": "Africa", "iana": "Africa/Nairobi"},
+    "MSK": {"code": "MSK", "name": "Moscow Standard Time", "offset": 3.0, "utc": "UTC+03:00", "region": "Europe", "iana": "Europe/Moscow"},
+    "EEST": {"code": "EEST", "name": "Eastern European Summer Time", "offset": 3.0, "utc": "UTC+03:00", "region": "Europe", "iana": "Europe/Athens"},
+    
+    # UTC+04:00
+    "GST": {"code": "GST", "name": "Gulf Standard Time", "offset": 4.0, "utc": "UTC+04:00", "region": "Asia", "iana": "Asia/Dubai"},
+    
+    # UTC+04:30
+    "AFT": {"code": "AFT", "name": "Afghanistan Time", "offset": 4.5, "utc": "UTC+04:30", "region": "Asia", "iana": "Asia/Kabul"},
+    
+    # UTC+05:00
+    "PKT": {"code": "PKT", "name": "Pakistan Standard Time", "offset": 5.0, "utc": "UTC+05:00", "region": "Asia", "iana": "Asia/Karachi"},
+    
+    # UTC+05:30
+    "IST": {"code": "IST", "name": "Indian Standard Time", "offset": 5.5, "utc": "UTC+05:30", "region": "Asia", "iana": "Asia/Kolkata"},
+    
+    # UTC+05:45
+    "NPT": {"code": "NPT", "name": "Nepal Time", "offset": 5.75, "utc": "UTC+05:45", "region": "Asia", "iana": "Asia/Kathmandu"},
+    
+    # UTC+06:00
+    "BDT": {"code": "BDT", "name": "Bangladesh Standard Time", "offset": 6.0, "utc": "UTC+06:00", "region": "Asia", "iana": "Asia/Dhaka"},
+    
+    # UTC+06:30
+    "MMT": {"code": "MMT", "name": "Myanmar Time", "offset": 6.5, "utc": "UTC+06:30", "region": "Asia", "iana": "Asia/Yangon"},
+    
+    # UTC+07:00
+    "ICT": {"code": "ICT", "name": "Indochina Time", "offset": 7.0, "utc": "UTC+07:00", "region": "Asia", "iana": "Asia/Bangkok"},
+    "WIB": {"code": "WIB", "name": "Western Indonesia Time", "offset": 7.0, "utc": "UTC+07:00", "region": "Asia", "iana": "Asia/Jakarta"},
+    
+    # UTC+08:00
+    "CST": {"code": "CST", "name": "China Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Shanghai"},
+    "SGT": {"code": "SGT", "name": "Singapore Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Singapore"},
+    "MYT": {"code": "MYT", "name": "Malaysia Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Kuala_Lumpur"},
+    "PHT": {"code": "PHT", "name": "Philippine Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Manila"},
+    "HKT": {"code": "HKT", "name": "Hong Kong Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Asia", "iana": "Asia/Hong_Kong"},
+    "AWST": {"code": "AWST", "name": "Australian Western Standard Time", "offset": 8.0, "utc": "UTC+08:00", "region": "Australia", "iana": "Australia/Perth"},
+    
+    # UTC+09:00
+    "JST": {"code": "JST", "name": "Japan Standard Time", "offset": 9.0, "utc": "UTC+09:00", "region": "Asia", "iana": "Asia/Tokyo"},
+    "KST": {"code": "KST", "name": "Korea Standard Time", "offset": 9.0, "utc": "UTC+09:00", "region": "Asia", "iana": "Asia/Seoul"},
+    
+    # UTC+09:30
+    "ACST": {"code": "ACST", "name": "Australian Central Standard Time", "offset": 9.5, "utc": "UTC+09:30", "region": "Australia", "iana": "Australia/Adelaide"},
+    "ACDT": {"code": "ACDT", "name": "Australian Central Daylight Time", "offset": 10.5, "utc": "UTC+10:30", "region": "Australia", "iana": "Australia/Adelaide"},
+    
+    # UTC+10:00
+    "AEST": {"code": "AEST", "name": "Australian Eastern Standard Time", "offset": 10.0, "utc": "UTC+10:00", "region": "Australia", "iana": "Australia/Sydney"},
+    "AEDT": {"code": "AEDT", "name": "Australian Eastern Daylight Time", "offset": 11.0, "utc": "UTC+11:00", "region": "Australia", "iana": "Australia/Sydney"},
+    
+    # UTC+10:30
+    "LHST": {"code": "LHST", "name": "Lord Howe Standard Time", "offset": 10.5, "utc": "UTC+10:30", "region": "Australia", "iana": "Australia/Lord_Howe"},
+    
+    # UTC+11:00
+    "SBT": {"code": "SBT", "name": "Solomon Islands Time", "offset": 11.0, "utc": "UTC+11:00", "region": "Pacific", "iana": "Pacific/Guadalcanal"},
+    "NACT": {"code": "NACT", "name": "Norfolk Island Time", "offset": 11.0, "utc": "UTC+11:00", "region": "Pacific", "iana": "Pacific/Norfolk"},
+    
+    # UTC+12:00
+    "NZST": {"code": "NZST", "name": "New Zealand Standard Time", "offset": 12.0, "utc": "UTC+12:00", "region": "Pacific", "iana": "Pacific/Auckland"},
+    "FJT": {"code": "FJT", "name": "Fiji Time", "offset": 12.0, "utc": "UTC+12:00", "region": "Pacific", "iana": "Pacific/Fiji"},
+    
+    # UTC+12:45
+    "CHAST": {"code": "CHAST", "name": "Chatham Islands Standard Time", "offset": 12.75, "utc": "UTC+12:45", "region": "Pacific", "iana": "Pacific/Chatham"},
+    
+    # UTC+13:00
+    "NZDT": {"code": "NZDT", "name": "New Zealand Daylight Time", "offset": 13.0, "utc": "UTC+13:00", "region": "Pacific", "iana": "Pacific/Auckland"},
+    "PHOT": {"code": "PHOT", "name": "Phoenix Islands Time", "offset": 13.0, "utc": "UTC+13:00", "region": "Pacific", "iana": "Pacific/Kiritimati"},
+    
+    # UTC+14:00
+    "LINT": {"code": "LINT", "name": "Line Islands Time", "offset": 14.0, "utc": "UTC+14:00", "region": "Pacific", "iana": "Pacific/Kiritimati"},
 }
 
 # ── PERMISSION SETTINGS ────────────────────────────────────────────────────────
@@ -143,7 +207,7 @@ async def timezone_autocomplete(
         # Show first 25 timezones if nothing typed
         choices = [
             app_commands.Choice(
-                name=f"{tz} ({TIMEZONES[tz]['name']}, UTC{'+' if TIMEZONES[tz]['offset'] >= 0 else ''}{TIMEZONES[tz]['offset']})",
+                name=f"{TIMEZONES[tz].get('code', tz)} ({TIMEZONES[tz]['utc']}) - {TIMEZONES[tz]['name']}",
                 value=tz
             )
             for tz in sorted(TIMEZONES.keys())[:25]
@@ -157,7 +221,7 @@ async def timezone_autocomplete(
         ]
         choices = [
             app_commands.Choice(
-                name=f"{tz} ({TIMEZONES[tz]['name']}, UTC{'+' if TIMEZONES[tz]['offset'] >= 0 else ''}{TIMEZONES[tz]['offset']})",
+                name=f"{TIMEZONES[tz].get('code', tz)} ({TIMEZONES[tz]['utc']}) - {TIMEZONES[tz]['name']}",
                 value=tz
             )
             for tz in sorted(matching)[:25]
@@ -1211,6 +1275,218 @@ async def remove_timezone(interaction: discord.Interaction):
         embed = discord.Embed(title="❌ Failed to remove timezone", color=0xDA3633)
 
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /list_friends - Show all friends with times
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="list_friends", description="Show all friends' timezones and current times")
+async def list_friends(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        from datetime import datetime, timedelta
+        async with aiohttp.ClientSession() as session:
+            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+        if not timezones:
+            await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
+            return
+        utc_now = datetime.utcnow()
+        embed = discord.Embed(title="🌍 Friends' Times", color=0x0066FF)
+        for user_id, tz_data in sorted(timezones.items()):
+            tz_code = tz_data.get("code", tz_data.get("timezone", "?"))
+            utc_offset = tz_data.get("utc", f"UTC{'+' if tz_data['offset'] >= 0 else ''}{tz_data['offset']}")
+            offset = tz_data["offset"]
+            user_time = utc_now + timedelta(hours=offset)
+            time_12 = user_time.strftime("%I:%M %p")
+            embed.add_field(name=f"{tz_code} ({utc_offset})", value=f"🕐 {time_12}", inline=True)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /friend_compare - Compare time difference
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="friend_compare", description="Compare time difference with a friend")
+@app_commands.describe(user="Friend to compare")
+async def friend_compare(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        your_id = str(interaction.user.id)
+        friend_id = str(user.id)
+        async with aiohttp.ClientSession() as session:
+            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+        if your_id not in timezones or friend_id not in timezones:
+            await interaction.followup.send(embed=discord.Embed(title="❌ Timezone not set", description="Both need timezone", color=0xDA3633), ephemeral=True)
+            return
+        your_tz = timezones[your_id]
+        friend_tz = timezones[friend_id]
+        diff = friend_tz["offset"] - your_tz["offset"]
+        sign = "+" if diff >= 0 else ""
+        embed = discord.Embed(title="⏰ Time Difference", color=0x0066FF)
+        your_code = your_tz.get("code", your_tz.get("timezone"))
+        friend_code = friend_tz.get("code", friend_tz.get("timezone"))
+        your_utc = your_tz.get("utc", f"UTC{'+' if your_tz['offset'] >= 0 else ''}{your_tz['offset']}")
+        friend_utc = friend_tz.get("utc", f"UTC{'+' if friend_tz['offset'] >= 0 else ''}{friend_tz['offset']}")
+        embed.add_field(name="You", value=f"{your_code} ({your_utc})", inline=True)
+        embed.add_field(name=f"{user.display_name}", value=f"{friend_code} ({friend_utc})", inline=True)
+        embed.add_field(name="Difference", value=f"{sign}{diff}h", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /timezone_convert - Convert between timezones
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="timezone_convert", description="Convert time between timezones")
+@app_commands.describe(from_tz="Source", to_tz="Target", time="HH:MM (24-hr)")
+@app_commands.autocomplete(from_tz=timezone_autocomplete)
+@app_commands.autocomplete(to_tz=timezone_autocomplete)
+async def timezone_convert(interaction: discord.Interaction, from_tz: str, to_tz: str, time: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        from_upper = from_tz.upper()
+        to_upper = to_tz.upper()
+        if from_upper not in TIMEZONES or to_upper not in TIMEZONES:
+            await interaction.followup.send(embed=discord.Embed(title="❌ Invalid timezone", color=0xDA3633), ephemeral=True)
+            return
+        hour, minute = map(int, time.split(":"))
+        from_data = TIMEZONES[from_upper]
+        to_data = TIMEZONES[to_upper]
+        offset_diff = to_data["offset"] - from_data["offset"]
+        new_hour = (hour + int(offset_diff)) % 24
+        embed = discord.Embed(title="🕐 Time Conversion", color=0x0066FF)
+        from_code = from_data.get("code", from_upper)
+        to_code = to_data.get("code", to_upper)
+        embed.add_field(name=f"{from_code}", value=f"{hour:02d}:{minute:02d}", inline=True)
+        embed.add_field(name=f"{to_code}", value=f"{new_hour:02d}:{minute:02d}", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /timezone_stats - Show timezone distribution
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="timezone_stats", description="Show team timezone distribution")
+async def timezone_stats(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        async with aiohttp.ClientSession() as session:
+            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+        if not timezones:
+            await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
+            return
+        tz_count = {}
+        for tz_data in timezones.values():
+            tz = tz_data.get("code", tz_data.get("timezone"))
+            tz_count[tz] = tz_count.get(tz, 0) + 1
+        embed = discord.Embed(title="📊 Timezone Distribution", color=0x0066FF)
+        for tz, count in sorted(tz_count.items(), key=lambda x: x[1], reverse=True):
+            embed.add_field(name=tz, value=f"{count} member(s)", inline=True)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /night_mode - Check if friend sleeping
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="night_mode", description="Check if friend is sleeping (10 PM - 7 AM)")
+@app_commands.describe(user="Friend to check")
+async def night_mode(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        from datetime import datetime, timedelta
+        friend_id = str(user.id)
+        async with aiohttp.ClientSession() as session:
+            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+        if friend_id not in timezones:
+            await interaction.followup.send(embed=discord.Embed(title="❌ Timezone not set", color=0xDA3633), ephemeral=True)
+            return
+        tz_data = timezones[friend_id]
+        offset = tz_data["offset"]
+        friend_time = datetime.utcnow() + timedelta(hours=offset)
+        hour = friend_time.hour
+        is_sleeping = hour < 7 or hour >= 22
+        embed = discord.Embed(title=f"😴 {user.display_name}", description="🔴 SLEEPING" if is_sleeping else "🟢 AWAKE", color=0xDA3633 if is_sleeping else 0x2EA043)
+        tz_code = tz_data.get("code", tz_data.get("timezone"))
+        tz_utc = tz_data.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
+        embed.add_field(name="Timezone", value=f"{tz_code} ({tz_utc})", inline=True)
+        embed.add_field(name="Time", value=friend_time.strftime("%I:%M %p"), inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633), ephemeral=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /similar_timezone - Find similar timezones
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="similar_timezone", description="Find members within 2 hours of you")
+async def similar_timezone(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        your_id = str(interaction.user.id)
+        async with aiohttp.ClientSession() as session:
+            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+        if your_id not in timezones:
+            await interaction.followup.send(embed=discord.Embed(title="❌ Your timezone not set", color=0xDA3633))
+            return
+        your_offset = timezones[your_id]["offset"]
+        similar = []
+        for user_id, tz_data in timezones.items():
+            if user_id == your_id:
+                continue
+            offset = tz_data["offset"]
+            diff = abs(offset - your_offset)
+            if diff <= 2:
+                tz_code = tz_data.get("code", tz_data.get("timezone"))
+                similar.append((tz_code, diff))
+        embed = discord.Embed(title="🌍 Similar Timezones", color=0x0066FF)
+        if similar:
+            for tz, diff in sorted(similar, key=lambda x: x[1]):
+                embed.add_field(name=tz, value=f"{diff}h diff", inline=True)
+        else:
+            embed.description = "No one within 2 hours"
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /world_clock - Show all team timezones
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="world_clock", description="Show current time in all team timezones")
+async def world_clock(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        from datetime import datetime, timedelta
+        utc_now = datetime.utcnow()
+        async with aiohttp.ClientSession() as session:
+            timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+        if not timezones:
+            await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
+            return
+        embeds = []
+        seen_tz = set()
+        for tz_data in timezones.values():
+            tz_code = tz_data.get("code", tz_data.get("timezone"))
+            if tz_code in seen_tz:
+                continue
+            seen_tz.add(tz_code)
+            offset = tz_data["offset"]
+            local_time = utc_now + timedelta(hours=offset)
+            time_12 = local_time.strftime("%I:%M %p")
+            date_str = local_time.strftime("%a, %b %d")
+            tz_utc = tz_data.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
+            embed = discord.Embed(title=f"🕐 {tz_code} ({tz_utc})", color=0x0066FF)
+            embed.add_field(name="Time", value=time_12, inline=True)
+            embed.add_field(name="Date", value=date_str, inline=True)
+            embeds.append(embed)
+        await interaction.followup.send(embeds=embeds[:10])
+    except Exception as e:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
 
 # ══════════════════════════════════════════════════════════════════════════════
 
