@@ -1496,6 +1496,10 @@ async def setup_timezone_menu(interaction: discord.Interaction):
     await interaction.followup.send("📍 Step 1: Select a channel", view=channel_view, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Run bot + health server together
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def main():
     await start_health_server()
     await bot.start(DISCORD_TOKEN)
 
