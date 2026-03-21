@@ -979,8 +979,8 @@ async def timezone_list(interaction: discord.Interaction):
         region = info["region"]
         if region not in regions:
             regions[region] = []
-        code = info.get("code", tz)
-        utc_offset = info.get("utc", f"UTC{'+' if info['offset'] >= 0 else ''}{info['offset']}")
+        code = info["code"]
+        utc_offset = info["utc"]
         regions[region].append(f"**{code}** ({utc_offset}) - {info['name']}")
 
     embeds = []
@@ -1031,7 +1031,7 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
 
     if success:
         tz_info = TIMEZONES[tz_upper]
-        utc_offset = tz_info.get("utc", f"UTC{'+' if tz_info['offset'] >= 0 else ''}{tz_info['offset']}")
+        utc_offset = tz_info["utc"]
         embed = discord.Embed(
             title="✅ Timezone Set!",
             description=f"**{tz_upper}** ({utc_offset}) - {tz_info['name']}",
@@ -1085,7 +1085,7 @@ async def add_friend_timezone(interaction: discord.Interaction, user: discord.Us
 
     if success:
         tz_info = TIMEZONES[tz_upper]
-        utc_offset = tz_info.get("utc", f"UTC{'+' if tz_info['offset'] >= 0 else ''}{tz_info['offset']}")
+        utc_offset = tz_info["utc"]
         embed = discord.Embed(
             title="✅ Friend's Timezone Added!",
             description=f"**{user.mention}** → **{tz_upper}** ({utc_offset}) - {tz_info['name']}",
@@ -1174,7 +1174,7 @@ async def my_time(interaction: discord.Interaction):
     time_12 = user_time.strftime("%I:%M %p")
     
     tz_info = TIMEZONES[tz_code]
-    utc_offset = tz_info.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
+    utc_offset = tz_info["utc"]
     
     embed = discord.Embed(
         title=f"🕐 Your Time",
@@ -1213,8 +1213,10 @@ async def friend_time(interaction: discord.Interaction, user: discord.User):
         return
 
     tz_data = timezones[friend_id]
-    tz_code = tz_data["timezone"]
+    tz_code = tz_data["code"]
     offset = tz_data["offset"]
+    utc_offset = tz_data["utc"]
+    tz_name = tz_data["name"]
     
     from datetime import datetime, timedelta
     
@@ -1222,16 +1224,13 @@ async def friend_time(interaction: discord.Interaction, user: discord.User):
     friend_time = utc_now + timedelta(hours=offset)
     time_12 = friend_time.strftime("%I:%M %p")
     
-    tz_info = TIMEZONES[tz_code]
-    utc_offset = tz_data.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
-    
     embed = discord.Embed(
         title=f"🕐 {user.display_name}'s Time",
         description=f"**{time_12}**",
         color=0x0066FF
     )
     embed.add_field(name="Timezone", value=f"{tz_code} ({utc_offset})", inline=True)
-    embed.add_field(name="Full Name", value=tz_info["name"], inline=True)
+    embed.add_field(name="Full Name", value=tz_name, inline=True)
     embed.set_footer(text=f"Requested by {interaction.user.display_name}")
     
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1288,15 +1287,30 @@ async def list_friends(interaction: discord.Interaction):
         if not timezones:
             await interaction.followup.send(embed=discord.Embed(title="❌ No timezones set", color=0xDA3633))
             return
+        
         utc_now = datetime.utcnow()
         embed = discord.Embed(title="🌍 Friends' Times", color=0x0066FF)
+        
         for user_id, tz_data in sorted(timezones.items()):
-            tz_code = tz_data.get("code", tz_data.get("timezone", "?"))
-            utc_offset = tz_data.get("utc", f"UTC{'+' if tz_data['offset'] >= 0 else ''}{tz_data['offset']}")
+            try:
+                # Fetch Discord user to get their name
+                user = await interaction.client.fetch_user(int(user_id))
+                user_name = user.display_name
+            except:
+                user_name = f"User {user_id}"
+            
+            tz_code = tz_data["code"]
+            utc_offset = tz_data["utc"]
             offset = tz_data["offset"]
             user_time = utc_now + timedelta(hours=offset)
             time_12 = user_time.strftime("%I:%M %p")
-            embed.add_field(name=f"{tz_code} ({utc_offset})", value=f"🕐 {time_12}", inline=True)
+            
+            embed.add_field(
+                name=f"👤 {user_name}",
+                value=f"🕐 {time_12} ({tz_code})",
+                inline=False
+            )
+        
         await interaction.followup.send(embed=embed)
     except Exception as e:
         await interaction.followup.send(embed=discord.Embed(title="❌ Error", description=str(e)[:100], color=0xDA3633))
@@ -1322,10 +1336,10 @@ async def friend_compare(interaction: discord.Interaction, user: discord.User):
         diff = friend_tz["offset"] - your_tz["offset"]
         sign = "+" if diff >= 0 else ""
         embed = discord.Embed(title="⏰ Time Difference", color=0x0066FF)
-        your_code = your_tz.get("code", your_tz.get("timezone"))
-        friend_code = friend_tz.get("code", friend_tz.get("timezone"))
-        your_utc = your_tz.get("utc", f"UTC{'+' if your_tz['offset'] >= 0 else ''}{your_tz['offset']}")
-        friend_utc = friend_tz.get("utc", f"UTC{'+' if friend_tz['offset'] >= 0 else ''}{friend_tz['offset']}")
+        your_code = your_tz["code"]
+        friend_code = friend_tz["code"]
+        your_utc = your_tz["utc"]
+        friend_utc = friend_tz["utc"]
         embed.add_field(name="You", value=f"{your_code} ({your_utc})", inline=True)
         embed.add_field(name=f"{user.display_name}", value=f"{friend_code} ({friend_utc})", inline=True)
         embed.add_field(name="Difference", value=f"{sign}{diff}h", inline=False)
@@ -1355,8 +1369,8 @@ async def timezone_convert(interaction: discord.Interaction, from_tz: str, to_tz
         offset_diff = to_data["offset"] - from_data["offset"]
         new_hour = (hour + int(offset_diff)) % 24
         embed = discord.Embed(title="🕐 Time Conversion", color=0x0066FF)
-        from_code = from_data.get("code", from_upper)
-        to_code = to_data.get("code", to_upper)
+        from_code = from_data["code"]
+        to_code = to_data["code"]
         embed.add_field(name=f"{from_code}", value=f"{hour:02d}:{minute:02d}", inline=True)
         embed.add_field(name=f"{to_code}", value=f"{new_hour:02d}:{minute:02d}", inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1378,7 +1392,7 @@ async def timezone_stats(interaction: discord.Interaction):
             return
         tz_count = {}
         for tz_data in timezones.values():
-            tz = tz_data.get("code", tz_data.get("timezone"))
+            tz = tz_data["code"]))
             tz_count[tz] = tz_count.get(tz, 0) + 1
         embed = discord.Embed(title="📊 Timezone Distribution", color=0x0066FF)
         for tz, count in sorted(tz_count.items(), key=lambda x: x[1], reverse=True):
@@ -1409,8 +1423,8 @@ async def night_mode(interaction: discord.Interaction, user: discord.User):
         hour = friend_time.hour
         is_sleeping = hour < 7 or hour >= 22
         embed = discord.Embed(title=f"😴 {user.display_name}", description="🔴 SLEEPING" if is_sleeping else "🟢 AWAKE", color=0xDA3633 if is_sleeping else 0x2EA043)
-        tz_code = tz_data.get("code", tz_data.get("timezone"))
-        tz_utc = tz_data.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
+        tz_code = tz_data["code"]
+        tz_utc = tz_data["utc"]
         embed.add_field(name="Timezone", value=f"{tz_code} ({tz_utc})", inline=True)
         embed.add_field(name="Time", value=friend_time.strftime("%I:%M %p"), inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1439,12 +1453,18 @@ async def similar_timezone(interaction: discord.Interaction):
             offset = tz_data["offset"]
             diff = abs(offset - your_offset)
             if diff <= 2:
-                tz_code = tz_data.get("code", tz_data.get("timezone"))
-                similar.append((tz_code, diff))
+                tz_code = tz_data["code"]
+                similar.append((tz_code, diff, user_id))
+        
         embed = discord.Embed(title="🌍 Similar Timezones", color=0x0066FF)
         if similar:
-            for tz, diff in sorted(similar, key=lambda x: x[1]):
-                embed.add_field(name=tz, value=f"{diff}h diff", inline=True)
+            for tz, diff, user_id in sorted(similar, key=lambda x: x[1]):
+                try:
+                    user = await interaction.client.fetch_user(int(user_id))
+                    user_name = user.display_name
+                except:
+                    user_name = f"User {user_id}"
+                embed.add_field(name=f"👤 {user_name}", value=f"{tz} ({diff}h diff)", inline=False)
         else:
             embed.description = "No one within 2 hours"
         await interaction.followup.send(embed=embed)
@@ -1469,7 +1489,7 @@ async def world_clock(interaction: discord.Interaction):
         embeds = []
         seen_tz = set()
         for tz_data in timezones.values():
-            tz_code = tz_data.get("code", tz_data.get("timezone"))
+            tz_code = tz_data["code"]
             if tz_code in seen_tz:
                 continue
             seen_tz.add(tz_code)
@@ -1477,7 +1497,7 @@ async def world_clock(interaction: discord.Interaction):
             local_time = utc_now + timedelta(hours=offset)
             time_12 = local_time.strftime("%I:%M %p")
             date_str = local_time.strftime("%a, %b %d")
-            tz_utc = tz_data.get("utc", f"UTC{'+' if offset >= 0 else ''}{offset}")
+            tz_utc = tz_data["utc"]
             embed = discord.Embed(title=f"🕐 {tz_code} ({tz_utc})", color=0x0066FF)
             embed.add_field(name="Time", value=time_12, inline=True)
             embed.add_field(name="Date", value=date_str, inline=True)
