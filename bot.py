@@ -192,7 +192,7 @@ _prefix_cache = ["?"]
 async def get_prefix(bot, message):
     return _prefix_cache
 
-bot = commands.Bot(command_prefix=get_prefix, intents=intents)
+bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
 
