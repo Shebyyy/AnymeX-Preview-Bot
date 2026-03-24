@@ -8,7 +8,8 @@ import os
 import base64
 import json
 import re
-import threading
+import signal
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
@@ -27,6 +28,32 @@ WORKFLOW_FILE  = "beta_manual.yml"
 
 GITHUB_API     = "https://api.github.com"
 ANILIST_API    = "https://graphql.anilist.co"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL HTTP SESSION (Singleton Pattern)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_http_session: aiohttp.ClientSession = None
+
+async def get_session() -> aiohttp.ClientSession:
+    """Get or create the global HTTP session."""
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        connector = aiohttp.TCPConnector(limit=100, limit_per_host=10, enable_cleanup_closed=True)
+        _http_session = aiohttp.ClientSession(
+            timeout=timeout,
+            connector=connector,
+            headers={"User-Agent": "AnymeX-Preview-Bot/2.0"}
+        )
+    return _http_session
+
+async def close_session():
+    """Close the global HTTP session."""
+    global _http_session
+    if _http_session and not _http_session.closed:
+        await _http_session.close()
+        _http_session = None
 
 # File names on GitHub
 FILE_ANIME        = "underrated_anime.json"
@@ -153,24 +180,48 @@ def gh_headers():
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tuple:
+async def github_read_json(filepath: str) -> tuple:
     """Read a JSON file from GitHub. Returns (parsed_data, sha)."""
+    session = await get_session()
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{filepath}?ref={GITHUB_BRANCH}"
-    async with session.get(url, headers=gh_headers()) as r:
-        if r.status == 404:
-            # Return appropriate default based on file type
-            if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
-                return {}, None
-            elif filepath == FILE_PREFIXES:
-                return DEFAULT_PREFIXES[:], None
-            else:
-                return [], None
-        data = await r.json()
-        content = base64.b64decode(data["content"]).decode("utf-8")
-        return json.loads(content), data["sha"]
+    
+    try:
+        async with session.get(url, headers=gh_headers()) as r:
+            if r.status == 404:
+                # Return appropriate default based on file type
+                if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
+                    return {}, None
+                elif filepath == FILE_PREFIXES:
+                    return DEFAULT_PREFIXES[:], None
+                else:
+                    return [], None
+            
+            if r.status != 200:
+                print(f"GitHub API error {r.status} for {filepath}")
+                # Return defaults on error
+                if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
+                    return {}, None
+                elif filepath == FILE_PREFIXES:
+                    return DEFAULT_PREFIXES[:], None
+                else:
+                    return [], None
+            
+            data = await r.json()
+            content = base64.b64decode(data["content"]).decode("utf-8")
+            return json.loads(content), data["sha"]
+    except Exception as e:
+        print(f"Error reading {filepath} from GitHub: {e}")
+        # Return defaults on error
+        if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
+            return {}, None
+        elif filepath == FILE_PREFIXES:
+            return DEFAULT_PREFIXES[:], None
+        else:
+            return [], None
 
-async def github_write_json(session: aiohttp.ClientSession, filepath: str, data, sha, commit_msg: str) -> bool:
+async def github_write_json(filepath: str, data, sha, commit_msg: str) -> bool:
     """Write/update a JSON file on GitHub. Returns True on success."""
+    session = await get_session()
     payload = {
         "message": commit_msg,
         "content": base64.b64encode(
@@ -181,8 +232,15 @@ async def github_write_json(session: aiohttp.ClientSession, filepath: str, data,
     if sha:
         payload["sha"] = sha
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{filepath}"
-    async with session.put(url, headers=gh_headers(), json=payload) as r:
-        return r.status in (200, 201)
+    
+    try:
+        async with session.put(url, headers=gh_headers(), json=payload) as r:
+            if r.status not in (200, 201):
+                print(f"GitHub write error {r.status} for {filepath}")
+            return r.status in (200, 201)
+    except Exception as e:
+        print(f"Error writing {filepath} to GitHub: {e}")
+        return False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SERVER CONFIG MANAGER
@@ -195,8 +253,7 @@ async def get_server_config(guild_id: str) -> dict:
     if guild_id in _server_config_cache:
         return _server_config_cache[guild_id]
     
-    async with aiohttp.ClientSession() as session:
-        servers, _ = await github_read_json(session, FILE_SERVERS)
+    servers, _ = await github_read_json(FILE_SERVERS)
     
     if guild_id not in servers:
         return None
@@ -206,10 +263,9 @@ async def get_server_config(guild_id: str) -> dict:
 
 async def save_server_config(guild_id: str, config: dict) -> bool:
     """Save server config to GitHub."""
-    async with aiohttp.ClientSession() as session:
-        servers, sha = await github_read_json(session, FILE_SERVERS)
-        servers[guild_id] = config
-        success = await github_write_json(session, FILE_SERVERS, servers, sha, f"Update config for guild {guild_id}")
+    servers, sha = await github_read_json(FILE_SERVERS)
+    servers[guild_id] = config
+    success = await github_write_json(FILE_SERVERS, servers, sha, f"Update config for guild {guild_id}")
     
     if success:
         _server_config_cache[guild_id] = config
@@ -552,7 +608,7 @@ async def get_studio(session: aiohttp.ClientSession, search: str):
 
 async def log_mod_action(guild_id: str, action: str, target_id: str, moderator_id: str, reason: str, extra: dict = None):
     """Log a moderation action to GitHub."""
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         logs, sha = await github_read_json(session, FILE_MODLOG)
         
         if guild_id not in logs:
@@ -572,7 +628,7 @@ async def log_mod_action(guild_id: str, action: str, target_id: str, moderator_i
 
 async def get_user_warnings(guild_id: str, user_id: str) -> List[dict]:
     """Get all active warnings for a user in a guild."""
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         warnings, _ = await github_read_json(session, FILE_WARNINGS)
     
     guild_warnings = warnings.get(guild_id, {})
@@ -593,7 +649,7 @@ async def get_user_warnings(guild_id: str, user_id: str) -> List[dict]:
 
 async def add_warning(guild_id: str, user_id: str, moderator_id: str, reason: str) -> dict:
     """Add a warning to a user. Returns {count, threshold_reached}."""
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         warnings, sha = await github_read_json(session, FILE_WARNINGS)
         
         if guild_id not in warnings:
@@ -622,7 +678,7 @@ async def add_warning(guild_id: str, user_id: str, moderator_id: str, reason: st
 
 async def clear_warnings(guild_id: str, user_id: str) -> bool:
     """Clear all warnings for a user."""
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         warnings, sha = await github_read_json(session, FILE_WARNINGS)
         
         if guild_id in warnings and user_id in warnings[guild_id]:
@@ -682,7 +738,7 @@ async def mute_user(member: discord.Member, duration_minutes: int, reason: str, 
         await member.add_roles(muted_role, reason=reason)
         
         # Store mute info
-        async with aiohttp.ClientSession() as session:
+        session = await get_session()
             mutes, sha = await github_read_json(session, FILE_MUTES)
             
             guild_id = str(member.guild.id)
@@ -710,7 +766,7 @@ async def unmute_user(member: discord.Member) -> bool:
         await member.remove_roles(muted_role, reason="Mute expired or removed")
         
         # Remove from mutes file
-        async with aiohttp.ClientSession() as session:
+        session = await get_session()
             mutes, sha = await github_read_json(session, FILE_MUTES)
             
             guild_id = str(member.guild.id)
@@ -725,7 +781,7 @@ async def unmute_user(member: discord.Member) -> bool:
 
 async def check_expired_mutes():
     """Check and remove expired mutes. Called periodically."""
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         mutes, _ = await github_read_json(session, FILE_MUTES)
     
     now = datetime.utcnow()
@@ -826,7 +882,7 @@ async def handle_honeypot_trigger(message: discord.Message, config: dict):
     dm_message = honeypot_config.get("dm_message", "You were caught in a honeypot trap.")
     
     # Log to honeypot_logs.json
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         logs, sha = await github_read_json(session, FILE_HONEYPOT)
         
         guild_id = str(guild.id)
@@ -998,7 +1054,7 @@ async def add_to_snipe(message: discord.Message, action: str):
     }
     
     # Also save to GitHub for persistence
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         snipes, sha = await github_read_json(session, FILE_SNIPE)
         guild_id = str(message.guild.id)
         if guild_id not in snipes:
@@ -1227,7 +1283,7 @@ async def ensure_json_files():
         FILE_HONEYPOT: {},
         FILE_SNIPE: {},
     }
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         for filepath, default in files.items():
             data, sha = await github_read_json(session, filepath)
             if sha is None:
@@ -1687,7 +1743,7 @@ async def tempban_cmd(interaction: discord.Interaction, user: discord.Member, ho
         await interaction.guild.ban(user, reason=f"Tempban: {reason}", delete_message_days=1)
         
         # Store tempban in mutes file (reuse for tempbans)
-        async with aiohttp.ClientSession() as session:
+        session = await get_session()
             mutes, sha = await github_read_json(session, FILE_MUTES)
             
             guild_id = str(interaction.guild.id)
@@ -1884,7 +1940,7 @@ async def snipe_cmd(interaction: discord.Interaction):
         snipe_data = _snipe_cache[channel_id]
     else:
         # Check GitHub
-        async with aiohttp.ClientSession() as session:
+        session = await get_session()
             snipes, _ = await github_read_json(session, FILE_SNIPE)
             guild_id = str(interaction.guild.id)
             if guild_id in snipes and channel_id in snipes[guild_id]:
@@ -1973,7 +2029,7 @@ async def serverinfo_cmd(interaction: discord.Interaction):
 async def modlog_cmd(interaction: discord.Interaction, user: discord.Member = None, limit: int = 10):
     await interaction.response.defer(ephemeral=True)
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         logs, _ = await github_read_json(session, FILE_MODLOG)
     
     guild_id = str(interaction.guild.id)
@@ -2079,7 +2135,7 @@ async def anime_autocomplete(interaction: discord.Interaction, current: str) -> 
     if not current:
         return []
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         result = await search_anilist(session, current, "ANIME", per_page=10)
     
     if not result:
@@ -2096,7 +2152,7 @@ async def manga_autocomplete(interaction: discord.Interaction, current: str) -> 
     if not current:
         return []
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         result = await search_anilist(session, current, "MANGA", per_page=10)
     
     if not result:
@@ -2115,7 +2171,7 @@ async def manga_autocomplete(interaction: discord.Interaction, current: str) -> 
 async def anime_search_cmd(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         # Try as ID first, then search
         if query.isdigit():
             media = await fetch_anilist(session, int(query), "ANIME")
@@ -2157,7 +2213,7 @@ async def anime_search_cmd(interaction: discord.Interaction, query: str):
 async def manga_search_cmd(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         if query.isdigit():
             media = await fetch_anilist(session, int(query), "MANGA")
         else:
@@ -2196,7 +2252,7 @@ async def manga_search_cmd(interaction: discord.Interaction, query: str):
 async def character_search_cmd(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         char = await get_character(session, name)
     
     if not char:
@@ -2238,7 +2294,7 @@ async def character_search_cmd(interaction: discord.Interaction, name: str):
 async def studio_search_cmd(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         studio = await get_studio(session, name)
     
     if not studio:
@@ -2269,7 +2325,7 @@ async def seasonal_cmd(interaction: discord.Interaction, season: str = None, yea
         await interaction.followup.send("❌ Season must be: winter, spring, summer, or fall")
         return
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         result = await get_seasonal_anime(session, season, year)
     
     if not result or not result.get("media"):
@@ -2304,7 +2360,7 @@ async def seasonal_cmd(interaction: discord.Interaction, season: str = None, yea
 async def airing_cmd(interaction: discord.Interaction, anime_id: int):
     await interaction.response.defer()
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         # Get anime info
         media = await fetch_anilist(session, anime_id, "ANIME")
         if not media:
@@ -2360,7 +2416,7 @@ async def random_anime_cmd(interaction: discord.Interaction, genre: str = None):
     
     page = random.randint(1, 50)
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         result = await search_anilist(session, query, "ANIME", page=page, per_page=1)
     
     if not result or not result.get("media"):
@@ -2399,7 +2455,7 @@ async def setup(interaction: discord.Interaction, anilist_user_id: int, mal_user
     discord_id = str(interaction.user.id)
     author_display = author_name or interaction.user.display_name
 
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         users, sha = await github_read_json(session, FILE_USERS)
 
         users[discord_id] = {
@@ -2423,7 +2479,7 @@ async def setup(interaction: discord.Interaction, anilist_user_id: int, mal_user
 async def myprofile(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         users, _ = await github_read_json(session, FILE_USERS)
 
     profile = users.get(str(interaction.user.id))
@@ -2442,7 +2498,7 @@ async def myprofile(interaction: discord.Interaction):
 async def anilist_stats_cmd(interaction: discord.Interaction, user_id: int):
     await interaction.response.defer()
     
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         user = await get_anilist_user_stats(session, user_id)
     
     if not user:
@@ -2511,7 +2567,7 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
         return
     
     discord_id = str(interaction.user.id)
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         timezones, sha = await github_read_json(session, FILE_TIMEZONES)
         tz_info = TIMEZONES[tz_upper]
         timezones[discord_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
@@ -2529,7 +2585,7 @@ async def my_time(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
     discord_id = str(interaction.user.id)
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         timezones, _ = await github_read_json(session, FILE_TIMEZONES)
     
     if discord_id not in timezones:
@@ -2587,7 +2643,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
         }
     }
 
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         async with session.post(
             f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches",
             headers=gh_headers(), json=payload,
@@ -2614,7 +2670,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
 async def create_tag(interaction: discord.Interaction, tag: str, message: str):
     await interaction.response.defer()
 
-    async with aiohttp.ClientSession() as session:
+    session = await get_session()
         async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/ref/heads/{GITHUB_BRANCH}", headers=gh_headers()) as r:
             status = r.status
             ref_data = await r.json()
