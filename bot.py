@@ -4640,7 +4640,8 @@ async def on_message(message: discord.Message):
         if len(timestamps) >= am["spam"]["max_messages"]:
             await _automod_action(am["spam"]["action"], "Spam")
 
-    await bot.process_commands(message)
+
+await bot.process_commands(message)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
