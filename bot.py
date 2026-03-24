@@ -852,11 +852,18 @@ async def get_profile(discord_id: str):
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f"✅ Logged in as {bot.user} — slash commands synced")
+    print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
     if not process_reminders.is_running():
         process_reminders.start()
+    # Sync slash commands once to avoid Cloudflare rate limiting on every restart
+    if not getattr(bot, "_synced", False):
+        try:
+            await bot.tree.sync()
+            bot._synced = True
+            print("✅ Slash commands synced")
+        except Exception as e:
+            print(f"⚠️ Failed to sync slash commands: {e}")
 
 
 async def ensure_json_files():
