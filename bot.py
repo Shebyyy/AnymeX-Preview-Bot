@@ -183,7 +183,9 @@ async def get_server_cfg(session, guild_id: str) -> dict:
 async def save_server_cfg(session, guild_id: str, cfg: dict) -> bool:
     all_cfg, sha = await github_read_json(session, FILE_SERVER_CFG)
     all_cfg[guild_id] = cfg
-    return await github_write_json(session, FILE_SERVER_CFG, all_cfg, sha, f"Update config for guild {guild_id}")
+    result = await github_write_json(session, FILE_SERVER_CFG, all_cfg, sha, f"Update config for guild {guild_id}")
+    _invalidate_cache(guild_id)
+    return result
 
 def _user_has_allowed_role_sync(interaction: discord.Interaction, allowed_role_ids: list) -> bool:
     if not allowed_role_ids:
@@ -2644,6 +2646,7 @@ async def honeypot_set(interaction: discord.Interaction, channel: discord.TextCh
             "dm_message": dm_message or f"You triggered a honeypot channel and have been {punishment.value}ed.",
         }
         await github_write_json(session, FILE_HONEYPOT, all_hp, sha, f"Set honeypot channel {channel.id} for guild {guild_id}")
+    _invalidate_cache(str(interaction.guild_id))
     await interaction.followup.send(embed=discord.Embed(title=f"🍯 Honeypot Set", description=f"{channel.mention} → **{punishment.value}**", color=0x2EA043), ephemeral=True)
 
 
@@ -2658,6 +2661,7 @@ async def honeypot_remove(interaction: discord.Interaction, channel: discord.Tex
         removed = all_hp.get(guild_id, {}).pop(str(channel.id), None)
         if removed:
             await github_write_json(session, FILE_HONEYPOT, all_hp, sha, f"Remove honeypot {channel.id}")
+            _invalidate_cache(str(interaction.guild_id))
             await interaction.followup.send(f"✅ Removed {channel.mention} from honeypot list.", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ {channel.mention} is not a honeypot channel.", ephemeral=True)
@@ -2681,6 +2685,56 @@ async def honeypot_list(interaction: discord.Interaction):
 
 # ── on_message: honeypot + automod ─────────────────────────────────────────────
 
+# ── In-memory cache for on_message hot path (avoids GitHub API on every message) ─
+_cfg_cache:      dict = {}   # guild_id -> (cfg_dict, fetched_at_timestamp)
+_hp_cache:       dict = {}   # guild_id -> (hp_dict, fetched_at_timestamp)
+_automod_cache:  dict = {}   # guild_id -> (am_dict, fetched_at_timestamp)
+_CACHE_TTL = 120             # seconds before re-fetching from GitHub
+
+import time as _time
+
+async def _cached_cfg(guild_id: str) -> dict:
+    now = _time.monotonic()
+    if guild_id in _cfg_cache:
+        data, ts = _cfg_cache[guild_id]
+        if now - ts < _CACHE_TTL:
+            return data
+    async with aiohttp.ClientSession() as session:
+        data = await get_server_cfg(session, guild_id)
+    _cfg_cache[guild_id] = (data, now)
+    return data
+
+async def _cached_hp(guild_id: str) -> dict:
+    now = _time.monotonic()
+    if guild_id in _hp_cache:
+        data, ts = _hp_cache[guild_id]
+        if now - ts < _CACHE_TTL:
+            return data
+    async with aiohttp.ClientSession() as session:
+        all_hp, _ = await github_read_json(session, FILE_HONEYPOT)
+    data = all_hp.get(guild_id, {})
+    _hp_cache[guild_id] = (data, now)
+    return data
+
+async def _cached_automod(guild_id: str) -> dict:
+    now = _time.monotonic()
+    if guild_id in _automod_cache:
+        data, ts = _automod_cache[guild_id]
+        if now - ts < _CACHE_TTL:
+            return data
+    async with aiohttp.ClientSession() as session:
+        all_am, _ = await github_read_json(session, FILE_AUTOMOD)
+    data = {**DEFAULT_AUTOMOD, **all_am.get(guild_id, {})}
+    _automod_cache[guild_id] = (data, now)
+    return data
+
+def _invalidate_cache(guild_id: str):
+    """Call after any config write so next message re-fetches fresh data."""
+    _cfg_cache.pop(guild_id, None)
+    _hp_cache.pop(guild_id, None)
+    _automod_cache.pop(guild_id, None)
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -2691,34 +2745,24 @@ async def on_message(message: discord.Message):
     user       = message.author
     channel_id = str(message.channel.id)
 
-    async with aiohttp.ClientSession() as session:
-        all_hp,     _ = await github_read_json(session, FILE_HONEYPOT)
-        all_automod, _ = await github_read_json(session, FILE_AUTOMOD)
-        cfg            = await get_server_cfg(session, guild_id)
+    # Use cached reads — no GitHub hit on every message
+    guild_hp = await _cached_hp(guild_id)
+    cfg      = await _cached_cfg(guild_id)
 
         # ── Honeypot Check ─────────────────────────────────────────────────────
-        guild_hp = all_hp.get(guild_id, {})
-        if channel_id in guild_hp:
+    if channel_id in guild_hp:
             hp_cfg = guild_hp[channel_id]
             punishment = hp_cfg["punishment"]
             dm_msg     = hp_cfg.get("dm_message", "You triggered a honeypot.")
 
-            # Delete all messages from user in last 24h across all channels
-            from datetime import datetime, timedelta
-            cutoff = discord.utils.utcnow() - timedelta(hours=24)
-            for ch in message.guild.text_channels:
-                try:
-                    to_delete = [m async for m in ch.history(limit=200, after=cutoff) if m.author == user]
-                    if to_delete:
-                        await ch.delete_messages(to_delete)
-                except Exception:
-                    pass
-
+            # DM first before punishment
             try:
                 await user.send(dm_msg)
             except Exception:
                 pass
 
+            # Apply punishment first so user can't keep posting while we sweep
+            from datetime import datetime, timedelta
             try:
                 if punishment == "kick":
                     await user.kick(reason="Honeypot triggered")
@@ -2732,17 +2776,32 @@ async def on_message(message: discord.Message):
             except Exception:
                 pass
 
+            # Sweep messages — rate-limit safe: one channel at a time with sleep
+            cutoff = discord.utils.utcnow() - timedelta(hours=24)
+            for ch in message.guild.text_channels:
+                try:
+                    to_delete = [m async for m in ch.history(limit=100, after=cutoff) if m.author.id == user.id]
+                    if to_delete:
+                        # delete_messages only works for ≤100 messages, bulk only for <14 days
+                        await ch.delete_messages(to_delete)
+                        await asyncio.sleep(0.5)   # stay well within rate limits between channels
+                except discord.Forbidden:
+                    pass
+                except Exception:
+                    pass
+
             log_embed = discord.Embed(title="🍯 Honeypot Triggered", color=0xDA3633)
             log_embed.add_field(name="User",       value=f"{user} ({user.id})",         inline=True)
             log_embed.add_field(name="Channel",    value=message.channel.mention,        inline=True)
             log_embed.add_field(name="Punishment", value=punishment,                     inline=True)
             await _log_mod_action(message.guild, cfg, log_embed)
-            await _add_mod_case(session, guild_id, {"type": f"honeypot_{punishment}", "user": str(user.id), "mod": "AUTO", "reason": "Honeypot triggered", "timestamp": datetime.utcnow().isoformat()})
+            async with aiohttp.ClientSession() as session:
+                await _add_mod_case(session, guild_id, {"type": f"honeypot_{punishment}", "user": str(user.id), "mod": "AUTO", "reason": "Honeypot triggered", "timestamp": datetime.utcnow().isoformat()})
             await bot.process_commands(message)
             return
 
         # ── AutoMod ────────────────────────────────────────────────────────────
-        am = {**DEFAULT_AUTOMOD, **all_automod.get(guild_id, {})}
+        am = await _cached_automod(guild_id)
         content = message.content
 
         async def _automod_action(action: str, reason: str):
@@ -2865,6 +2924,7 @@ async def automod_config(
         am[rule.value] = rule_cfg
         all_am[guild_id] = am
         await github_write_json(session, FILE_AUTOMOD, all_am, sha, f"Update automod for guild {guild_id}")
+    _invalidate_cache(guild_id)
     embed = discord.Embed(title=f"🤖 AutoMod: `{rule.value}` updated", color=0x2EA043)
     embed.add_field(name="Enabled", value=str(enabled), inline=True)
     embed.add_field(name="Action",  value=rule_cfg.get("action", "—"), inline=True)

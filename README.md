@@ -23,7 +23,7 @@
   - [🔨 Moderation Commands](#-moderation-commands)
   - [🤖 Auto-Moderation](#-auto-moderation)
   - [📝 Logging System](#-logging-system)
-  - [📺 AniList/MAL Integration](#-anilistmal-integration)
+  - [📺 AniList Integration](#-anilist-integration)
   - [🛠️ Utilities](#️-utilities)
   - [🌍 Timezone System](#-timezone-system)
   - [🔧 GitHub Integration](#-github-integration)
@@ -38,16 +38,17 @@
 
 ## Overview
 
-AnymeX Preview Bot is a feature-rich Discord bot designed for anime communities and development teams. It combines powerful moderation tools with AniList/MAL integration and GitHub workflow management.
+AnymeX Preview Bot is a feature-rich Discord bot designed for anime communities and development teams. It combines powerful moderation tools with AniList integration and GitHub workflow management.
 
 ### Key Highlights
 
-- 🍯 **Honeypot Trap System** - Catch raiders and spammers automatically
-- 🤖 **Auto-Moderation** - Spam, invite, link, caps, and mention filters
-- 📺 **AniList/MAL Integration** - Search anime, manga, characters, and more
-- 🔧 **GitHub Integration** - Trigger builds, create releases, manage repos
-- 🌍 **Multi-Server Support** - Each server has its own configuration
-- 💾 **GitHub Storage** - All data persists in your GitHub repository
+- 🍯 **Honeypot Trap System** — Catch raiders and spammers automatically
+- 🤖 **Auto-Moderation** — Spam, invite, link, caps, and mention filters
+- 📺 **AniList Integration** — Search anime, manga, characters, staff, and more
+- 🔧 **GitHub Integration** — Trigger builds, create releases, manage repos
+- 🌍 **Multi-Server Support** — Each server has its own configuration stored in JSON
+- 💾 **GitHub Storage** — All data persists in your GitHub repository as JSON files
+- ⌨️ **Dual Command System** — Every command available as both slash `/` and prefix `?`
 
 ---
 
@@ -55,23 +56,17 @@ AnymeX Preview Bot is a feature-rich Discord bot designed for anime communities 
 
 ### 🍯 Honeypot System
 
-A powerful trap system to catch malicious users. When someone sends a message in a honeypot channel:
+A trap system to catch malicious users. When someone sends a message in a honeypot channel:
 
-| Action | Description |
-|--------|-------------|
+| Feature | Description |
+|---------|-------------|
 | 🦵 **Kick** | Kick the user from the server |
 | 🔨 **Ban** | Ban the user permanently |
-| 🔇 **Mute** | Mute the user for a set duration |
-| 🗑️ **Message Deletion** | Delete all messages from the user in the last X hours |
-| 📨 **DM Notification** | Send a customizable DM before taking action |
-| 📋 **Logging** | Log all honeypot triggers to a specified channel |
-
-**Configuration:**
-```
-/honeypot channel:#trap action:kick delete_hours:24
-/honeypot whitelist_role:Admin log_channel:#logs
-/honeypot dm_message:You have been caught in a restricted area.
-```
+| 🔇 **Mute** | Timeout the user for 24 hours |
+| 🗑️ **Soft Ban** | Ban then immediately unban (clears messages) |
+| 📨 **DM Notification** | Customizable DM sent before punishment |
+| 🧹 **Message Sweep** | Deletes all user messages from the last 24h across all channels |
+| 📋 **Logging** | All incidents logged to the mod-log channel and `mod_cases.json` |
 
 ---
 
@@ -81,91 +76,78 @@ A comprehensive warning system with automatic punishments:
 
 | Feature | Description |
 |---------|-------------|
-| **Threshold** | Set how many warnings before action (default: 3) |
-| **Auto-Action** | Automatically mute/kick/ban when threshold reached |
-| **Expiration** | Warnings expire after X days (default: 30) |
-| **Logging** | All warnings are logged and viewable |
-
-**Commands:**
-```
-/warn @user Breaking rules
-/warnings @user
-/warnconfig threshold:3 action:mute expire_days:30
-```
+| **Thresholds** | Set warning counts that trigger auto-mute or auto-ban |
+| **Auto-Action** | Automatically mutes or bans when threshold is reached |
+| **Expiration** | Warnings expire after a configurable number of days (default: 30) |
+| **Per-Server** | All warnings are stored separately per server |
+| **Case Logging** | Every warn action creates a numbered mod case |
 
 ---
 
 ### 🔨 Moderation Commands
 
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/mute @user [duration] [reason]` | Mute a user | Mod+ |
-| `/unmute @user` | Unmute a user | Mod+ |
-| `/kick @user [reason]` | Kick a user | Mod+ |
-| `/ban @user [reason]` | Ban a user | Admin+ |
-| `/unban [user_id]` | Unban a user | Admin+ |
-| `/tempban @user [hours] [reason]` | Temporary ban | Admin+ |
-| `/purge [amount] [@user]` | Delete messages | Mod+ |
-| `/slowmode [seconds]` | Set slowmode | Mod+ |
-| `/lockdown` | Lock current channel | Mod+ |
-| `/unlock` | Unlock channel | Mod+ |
+| Command | Description |
+|---------|-------------|
+| `/kick @user [reason]` | Kick a user |
+| `/ban @user [reason] [delete_days]` | Ban a user |
+| `/unban [user_id]` | Unban a user by ID |
+| `/mute @user [duration_minutes] [reason]` | Timeout a user |
+| `/unmute @user` | Remove timeout from a user |
+| `/tempban @user [duration_hours] [reason]` | Temporary ban — auto-unbans via reminder task |
+| `/purge [amount] [@user]` | Bulk delete messages (max 100) |
+| `/slowmode [seconds]` | Set channel slowmode (0 to disable) |
+
+All moderation actions are logged to the configured mod-log channel and saved to `mod_cases.json`.
 
 ---
 
 ### 🤖 Auto-Moderation
 
-Automatic filters to protect your server:
+Automatic filters to protect your server, all configurable per-server via `/automod`:
 
-| Filter | Default Settings | Action |
-|--------|------------------|--------|
-| **Spam Protection** | 5 messages in 3 seconds | Mute 10 min |
-| **Discord Invites** | Any discord.gg link | Delete + Kick |
-| **Link Filter** | All URLs | Delete |
-| **Caps Filter** | 70%+ caps (10+ chars) | Delete |
-| **Mass Mention** | 5+ mentions | Mute 30 min |
+| Filter | What it catches | Default Action |
+|--------|-----------------|----------------|
+| **Spam** | Messages exceeding rate limit | Mute |
+| **Invite Links** | Any `discord.gg` or `discord.com/invite` URL | Delete |
+| **Caps Filter** | Messages over configurable % caps | Delete |
+| **Mention Spam** | Messages with too many mentions | Mute |
+| **Blacklist** | Configurable word/phrase list | Delete |
+| **URL Filter** | All URLs except whitelisted domains | Delete |
 
-**Commands:**
-```
-/automod spam enabled:true max_value:5 action:mute
-/automod invites enabled:true action:kick
-/automod caps enabled:true max_value:70
-/automod all enabled:true
-```
+Each rule is independently toggled and has a configurable action (`delete`, `mute`, `kick`, `ban`).
 
 ---
 
 ### 📝 Logging System
 
-Comprehensive logging to keep track of all server activity:
+Comprehensive event logging. Configure a mod-log channel and join/leave channel via `/server_config`.
 
-| Event | Logged |
-|-------|--------|
-| Message Delete | ✅ |
-| Message Edit | ✅ |
-| User Join | ✅ |
-| User Leave | ✅ |
-| User Ban | ✅ |
-| User Kick | ✅ |
-| User Mute | ✅ |
-| Honeypot Trigger | ✅ |
-| Moderation Actions | ✅ |
+| Event | Logged To |
+|-------|-----------|
+| Message Deleted | Mod Log |
+| Message Edited | Mod Log |
+| User Joined | Join/Leave Channel |
+| User Left | Join/Leave Channel |
+| Voice State Change | Mod Log |
+| Kick / Ban / Mute / Warn | Mod Log + `mod_cases.json` |
+| Honeypot Trigger | Mod Log + `mod_cases.json` |
+| AutoMod Action | Mod Log |
 
 ---
 
-### 📺 AniList/MAL Integration
+### 📺 AniList Integration
 
-Search and browse anime/manga data:
+Search and browse anime/manga data directly from Discord:
 
 | Command | Description |
 |---------|-------------|
-| `/anime [title]` | Search for anime with details |
-| `/manga [title]` | Search for manga with details |
-| `/character [name]` | Get character information |
-| `/studio [name]` | Get studio info with anime list |
-| `/seasonal [season] [year]` | Browse seasonal anime |
-| `/airing [anime_id]` | Get airing schedule |
-| `/random_anime` | Get random anime recommendation |
-| `/anilist_stats [user_id]` | View AniList user statistics |
+| `/anime_search [title]` | Search anime with score, genres, episode count, description |
+| `/manga_search [title]` | Search manga with score, chapters, genres, description |
+| `/anilist_profile [username]` | View AniList user stats (anime count, days watched, manga read) |
+| `/character_search [name]` | Get character info and which shows they appear in |
+| `/staff_search [name]` | Get staff info, occupations, and bio |
+| `/airing_schedule` | View upcoming episode air times with Discord timestamps |
+| `/seasonal_anime [season] [year]` | Browse seasonal anime list with scores |
 
 ---
 
@@ -173,13 +155,11 @@ Search and browse anime/manga data:
 
 | Command | Description |
 |---------|-------------|
-| `/snipe` | View last deleted message |
-| `/userinfo [@user]` | Get user information |
-| `/serverinfo` | Get server information |
-| `/modlog [@user]` | View moderation history |
-| `/setup [anilist_id] [mal_id]` | Link your accounts |
-| `/myprofile` | View your profile |
-| `/prefix [new_prefix]` | Change server prefix |
+| `/poll [question] [options]` | Create a reaction poll (comma-separated options, max 9) |
+| `/remind [minutes] [message]` | Set a reminder — bot DMs you when time is up |
+| `/userinfo [@user]` | View user info: ID, roles, join date, account age |
+| `/serverinfo` | View server info: members, channels, roles, boost tier |
+| `/avatar [@user]` | Get full-size avatar image |
 
 ---
 
@@ -189,9 +169,20 @@ Coordinate with team members across timezones:
 
 | Command | Description |
 |---------|-------------|
-| `/set_timezone [timezone]` | Set your timezone |
-| `/my_time` | Check your current time |
-| `/timezone_list` | View all timezones |
+| `/set_timezone [timezone]` | Set your timezone (autocomplete supported) |
+| `/my_time` | Check your current local time |
+| `/friend_time @user` | Check a friend's current time |
+| `/friend_compare @user` | See the hour difference between you and a friend |
+| `/list_friends` | Show all team members' current times |
+| `/timezone_list` | Browse all supported timezones by region |
+| `/timezone_convert [from] [to] [HH:MM]` | Convert a time between two zones |
+| `/timezone_stats` | See timezone distribution across the server |
+| `/night_mode @user` | Check if a friend is likely sleeping |
+| `/similar_timezone` | Find members within 2 hours of your timezone |
+| `/world_clock` | Show current time for all unique team timezones |
+| `/setup_timezone_menu [channel]` | Post an interactive dropdown for members to self-assign timezone |
+
+All timezone data is stored in `timezones.json`.
 
 ---
 
@@ -199,18 +190,15 @@ Coordinate with team members across timezones:
 
 Manage your GitHub repository from Discord:
 
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/build [platform] [type]` | Trigger GitHub Actions workflow | Mod+ |
-| `/create_tag [tag] [message]` | Create a new release tag | Admin+ |
+| Command | Description |
+|---------|-------------|
+| `/build [platforms] [type]` | Trigger a GitHub Actions workflow dispatch |
+| `/create_tag [tag] [message]` | Create an annotated Git tag on the beta branch |
+| `/delete_tag [tag]` | Delete a Git tag and its associated release |
+| `/latest_run` | Check the latest workflow run status (with cancel button if running) |
 
-**Supported Platforms:**
-- `all` - Build all platforms
-- `android` - Android APK
-- `linux` - Linux AppImage
-- `windows` - Windows EXE
-- `macos` - macOS DMG
-- `ios` - iOS IPA
+**Supported build platforms:** `all`, `android`, `linux`, `windows`, `macos`, `ios`, and combinations.
+**Build types:** `alpha`, `stable`
 
 ---
 
@@ -220,8 +208,8 @@ Manage your GitHub repository from Discord:
 
 - Python 3.11+
 - Docker (optional)
-- GitHub account with personal access token
-- Discord bot token
+- GitHub personal access token (`repo` + `workflow` permissions)
+- Discord bot token (with `message_content` and `members` intents enabled)
 
 ### Quick Start
 
@@ -258,173 +246,205 @@ docker run -d \
   anymex-bot
 ```
 
-### Render/Heroku Deployment
+### Render Deployment
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
-
-1. Connect your GitHub repository
-2. Set environment variables in dashboard
-3. Deploy!
+1. Connect your GitHub repository to Render
+2. Set `DISCORD_TOKEN` and `GITHUB_TOKEN` in the environment variables dashboard
+3. Deploy — the health server on port 8080 keeps the instance alive automatically
 
 ---
 
 ## ⚙️ Configuration
 
-### Initial Setup
+### First-Time Setup
 
-After inviting the bot to your server:
+After inviting the bot, run:
 
 ```
-/server_setup
+/server_config
 ```
 
-This creates a default configuration for your server.
+This displays the current server config. Use the parameters to set up your channels and roles.
+
+### Setting Up Channels & Roles
+
+```
+/server_config mod_log_channel:#mod-logs join_leave_channel:#member-log mute_role:@Muted
+/config_role action:add role:@Moderator
+```
 
 ### Setting Up Honeypot
 
 ```
-/honeypot channel:#honeypot-trap action:kick delete_hours:24
-/honeypot log_channel:#mod-logs
-/honeypot whitelist_role:Admin
+/honeypot_set channel:#honeypot-trap punishment:ban
+/honeypot_set channel:#honeypot-trap punishment:kick dm_message:You triggered a restricted area.
 ```
 
 ### Setting Up Auto-Moderation
 
 ```
-/automod all enabled:true
-/automod spam max_value:5 action:mute
-/automod invites action:kick
+/automod rule:spam enabled:true threshold:5 action:mute
+/automod rule:invite_links enabled:true action:delete
+/automod rule:caps_filter enabled:true threshold:70 action:delete
+/automod rule:blacklist enabled:true words:word1,word2,word3
+/automod rule:url_filter enabled:true whitelist_domains:youtube.com,imgur.com
 ```
 
-### Setting Up Permissions
+### Setting Warning Thresholds
 
 ```
-/addperm role:Admin level:admin
-/addperm role:Moderator level:mod
-/addperm role:Trusted level:trusted
+/server_config warn_mute_threshold:3 warn_ban_threshold:5 warn_expiry_days:30
 ```
 
-### Setting Up Logging
+### Setting Bot Prefix
 
 ```
-/server_config setting:log_channel value:#mod-logs
+?setprefix add !
+?setprefix remove ?
+?setprefix list
 ```
 
 ---
 
 ## 📚 Commands
 
-### Server Configuration
+### ⚙️ Server Configuration
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/server_setup` | Initialize bot for server | Admin |
-| `/server_config [setting] [value]` | View/modify settings | Admin |
-| `/addperm @role [level]` | Add permission role | Admin |
-| `/removeperm @role [level]` | Remove permission role | Admin |
-| `/listperms` | List all permission roles | Everyone |
+| `/server_config [options]` | View and update server settings | Admin |
+| `/config_role action:add/remove role:@Role` | Add/remove allowed mod roles | Admin |
+| `/setup_timezone_menu [channel]` | Post self-serve timezone dropdown | Admin |
 
-### Honeypot
+### 🍯 Honeypot
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/honeypot [options]` | Configure honeypot | Admin |
-| `/honeypot_disable` | Disable honeypot | Admin |
+| `/honeypot_set [channel] [punishment]` | Configure a honeypot channel | Admin |
+| `/honeypot_remove [channel]` | Remove a honeypot channel | Admin |
+| `/honeypot_list` | List all configured honeypot channels | Admin |
 
-### Warnings
-
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/warn @user [reason]` | Warn a user | Mod+ |
-| `/warnings @user` | View warnings | Mod+ |
-| `/clearwarnings @user` | Clear warnings | Admin |
-| `/warnconfig [options]` | Configure warnings | Admin |
-
-### Moderation
+### ⚠️ Warnings
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/mute @user [duration] [reason]` | Mute user | Mod+ |
-| `/unmute @user` | Unmute user | Mod+ |
-| `/kick @user [reason]` | Kick user | Mod+ |
-| `/ban @user [reason]` | Ban user | Admin |
-| `/unban [user_id]` | Unban user | Admin |
-| `/tempban @user [hours] [reason]` | Temporary ban | Admin |
+| `/warn @user [reason]` | Warn a user | Mod |
+| `/warnings @user` | View a user's warnings | Mod |
+| `/clearwarnings @user [index]` | Clear one or all warnings | Mod |
 
-### Auto-Moderation
+### 🔨 Moderation
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/automod [filter] [options]` | Configure filters | Admin |
+| `/kick @user [reason]` | Kick user | Mod |
+| `/ban @user [reason] [delete_days]` | Ban user | Mod |
+| `/unban [user_id]` | Unban user | Mod |
+| `/mute @user [duration_minutes] [reason]` | Timeout user | Mod |
+| `/unmute @user` | Remove timeout | Mod |
+| `/tempban @user [duration_hours] [reason]` | Temporary ban | Mod |
+| `/purge [amount] [@user]` | Bulk delete messages | Mod |
+| `/slowmode [seconds]` | Set channel slowmode | Mod |
 
-### Utilities
-
-| Command | Description | Permission |
-|---------|-------------|------------|
-| `/purge [amount] [@user]` | Delete messages | Mod+ |
-| `/slowmode [seconds]` | Set slowmode | Mod+ |
-| `/lockdown` | Lock channel | Mod+ |
-| `/unlock` | Unlock channel | Mod+ |
-| `/snipe` | View deleted message | Everyone |
-| `/userinfo [@user]` | User info | Everyone |
-| `/serverinfo` | Server info | Everyone |
-| `/modlog [@user]` | Mod history | Mod+ |
-
-### AniList/MAL
+### 🤖 Auto-Moderation
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/anime [title]` | Search anime | Everyone |
-| `/manga [title]` | Search manga | Everyone |
-| `/character [name]` | Search character | Everyone |
-| `/studio [name]` | Search studio | Everyone |
-| `/seasonal [season] [year]` | Seasonal anime | Everyone |
-| `/airing [anime_id]` | Airing schedule | Everyone |
-| `/random_anime` | Random anime | Everyone |
-| `/anilist_stats [user_id]` | User stats | Everyone |
+| `/automod [rule] [options]` | Configure automod filters | Admin |
 
-### GitHub
+### 📺 AniList
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/build [platform] [type]` | Trigger build | Mod+ |
-| `/create_tag [tag] [message]` | Create release | Admin |
+| `/anime_search [title]` | Search anime | Everyone |
+| `/manga_search [title]` | Search manga | Everyone |
+| `/anilist_profile [username]` | View AniList user profile | Everyone |
+| `/character_search [name]` | Search character | Everyone |
+| `/staff_search [name]` | Search staff | Everyone |
+| `/airing_schedule` | Upcoming episode schedule | Everyone |
+| `/seasonal_anime [season] [year]` | Seasonal anime list | Everyone |
+
+### 🛠️ Utilities
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/poll [question] [options]` | Create a reaction poll | Everyone |
+| `/remind [minutes] [message]` | Set a reminder | Everyone |
+| `/userinfo [@user]` | View user info | Everyone |
+| `/serverinfo` | View server info | Everyone |
+| `/avatar [@user]` | Get user avatar | Everyone |
+
+### 🌍 Timezone
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/set_timezone [tz]` | Set your timezone | Everyone |
+| `/remove_timezone` | Remove your timezone | Everyone |
+| `/my_time` | Check your local time | Everyone |
+| `/friend_time @user` | Check a friend's time | Everyone |
+| `/friend_compare @user` | Time diff with friend | Everyone |
+| `/list_friends` | All team member times | Everyone |
+| `/add_friend_timezone @user [tz]` | Set a friend's timezone | Everyone |
+| `/timezone_list` | View all timezones | Everyone |
+| `/timezone_convert [from] [to] [time]` | Convert time between zones | Everyone |
+| `/timezone_stats` | Timezone distribution | Everyone |
+| `/night_mode @user` | Is friend sleeping? | Everyone |
+| `/similar_timezone` | Find nearby timezones | Everyone |
+| `/world_clock` | Team world clock | Everyone |
+
+### 🔧 GitHub
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/build [platforms] [type]` | Trigger build workflow | Mod |
+| `/create_tag [tag] [message]` | Create Git tag | Mod |
+| `/delete_tag [tag]` | Delete Git tag + release | Mod |
+| `/latest_run` | View latest run status | Mod |
+
+### 👤 Profile (AniList/MAL Linking)
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/setup [anilist_id] [mal_id]` | Link your accounts | Everyone |
+| `/myprofile` | View your saved profile | Everyone |
+| `/add_anime [anilist_url] [mal_url] [reason]` | Submit underrated anime | Everyone |
+| `/add_manga [anilist_url] [mal_url] [reason]` | Submit underrated manga | Everyone |
+| `/list_anime` | View underrated anime list | Mod |
+| `/list_manga` | View underrated manga list | Mod |
+| `/remove_anime [title/id]` | Remove from anime list | Mod |
+| `/remove_manga [title/id]` | Remove from manga list | Mod |
 
 ---
 
 ## 💾 Data Storage
 
-All data is stored in your GitHub repository as JSON files:
+All data is stored in your GitHub repository as JSON files, auto-created on first startup:
 
 | File | Description |
 |------|-------------|
-| `servers.json` | Multi-server configuration |
-| `warnings.json` | User warnings per server |
-| `mutes.json` | Active mutes and tempbans |
-| `modlog.json` | Moderation action logs |
-| `honeypot_logs.json` | Honeypot incident records |
-| `snipe.json` | Deleted messages cache |
+| `server_config.json` | Per-server settings (channels, roles, warn thresholds) |
+| `warnings.json` | User warning history per server |
+| `honeypot.json` | Honeypot channel configurations per server |
+| `automod.json` | AutoMod rule settings per server |
+| `reminders.json` | Pending reminders and scheduled tempban unbans |
+| `mod_cases.json` | Full moderation case log per server |
 | `users.json` | User profiles (AniList/MAL IDs) |
 | `timezones.json` | User timezone data |
-| `underrated_anime.json` | Underrated anime list |
-| `underrated_manga.json` | Underrated manga list |
-| `prefixes.json` | Server prefixes |
+| `underrated_anime.json` | Community underrated anime submissions |
+| `underrated_manga.json` | Community underrated manga submissions |
+| `prefixes.json` | Bot prefix list |
 
 ---
 
 ## 🔐 Environment Variables
 
+Only two environment variables are required. All other configuration is done through Discord commands and stored in GitHub JSON.
+
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DISCORD_TOKEN` | ✅ Yes | Discord bot token |
-| `GITHUB_TOKEN` | ✅ Yes | GitHub personal access token |
-| `PORT` | ❌ No | Health server port (default: 8080) |
+| `GITHUB_TOKEN` | ✅ Yes | GitHub personal access token (`repo` + `workflow`) |
 
-### GitHub Token Permissions
-
-Your GitHub token needs these permissions:
-- `repo` - Full repository access
-- `workflow` - Trigger workflows
+> **Note:** `PORT` defaults to `8080` and is set internally. No other env vars are needed.
 
 ---
 
@@ -448,9 +468,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- [discord.py](https://github.com/Rapptz/discord.py) - Discord API wrapper
-- [AniList API](https://anilist.co/graphql) - Anime/Manga data
-- [GitHub REST API](https://docs.github.com/en/rest) - Repository management
+- [discord.py](https://github.com/Rapptz/discord.py) — Discord API wrapper
+- [AniList API](https://anilist.co/graphql) — Anime/Manga data
+- [GitHub REST API](https://docs.github.com/en/rest) — Repository management
 
 ---
 
