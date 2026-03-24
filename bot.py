@@ -10,6 +10,7 @@ import json
 import re
 import signal
 import sys
+import traceback
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
@@ -21,6 +22,14 @@ DISCORD_TOKEN  = os.environ.get("DISCORD_TOKEN")
 GITHUB_TOKEN   = os.environ.get("GITHUB_TOKEN")
 PORT           = int(os.environ.get("PORT", 8080))
 
+# Validate tokens at startup
+if not DISCORD_TOKEN:
+    print("❌ ERROR: DISCORD_TOKEN environment variable is not set!")
+    sys.exit(1)
+
+if not GITHUB_TOKEN:
+    print("⚠️ WARNING: GITHUB_TOKEN environment variable is not set! GitHub storage will not work.")
+
 GITHUB_OWNER   = "Shebyyy"
 GITHUB_REPO    = "AnymeX-Preview"
 GITHUB_BRANCH  = "beta"
@@ -29,31 +38,56 @@ WORKFLOW_FILE  = "beta_manual.yml"
 GITHUB_API     = "https://api.github.com"
 ANILIST_API    = "https://graphql.anilist.co"
 
+# Retry settings
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # GLOBAL HTTP SESSION (Singleton Pattern)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _http_session: aiohttp.ClientSession = None
+_session_lock = asyncio.Lock()
 
 async def get_session() -> aiohttp.ClientSession:
-    """Get or create the global HTTP session."""
+    """Get or create the global HTTP session with thread safety."""
     global _http_session
-    if _http_session is None or _http_session.closed:
-        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        connector = aiohttp.TCPConnector(limit=100, limit_per_host=10, enable_cleanup_closed=True)
-        _http_session = aiohttp.ClientSession(
-            timeout=timeout,
-            connector=connector,
-            headers={"User-Agent": "AnymeX-Preview-Bot/2.0"}
-        )
+    async with _session_lock:
+        if _http_session is None or _http_session.closed:
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            connector = aiohttp.TCPConnector(
+                limit=100, 
+                limit_per_host=10, 
+                enable_cleanup_closed=True,
+                force_close=True,  # Force close connections to avoid stale connections
+                ttl_dns_cache=300  # Cache DNS for 5 minutes
+            )
+            _http_session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                headers={
+                    "User-Agent": "AnymeX-Preview-Bot/2.0",
+                    "Accept": "application/json"
+                }
+            )
     return _http_session
 
 async def close_session():
-    """Close the global HTTP session."""
+    """Close the global HTTP session properly."""
     global _http_session
-    if _http_session and not _http_session.closed:
-        await _http_session.close()
-        _http_session = None
+    async with _session_lock:
+        if _http_session and not _http_session.closed:
+            try:
+                # Close the session first
+                await _http_session.close()
+                # Give time for connections to close
+                await asyncio.sleep(0.25)
+            except Exception as e:
+                print(f"Warning during session close: {e}")
+            finally:
+                _http_session = None
 
 # File names on GitHub
 FILE_ANIME        = "underrated_anime.json"
@@ -174,67 +208,145 @@ TIMEZONES = {
 # ══════════════════════════════════════════════════════════════════════════════
 
 def gh_headers():
+    """Get headers for GitHub API requests."""
+    if not GITHUB_TOKEN:
+        return {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
     return {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
+def is_html_response(text: str) -> bool:
+    """Check if response is HTML (Cloudflare error page)."""
+    if not text:
+        return False
+    text_stripped = text.strip().lower()
+    return (
+        text_stripped.startswith("<!doctype") or 
+        text_stripped.startswith("<html") or
+        "<html" in text_stripped[:100] or
+        "cloudflare" in text_stripped[:500]
+    )
+
+async def github_request_with_retry(method: str, url: str, **kwargs) -> tuple:
+    """Make a GitHub API request with retry logic and proper error handling.
+    
+    Returns (success: bool, data: dict|None, status: int, error_msg: str|None)
+    """
+    session = await get_session()
+    last_error = None
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with getattr(session, method.lower())(url, **kwargs) as r:
+                status = r.status
+                text = await r.text()
+                
+                # Check for Cloudflare/HTML response
+                if is_html_response(text):
+                    last_error = f"Cloudflare error (HTML response) - Status: {status}"
+                    print(f"⚠️ GitHub API returned Cloudflare error (attempt {attempt + 1}/{MAX_RETRIES})")
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    return False, None, status, last_error
+                
+                # Parse JSON if possible
+                try:
+                    data = json.loads(text) if text else None
+                except json.JSONDecodeError:
+                    data = None
+                    
+                # Handle rate limiting
+                if status == 403 and 'rate limit' in text.lower():
+                    last_error = "GitHub API rate limit exceeded"
+                    print(f"⚠️ GitHub API rate limit hit (attempt {attempt + 1}/{MAX_RETRIES})")
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(60)  # Wait 1 minute for rate limit
+                        continue
+                    return False, None, status, last_error
+                
+                # Handle authentication errors
+                if status == 401:
+                    last_error = "GitHub API authentication failed - check GITHUB_TOKEN"
+                    print(f"❌ {last_error}")
+                    return False, None, status, last_error
+                
+                # Handle 404
+                if status == 404:
+                    return True, None, 404, "Not found"
+                
+                # Success
+                if status in (200, 201, 204):
+                    return True, data, status, None
+                
+                # Other errors
+                error_msg = data.get('message', text[:200]) if data else text[:200]
+                return False, data, status, error_msg
+                
+        except asyncio.TimeoutError:
+            last_error = "Request timed out"
+            print(f"⚠️ GitHub API timeout (attempt {attempt + 1}/{MAX_RETRIES})")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                continue
+        except aiohttp.ClientError as e:
+            last_error = f"Connection error: {str(e)}"
+            print(f"⚠️ GitHub API connection error: {e} (attempt {attempt + 1}/{MAX_RETRIES})")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                continue
+        except Exception as e:
+            last_error = f"Unexpected error: {str(e)}"
+            print(f"❌ GitHub API unexpected error: {e}")
+            break
+    
+    return False, None, 0, last_error
+
+def get_default_for_file(filepath: str):
+    """Get the default value for a file type."""
+    if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
+        return {}, None
+    elif filepath == FILE_PREFIXES:
+        return DEFAULT_PREFIXES[:], None
+    else:
+        return [], None
+
 async def github_read_json(filepath: str) -> tuple:
     """Read a JSON file from GitHub. Returns (parsed_data, sha)."""
-    session = await get_session()
+    if not GITHUB_TOKEN:
+        print(f"⚠️ No GITHUB_TOKEN, returning default for {filepath}")
+        return get_default_for_file(filepath)
+    
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{filepath}?ref={GITHUB_BRANCH}"
     
+    success, data, status, error = await github_request_with_retry("GET", url, headers=gh_headers())
+    
+    if not success:
+        if error:
+            print(f"⚠️ Failed to read {filepath}: {error}")
+        return get_default_for_file(filepath)
+    
+    if status == 404 or data is None:
+        return get_default_for_file(filepath)
+    
     try:
-        async with session.get(url, headers=gh_headers()) as r:
-            if r.status == 404:
-                # Return appropriate default based on file type
-                if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
-                    return {}, None
-                elif filepath == FILE_PREFIXES:
-                    return DEFAULT_PREFIXES[:], None
-                else:
-                    return [], None
-            
-            if r.status != 200:
-                text = await r.text()
-                # Check if response is HTML (Cloudflare error)
-                if text.startswith("<!DOCTYPE") or text.startswith("<html"):
-                    print(f"GitHub API returned HTML (Cloudflare?) for {filepath}")
-                else:
-                    print(f"GitHub API error {r.status} for {filepath}: {text[:200]}")
-                # Return defaults on error
-                if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
-                    return {}, None
-                elif filepath == FILE_PREFIXES:
-                    return DEFAULT_PREFIXES[:], None
-                else:
-                    return [], None
-            
-            data = await r.json()
-            content = base64.b64decode(data["content"]).decode("utf-8")
-            return json.loads(content), data["sha"]
-    except asyncio.TimeoutError:
-        print(f"Timeout reading {filepath} from GitHub")
-        if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
-            return {}, None
-        elif filepath == FILE_PREFIXES:
-            return DEFAULT_PREFIXES[:], None
-        else:
-            return [], None
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        return json.loads(content), data["sha"]
     except Exception as e:
-        print(f"Error reading {filepath} from GitHub: {e}")
-        # Return defaults on error
-        if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
-            return {}, None
-        elif filepath == FILE_PREFIXES:
-            return DEFAULT_PREFIXES[:], None
-        else:
-            return [], None
+        print(f"❌ Error parsing GitHub content for {filepath}: {e}")
+        return get_default_for_file(filepath)
 
 async def github_write_json(filepath: str, data, sha, commit_msg: str) -> bool:
     """Write/update a JSON file on GitHub. Returns True on success."""
-    session = await get_session()
+    if not GITHUB_TOKEN:
+        print(f"⚠️ No GITHUB_TOKEN, cannot write {filepath}")
+        return False
+    
     payload = {
         "message": commit_msg,
         "content": base64.b64encode(
@@ -244,23 +356,17 @@ async def github_write_json(filepath: str, data, sha, commit_msg: str) -> bool:
     }
     if sha:
         payload["sha"] = sha
+    
     url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{filepath}"
     
-    try:
-        async with session.put(url, headers=gh_headers(), json=payload) as r:
-            if r.status not in (200, 201):
-                text = await r.text()
-                if text.startswith("<!DOCTYPE") or text.startswith("<html"):
-                    print(f"GitHub API returned HTML (Cloudflare?) when writing {filepath}")
-                else:
-                    print(f"GitHub write error {r.status} for {filepath}: {text[:200]}")
-            return r.status in (200, 201)
-    except asyncio.TimeoutError:
-        print(f"Timeout writing {filepath} to GitHub")
+    success, resp_data, status, error = await github_request_with_retry("PUT", url, headers=gh_headers(), json=payload)
+    
+    if not success:
+        if error:
+            print(f"⚠️ Failed to write {filepath}: {error}")
         return False
-    except Exception as e:
-        print(f"Error writing {filepath} to GitHub: {e}")
-        return False
+    
+    return status in (200, 201)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SERVER CONFIG MANAGER
@@ -628,7 +734,7 @@ async def get_studio(session: aiohttp.ClientSession, search: str):
 
 async def log_mod_action(guild_id: str, action: str, target_id: str, moderator_id: str, reason: str, extra: dict = None):
     """Log a moderation action to GitHub."""
-    session = await get_session()
+
     logs, sha = await github_read_json(FILE_MODLOG)
         
     if guild_id not in logs:
@@ -648,7 +754,7 @@ async def log_mod_action(guild_id: str, action: str, target_id: str, moderator_i
 
 async def get_user_warnings(guild_id: str, user_id: str) -> List[dict]:
     """Get all active warnings for a user in a guild."""
-    session = await get_session()
+
     warnings, _ = await github_read_json(FILE_WARNINGS)
     
     guild_warnings = warnings.get(guild_id, {})
@@ -669,7 +775,7 @@ async def get_user_warnings(guild_id: str, user_id: str) -> List[dict]:
 
 async def add_warning(guild_id: str, user_id: str, moderator_id: str, reason: str) -> dict:
     """Add a warning to a user. Returns {count, threshold_reached}."""
-    session = await get_session()
+
     warnings, sha = await github_read_json(FILE_WARNINGS)
         
     if guild_id not in warnings:
@@ -698,7 +804,7 @@ async def add_warning(guild_id: str, user_id: str, moderator_id: str, reason: st
 
 async def clear_warnings(guild_id: str, user_id: str) -> bool:
     """Clear all warnings for a user."""
-    session = await get_session()
+
     warnings, sha = await github_read_json(FILE_WARNINGS)
         
     if guild_id in warnings and user_id in warnings[guild_id]:
@@ -758,7 +864,7 @@ async def mute_user(member: discord.Member, duration_minutes: int, reason: str, 
         await member.add_roles(muted_role, reason=reason)
         
         # Store mute info
-        session = await get_session()
+
         mutes, sha = await github_read_json(FILE_MUTES)
             
         guild_id = str(member.guild.id)
@@ -786,7 +892,7 @@ async def unmute_user(member: discord.Member) -> bool:
         await member.remove_roles(muted_role, reason="Mute expired or removed")
         
         # Remove from mutes file
-        session = await get_session()
+
         mutes, sha = await github_read_json(FILE_MUTES)
             
         guild_id = str(member.guild.id)
@@ -801,7 +907,7 @@ async def unmute_user(member: discord.Member) -> bool:
 
 async def check_expired_mutes():
     """Check and remove expired mutes. Called periodically."""
-    session = await get_session()
+
     mutes, _ = await github_read_json(FILE_MUTES)
     
     now = datetime.utcnow()
@@ -902,7 +1008,7 @@ async def handle_honeypot_trigger(message: discord.Message, config: dict):
     dm_message = honeypot_config.get("dm_message", "You were caught in a honeypot trap.")
     
     # Log to honeypot_logs.json
-    session = await get_session()
+
     logs, sha = await github_read_json(FILE_HONEYPOT)
         
     guild_id = str(guild.id)
@@ -1074,7 +1180,7 @@ async def add_to_snipe(message: discord.Message, action: str):
     }
     
     # Also save to GitHub for persistence
-    session = await get_session()
+
     snipes, sha = await github_read_json(FILE_SNIPE)
     guild_id = str(message.guild.id)
     if guild_id not in snipes:
@@ -1762,7 +1868,7 @@ async def tempban_cmd(interaction: discord.Interaction, user: discord.Member, ho
         await interaction.guild.ban(user, reason=f"Tempban: {reason}", delete_message_days=1)
         
         # Store tempban in mutes file (reuse for tempbans)
-        session = await get_session()
+
         mutes, sha = await github_read_json(FILE_MUTES)
             
         guild_id = str(interaction.guild.id)
@@ -1959,7 +2065,7 @@ async def snipe_cmd(interaction: discord.Interaction):
         snipe_data = _snipe_cache[channel_id]
     else:
         # Check GitHub
-        session = await get_session()
+
         snipes, _ = await github_read_json(FILE_SNIPE)
         guild_id = str(interaction.guild.id)
         if guild_id in snipes and channel_id in snipes[guild_id]:
@@ -2048,7 +2154,7 @@ async def serverinfo_cmd(interaction: discord.Interaction):
 async def modlog_cmd(interaction: discord.Interaction, user: discord.Member = None, limit: int = 10):
     await interaction.response.defer(ephemeral=True)
     
-    session = await get_session()
+
     logs, _ = await github_read_json(FILE_MODLOG)
     
     guild_id = str(interaction.guild.id)
@@ -2339,12 +2445,12 @@ async def studio_search_cmd(interaction: discord.Interaction, name: str):
 async def seasonal_cmd(interaction: discord.Interaction, season: str = None, year: int = None):
     await interaction.response.defer()
     
+    session = await get_session()
     season = season.upper() if season else None
     if season and season not in ("WINTER", "SPRING", "SUMMER", "FALL"):
         await interaction.followup.send("❌ Season must be: winter, spring, summer, or fall")
         return
     
-    session = await get_session()
     result = await get_seasonal_anime(session, season, year)
     
     if not result or not result.get("media"):
@@ -2428,6 +2534,7 @@ async def airing_cmd(interaction: discord.Interaction, anime_id: int):
 async def random_anime_cmd(interaction: discord.Interaction, genre: str = None):
     await interaction.response.defer()
     
+    session = await get_session()
     # Random search query to get variety
     import random
     queries = ["a", "the", "of", "to", "and", "in", "is", "it"]
@@ -2435,7 +2542,6 @@ async def random_anime_cmd(interaction: discord.Interaction, genre: str = None):
     
     page = random.randint(1, 50)
     
-    session = await get_session()
     result = await search_anilist(session, query, "ANIME", page=page, per_page=1)
     
     if not result or not result.get("media"):
@@ -2474,7 +2580,7 @@ async def setup(interaction: discord.Interaction, anilist_user_id: int, mal_user
     discord_id = str(interaction.user.id)
     author_display = author_name or interaction.user.display_name
 
-    session = await get_session()
+
     users, sha = await github_read_json(FILE_USERS)
 
     users[discord_id] = {
@@ -2498,7 +2604,7 @@ async def setup(interaction: discord.Interaction, anilist_user_id: int, mal_user
 async def myprofile(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    session = await get_session()
+
     users, _ = await github_read_json(FILE_USERS)
 
     profile = users.get(str(interaction.user.id))
@@ -2586,7 +2692,7 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
         return
     
     discord_id = str(interaction.user.id)
-    session = await get_session()
+
     timezones, sha = await github_read_json(FILE_TIMEZONES)
     tz_info = TIMEZONES[tz_upper]
     timezones[discord_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
@@ -2604,7 +2710,7 @@ async def my_time(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
     discord_id = str(interaction.user.id)
-    session = await get_session()
+
     timezones, _ = await github_read_json(FILE_TIMEZONES)
     
     if discord_id not in timezones:
@@ -2662,7 +2768,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
         }
     }
 
-    session = await get_session()
+
     async with session.post(
         f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches",
         headers=gh_headers(), json=payload,
@@ -2689,7 +2795,7 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
 async def create_tag(interaction: discord.Interaction, tag: str, message: str):
     await interaction.response.defer()
 
-    session = await get_session()
+
     async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/ref/heads/{GITHUB_BRANCH}", headers=gh_headers()) as r:
         status = r.status
         ref_data = await r.json()
@@ -2726,25 +2832,94 @@ async def create_tag(interaction: discord.Interaction, tag: str, message: str):
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def validate_github_token():
+    """Validate GitHub token by making a test request."""
+    if not GITHUB_TOKEN:
+        print("⚠️ GITHUB_TOKEN not set - GitHub storage features disabled")
+        return False
+    
+    print("🔍 Validating GitHub token...")
+    url = f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+    success, data, status, error = await github_request_with_retry("GET", url, headers=gh_headers())
+    
+    if success and data:
+        print(f"✅ GitHub token valid - Connected to {GITHUB_OWNER}/{GITHUB_REPO}")
+        return True
+    else:
+        print(f"⚠️ GitHub token validation failed: {error}")
+        print("   GitHub storage features may be limited")
+        return False
+
 async def main():
+    """Main entry point with proper startup sequence."""
+    print("\n" + "="*60)
+    print("🤖 AnymeX-Preview Bot Starting...")
+    print("="*60)
+    
+    # Start health server first (for Render health checks)
     await start_health_server()
-    await bot.start(DISCORD_TOKEN)
+    
+    # Validate GitHub token
+    await validate_github_token()
+    
+    # Start the bot
+    print("🚀 Connecting to Discord...")
+    try:
+        await bot.start(DISCORD_TOKEN)
+    except discord.LoginFailure:
+        print("❌ Failed to login to Discord - Check DISCORD_TOKEN")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Failed to start bot: {e}")
+        traceback.print_exc()
+        sys.exit(1)
 
 async def shutdown():
-    """Graceful shutdown."""
-    print("Shutting down...")
-    await close_session()
-    await bot.close()
+    """Graceful shutdown with proper cleanup."""
+    print("\n🛑 Shutting down gracefully...")
+    
+    # Close Discord bot first
+    try:
+        if not bot.is_closed():
+            await bot.close()
+            print("✅ Discord connection closed")
+    except Exception as e:
+        print(f"Warning closing bot: {e}")
+    
+    # Close HTTP session
+    try:
+        await close_session()
+        print("✅ HTTP session closed")
+    except Exception as e:
+        print(f"Warning closing session: {e}")
+    
+    print("👋 Goodbye!")
 
 def signal_handler(sig, frame):
     """Handle shutdown signals."""
-    print(f"Received signal {sig}")
-    asyncio.create_task(shutdown())
+    print(f"\n📡 Received signal {sig}")
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop.create_task(shutdown())
+    else:
+        asyncio.run(shutdown())
 
 if __name__ == "__main__":
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot stopped by user")
+        print("\n⌨️ Bot stopped by user (Ctrl+C)")
+    except Exception as e:
+        print(f"\n❌ Bot crashed: {e}")
+        traceback.print_exc()
+        sys.exit(1)
     finally:
-        asyncio.run(close_session())
+        # Ensure cleanup
+        try:
+            asyncio.run(close_session())
+        except:
+            pass
