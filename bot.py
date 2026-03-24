@@ -197,7 +197,12 @@ async def github_read_json(filepath: str) -> tuple:
                     return [], None
             
             if r.status != 200:
-                print(f"GitHub API error {r.status} for {filepath}")
+                text = await r.text()
+                # Check if response is HTML (Cloudflare error)
+                if text.startswith("<!DOCTYPE") or text.startswith("<html"):
+                    print(f"GitHub API returned HTML (Cloudflare?) for {filepath}")
+                else:
+                    print(f"GitHub API error {r.status} for {filepath}: {text[:200]}")
                 # Return defaults on error
                 if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
                     return {}, None
@@ -209,6 +214,14 @@ async def github_read_json(filepath: str) -> tuple:
             data = await r.json()
             content = base64.b64decode(data["content"]).decode("utf-8")
             return json.loads(content), data["sha"]
+    except asyncio.TimeoutError:
+        print(f"Timeout reading {filepath} from GitHub")
+        if filepath in (FILE_USERS, FILE_TIMEZONES, FILE_SERVERS, FILE_WARNINGS, FILE_MUTES, FILE_MODLOG, FILE_HONEYPOT, FILE_SNIPE):
+            return {}, None
+        elif filepath == FILE_PREFIXES:
+            return DEFAULT_PREFIXES[:], None
+        else:
+            return [], None
     except Exception as e:
         print(f"Error reading {filepath} from GitHub: {e}")
         # Return defaults on error
@@ -236,8 +249,15 @@ async def github_write_json(filepath: str, data, sha, commit_msg: str) -> bool:
     try:
         async with session.put(url, headers=gh_headers(), json=payload) as r:
             if r.status not in (200, 201):
-                print(f"GitHub write error {r.status} for {filepath}")
+                text = await r.text()
+                if text.startswith("<!DOCTYPE") or text.startswith("<html"):
+                    print(f"GitHub API returned HTML (Cloudflare?) when writing {filepath}")
+                else:
+                    print(f"GitHub write error {r.status} for {filepath}: {text[:200]}")
             return r.status in (200, 201)
+    except asyncio.TimeoutError:
+        print(f"Timeout writing {filepath} to GitHub")
+        return False
     except Exception as e:
         print(f"Error writing {filepath} to GitHub: {e}")
         return False
@@ -609,27 +629,27 @@ async def get_studio(session: aiohttp.ClientSession, search: str):
 async def log_mod_action(guild_id: str, action: str, target_id: str, moderator_id: str, reason: str, extra: dict = None):
     """Log a moderation action to GitHub."""
     session = await get_session()
-        logs, sha = await github_read_json(session, FILE_MODLOG)
+    logs, sha = await github_read_json(FILE_MODLOG)
         
-        if guild_id not in logs:
-            logs[guild_id] = []
+    if guild_id not in logs:
+        logs[guild_id] = []
         
-        entry = {
-            "action": action,
-            "target_id": target_id,
-            "moderator_id": moderator_id,
-            "reason": reason,
-            "timestamp": datetime.utcnow().isoformat(),
-            "extra": extra or {}
-        }
-        logs[guild_id].append(entry)
+    entry = {
+        "action": action,
+        "target_id": target_id,
+        "moderator_id": moderator_id,
+        "reason": reason,
+        "timestamp": datetime.utcnow().isoformat(),
+        "extra": extra or {}
+    }
+    logs[guild_id].append(entry)
         
-        await github_write_json(session, FILE_MODLOG, logs, sha, f"Log {action} for user {target_id}")
+    await github_write_json(FILE_MODLOG, logs, sha, f"Log {action} for user {target_id}")
 
 async def get_user_warnings(guild_id: str, user_id: str) -> List[dict]:
     """Get all active warnings for a user in a guild."""
     session = await get_session()
-        warnings, _ = await github_read_json(session, FILE_WARNINGS)
+    warnings, _ = await github_read_json(FILE_WARNINGS)
     
     guild_warnings = warnings.get(guild_id, {})
     user_warnings = guild_warnings.get(user_id, [])
@@ -650,21 +670,21 @@ async def get_user_warnings(guild_id: str, user_id: str) -> List[dict]:
 async def add_warning(guild_id: str, user_id: str, moderator_id: str, reason: str) -> dict:
     """Add a warning to a user. Returns {count, threshold_reached}."""
     session = await get_session()
-        warnings, sha = await github_read_json(session, FILE_WARNINGS)
+    warnings, sha = await github_read_json(FILE_WARNINGS)
         
-        if guild_id not in warnings:
-            warnings[guild_id] = {}
-        if user_id not in warnings[guild_id]:
-            warnings[guild_id][user_id] = []
+    if guild_id not in warnings:
+        warnings[guild_id] = {}
+    if user_id not in warnings[guild_id]:
+        warnings[guild_id][user_id] = []
         
-        warning = {
-            "reason": reason,
-            "moderator_id": moderator_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        warnings[guild_id][user_id].append(warning)
+    warning = {
+        "reason": reason,
+        "moderator_id": moderator_id,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    warnings[guild_id][user_id].append(warning)
         
-        await github_write_json(session, FILE_WARNINGS, warnings, sha, f"Add warning for user {user_id}")
+    await github_write_json(FILE_WARNINGS, warnings, sha, f"Add warning for user {user_id}")
     
     # Check threshold
     config = await get_server_config(guild_id)
@@ -679,12 +699,12 @@ async def add_warning(guild_id: str, user_id: str, moderator_id: str, reason: st
 async def clear_warnings(guild_id: str, user_id: str) -> bool:
     """Clear all warnings for a user."""
     session = await get_session()
-        warnings, sha = await github_read_json(session, FILE_WARNINGS)
+    warnings, sha = await github_read_json(FILE_WARNINGS)
         
-        if guild_id in warnings and user_id in warnings[guild_id]:
-            del warnings[guild_id][user_id]
-            return await github_write_json(session, FILE_WARNINGS, warnings, sha, f"Clear warnings for user {user_id}")
-        return False
+    if guild_id in warnings and user_id in warnings[guild_id]:
+        del warnings[guild_id][user_id]
+        return await github_write_json(FILE_WARNINGS, warnings, sha, f"Clear warnings for user {user_id}")
+    return False
 
 async def get_muted_role(guild: discord.Guild) -> discord.Role:
     """Get or create muted role."""
@@ -739,19 +759,19 @@ async def mute_user(member: discord.Member, duration_minutes: int, reason: str, 
         
         # Store mute info
         session = await get_session()
-            mutes, sha = await github_read_json(session, FILE_MUTES)
+        mutes, sha = await github_read_json(FILE_MUTES)
             
-            guild_id = str(member.guild.id)
-            if guild_id not in mutes:
-                mutes[guild_id] = {}
+        guild_id = str(member.guild.id)
+        if guild_id not in mutes:
+            mutes[guild_id] = {}
             
-            mutes[guild_id][str(member.id)] = {
-                "end_time": (datetime.utcnow() + timedelta(minutes=duration_minutes)).isoformat(),
-                "reason": reason,
-                "moderator_id": moderator_id
-            }
+        mutes[guild_id][str(member.id)] = {
+            "end_time": (datetime.utcnow() + timedelta(minutes=duration_minutes)).isoformat(),
+            "reason": reason,
+            "moderator_id": moderator_id
+        }
             
-            await github_write_json(session, FILE_MUTES, mutes, sha, f"Mute user {member.id}")
+        await github_write_json(FILE_MUTES, mutes, sha, f"Mute user {member.id}")
         
         await log_mod_action(str(member.guild.id), "mute", str(member.id), moderator_id, reason, {"duration": duration_minutes})
         return True
@@ -767,12 +787,12 @@ async def unmute_user(member: discord.Member) -> bool:
         
         # Remove from mutes file
         session = await get_session()
-            mutes, sha = await github_read_json(session, FILE_MUTES)
+        mutes, sha = await github_read_json(FILE_MUTES)
             
-            guild_id = str(member.guild.id)
-            if guild_id in mutes and str(member.id) in mutes[guild_id]:
-                del mutes[guild_id][str(member.id)]
-                await github_write_json(session, FILE_MUTES, mutes, sha, f"Unmute user {member.id}")
+        guild_id = str(member.guild.id)
+        if guild_id in mutes and str(member.id) in mutes[guild_id]:
+            del mutes[guild_id][str(member.id)]
+            await github_write_json(FILE_MUTES, mutes, sha, f"Unmute user {member.id}")
         
         return True
     except Exception as e:
@@ -782,7 +802,7 @@ async def unmute_user(member: discord.Member) -> bool:
 async def check_expired_mutes():
     """Check and remove expired mutes. Called periodically."""
     session = await get_session()
-        mutes, _ = await github_read_json(session, FILE_MUTES)
+    mutes, _ = await github_read_json(FILE_MUTES)
     
     now = datetime.utcnow()
     
@@ -883,22 +903,22 @@ async def handle_honeypot_trigger(message: discord.Message, config: dict):
     
     # Log to honeypot_logs.json
     session = await get_session()
-        logs, sha = await github_read_json(session, FILE_HONEYPOT)
+    logs, sha = await github_read_json(FILE_HONEYPOT)
         
-        guild_id = str(guild.id)
-        if guild_id not in logs:
-            logs[guild_id] = []
+    guild_id = str(guild.id)
+    if guild_id not in logs:
+        logs[guild_id] = []
         
-        logs[guild_id].append({
-            "user_id": str(user.id),
-            "user_name": user.display_name,
-            "channel_id": str(message.channel.id),
-            "message_content": message.content[:500],
-            "action_taken": action,
-            "timestamp": datetime.utcnow().isoformat()
-        })
+    logs[guild_id].append({
+        "user_id": str(user.id),
+        "user_name": user.display_name,
+        "channel_id": str(message.channel.id),
+        "message_content": message.content[:500],
+        "action_taken": action,
+        "timestamp": datetime.utcnow().isoformat()
+    })
         
-        await github_write_json(session, FILE_HONEYPOT, logs, sha, f"Honeypot triggered by {user.id}")
+    await github_write_json(FILE_HONEYPOT, logs, sha, f"Honeypot triggered by {user.id}")
     
     # DM the user
     try:
@@ -1055,12 +1075,12 @@ async def add_to_snipe(message: discord.Message, action: str):
     
     # Also save to GitHub for persistence
     session = await get_session()
-        snipes, sha = await github_read_json(session, FILE_SNIPE)
-        guild_id = str(message.guild.id)
-        if guild_id not in snipes:
-            snipes[guild_id] = {}
-        snipes[guild_id][channel_id] = _snipe_cache[channel_id]
-        await github_write_json(session, FILE_SNIPE, snipes, sha, f"Update snipe cache for {channel_id}")
+    snipes, sha = await github_read_json(FILE_SNIPE)
+    guild_id = str(message.guild.id)
+    if guild_id not in snipes:
+        snipes[guild_id] = {}
+    snipes[guild_id][channel_id] = _snipe_cache[channel_id]
+    await github_write_json(FILE_SNIPE, snipes, sha, f"Update snipe cache for {channel_id}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BOT EVENTS
@@ -1283,17 +1303,16 @@ async def ensure_json_files():
         FILE_HONEYPOT: {},
         FILE_SNIPE: {},
     }
-    session = await get_session()
-        for filepath, default in files.items():
-            data, sha = await github_read_json(session, filepath)
-            if sha is None:
-                await github_write_json(session, filepath, default, None, f"init: create {filepath}")
-                print(f"✅ Created {filepath} on GitHub")
-            else:
-                print(f"✅ {filepath} already exists")
-        # Load prefixes into cache
-        prefixes, _ = await github_read_json(session, FILE_PREFIXES)
-        _prefix_cache = prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
+    for filepath, default in files.items():
+        data, sha = await github_read_json(filepath)
+        if sha is None:
+            await github_write_json(filepath, default, None, f"init: create {filepath}")
+            print(f"✅ Created {filepath} on GitHub")
+        else:
+            print(f"✅ {filepath} already exists")
+    # Load prefixes into cache
+    prefixes, _ = await github_read_json(FILE_PREFIXES)
+    _prefix_cache = prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
     print(f"✅ Active prefixes: {_prefix_cache}")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1744,20 +1763,20 @@ async def tempban_cmd(interaction: discord.Interaction, user: discord.Member, ho
         
         # Store tempban in mutes file (reuse for tempbans)
         session = await get_session()
-            mutes, sha = await github_read_json(session, FILE_MUTES)
+        mutes, sha = await github_read_json(FILE_MUTES)
             
-            guild_id = str(interaction.guild.id)
-            if guild_id not in mutes:
-                mutes[guild_id] = {}
+        guild_id = str(interaction.guild.id)
+        if guild_id not in mutes:
+            mutes[guild_id] = {}
             
-            mutes[guild_id][f"tempban_{user.id}"] = {
-                "end_time": (datetime.utcnow() + timedelta(hours=hours)).isoformat(),
-                "reason": reason,
-                "moderator_id": str(interaction.user.id),
-                "type": "tempban"
-            }
+        mutes[guild_id][f"tempban_{user.id}"] = {
+            "end_time": (datetime.utcnow() + timedelta(hours=hours)).isoformat(),
+            "reason": reason,
+            "moderator_id": str(interaction.user.id),
+            "type": "tempban"
+        }
             
-            await github_write_json(session, FILE_MUTES, mutes, sha, f"Tempban user {user.id}")
+        await github_write_json(FILE_MUTES, mutes, sha, f"Tempban user {user.id}")
         
         embed = discord.Embed(title="🔨 User Temporarily Banned", color=0xFF0000)
         embed.add_field(name="User", value=f"{user.display_name} (`{user.id}`)", inline=False)
@@ -1941,12 +1960,12 @@ async def snipe_cmd(interaction: discord.Interaction):
     else:
         # Check GitHub
         session = await get_session()
-            snipes, _ = await github_read_json(session, FILE_SNIPE)
-            guild_id = str(interaction.guild.id)
-            if guild_id in snipes and channel_id in snipes[guild_id]:
-                snipe_data = snipes[guild_id][channel_id]
-            else:
-                snipe_data = None
+        snipes, _ = await github_read_json(FILE_SNIPE)
+        guild_id = str(interaction.guild.id)
+        if guild_id in snipes and channel_id in snipes[guild_id]:
+            snipe_data = snipes[guild_id][channel_id]
+        else:
+            snipe_data = None
     
     if not snipe_data:
         await interaction.followup.send("❌ No deleted messages to snipe", ephemeral=True)
@@ -2030,7 +2049,7 @@ async def modlog_cmd(interaction: discord.Interaction, user: discord.Member = No
     await interaction.response.defer(ephemeral=True)
     
     session = await get_session()
-        logs, _ = await github_read_json(session, FILE_MODLOG)
+    logs, _ = await github_read_json(FILE_MODLOG)
     
     guild_id = str(interaction.guild.id)
     guild_logs = logs.get(guild_id, [])
@@ -2136,7 +2155,7 @@ async def anime_autocomplete(interaction: discord.Interaction, current: str) -> 
         return []
     
     session = await get_session()
-        result = await search_anilist(session, current, "ANIME", per_page=10)
+    result = await search_anilist(session, current, "ANIME", per_page=10)
     
     if not result:
         return []
@@ -2153,7 +2172,7 @@ async def manga_autocomplete(interaction: discord.Interaction, current: str) -> 
         return []
     
     session = await get_session()
-        result = await search_anilist(session, current, "MANGA", per_page=10)
+    result = await search_anilist(session, current, "MANGA", per_page=10)
     
     if not result:
         return []
@@ -2172,12 +2191,12 @@ async def anime_search_cmd(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
     
     session = await get_session()
-        # Try as ID first, then search
-        if query.isdigit():
-            media = await fetch_anilist(session, int(query), "ANIME")
-        else:
-            result = await search_anilist(session, query, "ANIME", per_page=1)
-            media = result.get("media", [None])[0] if result else None
+    # Try as ID first, then search
+    if query.isdigit():
+        media = await fetch_anilist(session, int(query), "ANIME")
+    else:
+        result = await search_anilist(session, query, "ANIME", per_page=1)
+        media = result.get("media", [None])[0] if result else None
     
     if not media:
         await interaction.followup.send("❌ Anime not found")
@@ -2214,11 +2233,11 @@ async def manga_search_cmd(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
     
     session = await get_session()
-        if query.isdigit():
-            media = await fetch_anilist(session, int(query), "MANGA")
-        else:
-            result = await search_anilist(session, query, "MANGA", per_page=1)
-            media = result.get("media", [None])[0] if result else None
+    if query.isdigit():
+        media = await fetch_anilist(session, int(query), "MANGA")
+    else:
+        result = await search_anilist(session, query, "MANGA", per_page=1)
+        media = result.get("media", [None])[0] if result else None
     
     if not media:
         await interaction.followup.send("❌ Manga not found")
@@ -2253,7 +2272,7 @@ async def character_search_cmd(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
     
     session = await get_session()
-        char = await get_character(session, name)
+    char = await get_character(session, name)
     
     if not char:
         await interaction.followup.send("❌ Character not found")
@@ -2295,7 +2314,7 @@ async def studio_search_cmd(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
     
     session = await get_session()
-        studio = await get_studio(session, name)
+    studio = await get_studio(session, name)
     
     if not studio:
         await interaction.followup.send("❌ Studio not found")
@@ -2326,7 +2345,7 @@ async def seasonal_cmd(interaction: discord.Interaction, season: str = None, yea
         return
     
     session = await get_session()
-        result = await get_seasonal_anime(session, season, year)
+    result = await get_seasonal_anime(session, season, year)
     
     if not result or not result.get("media"):
         await interaction.followup.send("❌ No anime found for this season")
@@ -2361,15 +2380,15 @@ async def airing_cmd(interaction: discord.Interaction, anime_id: int):
     await interaction.response.defer()
     
     session = await get_session()
-        # Get anime info
-        media = await fetch_anilist(session, anime_id, "ANIME")
-        if not media:
-            await interaction.followup.send("❌ Anime not found")
-            return
+    # Get anime info
+    media = await fetch_anilist(session, anime_id, "ANIME")
+    if not media:
+        await interaction.followup.send("❌ Anime not found")
+        return
         
-        # Get airing schedule
-        now = int(datetime.utcnow().timestamp())
-        schedule = await get_airing_schedule(session, anime_id, now)
+    # Get airing schedule
+    now = int(datetime.utcnow().timestamp())
+    schedule = await get_airing_schedule(session, anime_id, now)
     
     title = media.get("title", {}).get("english") or media.get("title", {}).get("romaji", "Unknown")
     
@@ -2417,7 +2436,7 @@ async def random_anime_cmd(interaction: discord.Interaction, genre: str = None):
     page = random.randint(1, 50)
     
     session = await get_session()
-        result = await search_anilist(session, query, "ANIME", page=page, per_page=1)
+    result = await search_anilist(session, query, "ANIME", page=page, per_page=1)
     
     if not result or not result.get("media"):
         await interaction.followup.send("❌ Couldn't fetch random anime")
@@ -2456,15 +2475,15 @@ async def setup(interaction: discord.Interaction, anilist_user_id: int, mal_user
     author_display = author_name or interaction.user.display_name
 
     session = await get_session()
-        users, sha = await github_read_json(session, FILE_USERS)
+    users, sha = await github_read_json(FILE_USERS)
 
-        users[discord_id] = {
-            "anilist_user_id": anilist_user_id,
-            "mal_user_id": mal_user_id,
-            "author_name": author_display,
-        }
+    users[discord_id] = {
+        "anilist_user_id": anilist_user_id,
+        "mal_user_id": mal_user_id,
+        "author_name": author_display,
+    }
 
-        ok = await github_write_json(session, FILE_USERS, users, sha, f"Setup profile for {interaction.user.display_name}")
+    ok = await github_write_json(FILE_USERS, users, sha, f"Setup profile for {interaction.user.display_name}")
 
     if ok:
         embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
@@ -2480,7 +2499,7 @@ async def myprofile(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     session = await get_session()
-        users, _ = await github_read_json(session, FILE_USERS)
+    users, _ = await github_read_json(FILE_USERS)
 
     profile = users.get(str(interaction.user.id))
     if not profile:
@@ -2499,7 +2518,7 @@ async def anilist_stats_cmd(interaction: discord.Interaction, user_id: int):
     await interaction.response.defer()
     
     session = await get_session()
-        user = await get_anilist_user_stats(session, user_id)
+    user = await get_anilist_user_stats(session, user_id)
     
     if not user:
         await interaction.followup.send("❌ User not found on AniList")
@@ -2568,10 +2587,10 @@ async def set_timezone(interaction: discord.Interaction, timezone: str):
     
     discord_id = str(interaction.user.id)
     session = await get_session()
-        timezones, sha = await github_read_json(session, FILE_TIMEZONES)
-        tz_info = TIMEZONES[tz_upper]
-        timezones[discord_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
-        success = await github_write_json(session, FILE_TIMEZONES, timezones, sha, f"Set timezone for {interaction.user.display_name}")
+    timezones, sha = await github_read_json(FILE_TIMEZONES)
+    tz_info = TIMEZONES[tz_upper]
+    timezones[discord_id] = {"code": tz_info["code"], "name": tz_info["name"], "offset": tz_info["offset"], "utc": tz_info["utc"]}
+    success = await github_write_json(FILE_TIMEZONES, timezones, sha, f"Set timezone for {interaction.user.display_name}")
     
     if success:
         embed = discord.Embed(title="✅ Timezone Set!", description=f"**{tz_info['code']}** ({tz_info['utc']}) - {tz_info['name']}", color=0x2EA043)
@@ -2586,7 +2605,7 @@ async def my_time(interaction: discord.Interaction):
     
     discord_id = str(interaction.user.id)
     session = await get_session()
-        timezones, _ = await github_read_json(session, FILE_TIMEZONES)
+    timezones, _ = await github_read_json(FILE_TIMEZONES)
     
     if discord_id not in timezones:
         await interaction.followup.send(embed=discord.Embed(title="❌ Timezone Not Set", description="Use `/set_timezone` first.", color=0xDA3633), ephemeral=True)
@@ -2644,12 +2663,12 @@ async def build(interaction: discord.Interaction, platforms: app_commands.Choice
     }
 
     session = await get_session()
-        async with session.post(
-            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches",
-            headers=gh_headers(), json=payload,
-        ) as r:
-            status = r.status
-            body = await r.text()
+    async with session.post(
+        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches",
+        headers=gh_headers(), json=payload,
+    ) as r:
+        status = r.status
+        body = await r.text()
 
     if status == 204:
         embed = discord.Embed(title="Build Triggered!", color=0x2EA043)
@@ -2671,26 +2690,26 @@ async def create_tag(interaction: discord.Interaction, tag: str, message: str):
     await interaction.response.defer()
 
     session = await get_session()
-        async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/ref/heads/{GITHUB_BRANCH}", headers=gh_headers()) as r:
-            status = r.status
-            ref_data = await r.json()
+    async with session.get(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/ref/heads/{GITHUB_BRANCH}", headers=gh_headers()) as r:
+        status = r.status
+        ref_data = await r.json()
         
-        if status != 200:
-            await interaction.followup.send(embed=discord.Embed(title="❌ Branch not found", description=ref_data.get("message"), color=0xDA3633))
-            return
+    if status != 200:
+        await interaction.followup.send(embed=discord.Embed(title="❌ Branch not found", description=ref_data.get("message"), color=0xDA3633))
+        return
 
-        sha = ref_data["object"]["sha"]
-        async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/tags", headers=gh_headers(), json={"tag": tag, "message": message, "object": sha, "type": "commit"}) as r:
-            status = r.status
-            tag_data = await r.json()
+    sha = ref_data["object"]["sha"]
+    async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/tags", headers=gh_headers(), json={"tag": tag, "message": message, "object": sha, "type": "commit"}) as r:
+        status = r.status
+        tag_data = await r.json()
         
-        if status not in (200, 201):
-            await interaction.followup.send(embed=discord.Embed(title="❌ Tag creation failed", description=tag_data.get("message"), color=0xDA3633))
-            return
+    if status not in (200, 201):
+        await interaction.followup.send(embed=discord.Embed(title="❌ Tag creation failed", description=tag_data.get("message"), color=0xDA3633))
+        return
 
-        async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs", headers=gh_headers(), json={"ref": f"refs/tags/{tag}", "sha": tag_data["sha"]}) as r:
-            status = r.status
-            ref_result = await r.json()
+    async with session.post(f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/git/refs", headers=gh_headers(), json={"ref": f"refs/tags/{tag}", "sha": tag_data["sha"]}) as r:
+        status = r.status
+        ref_result = await r.json()
 
     if status in (200, 201):
         embed = discord.Embed(title="🏷️ Tag Created!", color=0x2EA043)
@@ -2711,5 +2730,21 @@ async def main():
     await start_health_server()
     await bot.start(DISCORD_TOKEN)
 
+async def shutdown():
+    """Graceful shutdown."""
+    print("Shutting down...")
+    await close_session()
+    await bot.close()
+
+def signal_handler(sig, frame):
+    """Handle shutdown signals."""
+    print(f"Received signal {sig}")
+    asyncio.create_task(shutdown())
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped by user")
+    finally:
+        asyncio.run(close_session())
