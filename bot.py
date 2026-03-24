@@ -5298,12 +5298,11 @@ async def main():
     await start_health_server()
     if PROXY_URL:
         print(f"✅ Using proxy: {_PROXY_HOST}:{_PROXY_PORT}")
-        connector = aiohttp.TCPConnector()
-        async with aiohttp.ClientSession(connector=connector) as _:
-            await bot.start(DISCORD_TOKEN, proxy=PROXY_URL)
+        from discord.http import HTTPClient
+        bot.http.proxy = PROXY_URL
     else:
         print("⚠️ No proxy configured, connecting directly")
-        await bot.start(DISCORD_TOKEN)
+    await bot.start(DISCORD_TOKEN)
 
 
 if __name__ == "__main__":
