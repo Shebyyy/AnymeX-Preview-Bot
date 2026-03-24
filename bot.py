@@ -16,6 +16,17 @@ DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 PORT = int(os.environ.get("PORT", 8080))
 
+# ── Proxy Config ───────────────────────────────────────────────────────────────
+_PROXY_HOST = os.environ.get("PROXY_HOST")
+_PROXY_PORT = os.environ.get("PROXY_PORT")
+_PROXY_USER = os.environ.get("PROXY_USER")
+_PROXY_PASS = os.environ.get("PROXY_PASS")
+PROXY_URL = (
+    f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{_PROXY_PORT}"
+    if all([_PROXY_HOST, _PROXY_PORT, _PROXY_USER, _PROXY_PASS])
+    else None
+)
+
 GITHUB_OWNER = "Shebyyy"
 GITHUB_REPO = "AnymeX-Preview"
 GITHUB_BRANCH = "beta"
@@ -5285,7 +5296,14 @@ async def process_reminders():
 
 async def main():
     await start_health_server()
-    await bot.start(DISCORD_TOKEN)
+    if PROXY_URL:
+        print(f"✅ Using proxy: {_PROXY_HOST}:{_PROXY_PORT}")
+        connector = aiohttp.TCPConnector()
+        async with aiohttp.ClientSession(connector=connector) as _:
+            await bot.start(DISCORD_TOKEN, proxy=PROXY_URL)
+    else:
+        print("⚠️ No proxy configured, connecting directly")
+        await bot.start(DISCORD_TOKEN)
 
 
 if __name__ == "__main__":
