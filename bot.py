@@ -641,6 +641,21 @@ def has_allowed_role_prefix():
     return commands.check(predicate)
 
 
+# ── Intents & Bot ──────────────────────────────────────────────────────────────
+
+intents = discord.Intents.default()
+intents.message_content = True  # required for prefix commands
+
+# In-memory prefix cache (loaded on startup)
+_prefix_cache = ["?"]
+
+
+async def get_prefix(bot, message):
+    return _prefix_cache
+
+
+bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
+
 # ── /config_role ───────────────────────────────────────────────────────────────
 
 
@@ -705,35 +720,121 @@ async def config_role(
 # ── Health check server (keeps Render awake) ───────────────────────────────────
 
 
+API_SECRET = os.environ.get("API_SECRET")  # set this in Render env vars
+
+
 async def health(request):
     return web.Response(text="✅ Bot is running!")
+
+
+def _check_auth(request):
+    """Return True if the request carries a valid API_SECRET."""
+    if not API_SECRET:
+        return True  # no secret configured → open (not recommended for prod)
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {API_SECRET}"
+
+
+async def _api_add_media(request, media_type: str):
+    """Shared handler for POST /api/add_anime and POST /api/add_manga."""
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    anilist_id = body.get("anilist_id")
+    mal_id = body.get("mal_id")             # optional — falls back to AniList's idMal
+    anilist_user_id = body.get("anilist_user_id")
+    mal_user_id = body.get("mal_user_id")
+    author = (body.get("author") or "").strip()
+    reason = (body.get("reason") or "").strip()
+
+    missing = [k for k, v in [
+        ("anilist_id", anilist_id),
+        ("anilist_user_id", anilist_user_id),
+        ("mal_user_id", mal_user_id),
+        ("author", author),
+        ("reason", reason),
+    ] if not v]
+    if missing:
+        return web.json_response({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    if not isinstance(anilist_id, int):
+        return web.json_response({"error": "anilist_id must be an integer"}, status=400)
+
+    async with aiohttp.ClientSession() as session:
+        media = await fetch_anilist(session, anilist_id, media_type)
+        if not media:
+            return web.json_response(
+                {"error": f"Could not find {media_type.lower()} with anilist_id={anilist_id} on AniList"},
+                status=404,
+            )
+
+        titles = media["title"]
+        title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
+        resolved_mal_id = mal_id if mal_id is not None else media.get("idMal")
+        type_path = "anime" if media_type == "ANIME" else "manga"
+        anilist_url = f"https://anilist.co/{type_path}/{anilist_id}"
+        mal_url = f"https://myanimelist.net/{type_path}/{resolved_mal_id}" if resolved_mal_id else "N/A"
+
+        entry = {
+            "anilist_id": anilist_id,
+            "mal_id": resolved_mal_id,
+            "title": title,
+            "anilist_url": anilist_url,
+            "mal_url": mal_url,
+            "anilist_user_id": anilist_user_id,
+            "mal_user_id": mal_user_id,
+            "author": author,
+            "reason": reason,
+        }
+
+        filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
+        entries, sha = await github_read_json(session, filepath)
+
+        if any(e.get("anilist_id") == anilist_id for e in entries):
+            return web.json_response(
+                {"error": f"{title} is already in the list", "title": title},
+                status=409,
+            )
+
+        entries.append(entry)
+        ok = await github_write_json(
+            session,
+            filepath,
+            entries,
+            sha,
+            f"feat: add {title} to underrated {media_type.lower()}s by {author} (API)",
+        )
+
+    if ok:
+        return web.json_response({"success": True, "entry": entry}, status=201)
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
+async def api_add_anime(request):
+    return await _api_add_media(request, "ANIME")
+
+
+async def api_add_manga(request):
+    return await _api_add_media(request, "MANGA")
 
 
 async def start_health_server():
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    app.router.add_post("/api/add_anime", api_add_anime)
+    app.router.add_post("/api/add_manga", api_add_manga)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     print(f"✅ Health server running on port {PORT}")
 
-
-# ── Intents ────────────────────────────────────────────────────────────────────
-
-intents = discord.Intents.default()
-intents.message_content = True  # required for prefix commands
-
-# In-memory prefix cache (loaded on startup)
-_prefix_cache = ["?"]
-
-
-async def get_prefix(bot, message):
-    return _prefix_cache
-
-
-bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
 
