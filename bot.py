@@ -42,47 +42,10 @@ FILE_MANGA = "underrated_manga.json"
 FILE_USERS = "users.json"
 FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
-FILE_SERVER_CFG = (
-    "server_config.json"  # per-server config (roles, log channels, lang, etc.)
-)
-FILE_WARNINGS = "warnings.json"  # per-server user warnings
-FILE_HONEYPOT = "honeypot.json"  # honeypot channel configs per server
-FILE_AUTOMOD = "automod.json"  # per-server automod rules
-FILE_REMINDERS = "reminders.json"  # pending reminders
-FILE_MOD_CASES = "mod_cases.json"  # moderation case log
+FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
+
 
 DEFAULT_PREFIXES = ["?"]
-
-# ── Default per-server config skeleton ─────────────────────────────────────────
-DEFAULT_SERVER_CFG = {
-    "prefix": "?",
-    "language": "en",
-    "mod_log_channel": None,
-    "join_leave_channel": None,
-    "allowed_roles": [],  # role IDs allowed to use restricted commands
-    "admin_roles": [],  # role IDs treated as admins for bot
-    "mute_role": None,
-    "warn_thresholds": {"3": "mute", "5": "ban"},  # warnings -> action
-    "warn_expiry_days": 30,  # 0 = never expire
-}
-
-# ── Default automod config ──────────────────────────────────────────────────────
-DEFAULT_AUTOMOD = {
-    "spam": {
-        "enabled": False,
-        "max_messages": 5,
-        "interval_seconds": 5,
-        "action": "mute",
-    },
-    "invite_links": {"enabled": False, "action": "delete"},
-    "caps_filter": {"enabled": False, "threshold": 70, "action": "delete"},
-    "mention_spam": {"enabled": False, "max_mentions": 5, "action": "mute"},
-    "blacklist": {"enabled": False, "words": [], "action": "delete"},
-    "url_filter": {"enabled": False, "whitelist": [], "action": "delete"},
-}
-
-# ── In-memory spam tracking (not persisted) ────────────────────────────────────
-_spam_tracker: dict = {}  # guild_id -> user_id -> [timestamps]
 
 # ── COMPLETE WORLD TIMEZONE DATABASE (NEW FORMAT ONLY) ────────────────────────
 TIMEZONES = {
@@ -637,51 +600,22 @@ TIMEZONES = {
 # ── Permission Helpers ─────────────────────────────────────────────────────────
 
 
-async def get_server_cfg(session, guild_id: str) -> dict:
-    """Return per-server config, merging with defaults."""
-    all_cfg, _ = await github_read_json(session, FILE_SERVER_CFG)
-    cfg = all_cfg.get(guild_id, {})
-    merged = {**DEFAULT_SERVER_CFG, **cfg}
-    return merged
-
-
-async def save_server_cfg(session, guild_id: str, cfg: dict) -> bool:
-    all_cfg, sha = await github_read_json(session, FILE_SERVER_CFG)
-    all_cfg[guild_id] = cfg
-    result = await github_write_json(
-        session, FILE_SERVER_CFG, all_cfg, sha, f"Update config for guild {guild_id}"
-    )
-    _invalidate_cache(guild_id)
-    return result
-
-
-def _user_has_allowed_role_sync(
-    interaction: discord.Interaction, allowed_role_ids: list
-) -> bool:
-    if not allowed_role_ids:
-        return interaction.user.guild_permissions.administrator
-    user_role_ids = {role.id for role in interaction.user.roles}
-    return bool(user_role_ids & set(allowed_role_ids))
+async def get_allowed_roles(guild_id: str) -> list:
+    """Return list of allowed role IDs for this guild."""
+    async with aiohttp.ClientSession() as session:
+        all_cfg, _ = await github_read_json(session, FILE_SERVER_CFG)
+    return all_cfg.get(guild_id, {}).get("allowed_roles", [])
 
 
 def has_allowed_role():
-    """Check if user has any of the configured allowed roles (from JSON config)."""
+    """Check if user has an allowed role OR is an administrator."""
 
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.user.guild_permissions.administrator:
             return True
-        guild_id = str(interaction.guild_id)
-        async with aiohttp.ClientSession() as session:
-            cfg = await get_server_cfg(session, guild_id)
-        allowed = cfg.get("allowed_roles", [])
-        if not allowed:
-            await interaction.response.send_message(
-                "❌ This command is restricted. Ask an admin to configure `/server_config`.",
-                ephemeral=True,
-            )
-            return False
+        allowed = await get_allowed_roles(str(interaction.guild_id))
         user_role_ids = {role.id for role in interaction.user.roles}
-        if user_role_ids & set(allowed):
+        if allowed and user_role_ids & set(allowed):
             return True
         await interaction.response.send_message(
             "❌ You don't have a role allowed to use this command.", ephemeral=True
@@ -692,25 +626,80 @@ def has_allowed_role():
 
 
 def has_allowed_role_prefix():
+    """Check if user has an allowed role OR is an administrator (prefix commands)."""
+
     async def predicate(ctx):
         if ctx.author.guild_permissions.administrator:
             return True
-        guild_id = str(ctx.guild.id)
-        async with aiohttp.ClientSession() as session:
-            cfg = await get_server_cfg(session, guild_id)
-        allowed = cfg.get("allowed_roles", [])
-        if not allowed:
-            await ctx.send(
-                "❌ This command is restricted. Ask an admin to configure the bot."
-            )
-            return False
+        allowed = await get_allowed_roles(str(ctx.guild.id))
         user_role_ids = {role.id for role in ctx.author.roles}
-        if user_role_ids & set(allowed):
+        if allowed and user_role_ids & set(allowed):
             return True
         await ctx.send("❌ You don't have a role allowed to use this command.")
         return False
 
     return commands.check(predicate)
+
+
+# ── /config_role ───────────────────────────────────────────────────────────────
+
+
+@bot.tree.command(
+    name="config_role",
+    description="Add or remove a role from the allowed roles list (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(action="add or remove", role="Role to configure")
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="remove", value="remove"),
+        app_commands.Choice(name="list", value="list"),
+    ]
+)
+async def config_role(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    role: discord.Role = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    guild_id = str(interaction.guild_id)
+    async with aiohttp.ClientSession() as session:
+        all_cfg, sha = await github_read_json(session, FILE_SERVER_CFG)
+        cfg = all_cfg.get(guild_id, {})
+        roles = cfg.get("allowed_roles", [])
+
+        if action.value == "list":
+            if not roles:
+                msg = "No allowed roles configured."
+            else:
+                msg = "**Allowed roles:**\n" + "\n".join(f"<@&{r}>" for r in roles)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        if not role:
+            await interaction.followup.send("❌ Please provide a role.", ephemeral=True)
+            return
+
+        if action.value == "add":
+            if role.id in roles:
+                await interaction.followup.send(f"⚠️ {role.mention} is already allowed.", ephemeral=True)
+                return
+            roles.append(role.id)
+            msg = f"✅ Added {role.mention} to allowed roles."
+        else:
+            if role.id not in roles:
+                await interaction.followup.send(f"❌ {role.mention} is not in allowed roles.", ephemeral=True)
+                return
+            roles.remove(role.id)
+            msg = f"✅ Removed {role.mention} from allowed roles."
+
+        cfg["allowed_roles"] = roles
+        all_cfg[guild_id] = cfg
+        await github_write_json(session, FILE_SERVER_CFG, all_cfg, sha, f"Update allowed_roles for guild {guild_id}")
+
+    await interaction.followup.send(msg, ephemeral=True)
+
 
 
 # ── Health check server (keeps Render awake) ───────────────────────────────────
@@ -735,7 +724,6 @@ async def start_health_server():
 
 intents = discord.Intents.default()
 intents.message_content = True  # required for prefix commands
-intents.members = True  # required for join/leave logging and member operations
 
 # In-memory prefix cache (loaded on startup)
 _prefix_cache = ["?"]
@@ -769,12 +757,8 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tup
                 FILE_USERS,
                 FILE_TIMEZONES,
                 FILE_SERVER_CFG,
-                FILE_WARNINGS,
-                FILE_HONEYPOT,
-                FILE_AUTOMOD,
-                FILE_MOD_CASES,
             )
-            list_files = (FILE_ANIME, FILE_MANGA, FILE_REMINDERS)
+            list_files = (FILE_ANIME, FILE_MANGA)
             if filepath in dict_files:
                 default = {}
             elif filepath == FILE_PREFIXES:
@@ -817,7 +801,7 @@ async def fetch_anilist(session: aiohttp.ClientSession, media_id: int, media_typ
     query = """
     query ($id: Int, $type: MediaType) {
       Media(id: $id, type: $type) {
-        id
+        id idMal
         title { romaji english native }
         coverImage { large }
         averageScore
@@ -858,6 +842,127 @@ async def get_profile(discord_id: str):
     return users.get(discord_id)
 
 
+# ── AniList autocomplete search helpers ────────────────────────────────────────
+
+
+async def _anilist_search(query_str: str, media_type: str) -> list:
+    """Search AniList for anime/manga, returns list of (id, idMal, display_title)."""
+    query = """
+    query ($search: String, $type: MediaType) {
+      Page(perPage: 25) {
+        media(search: $search, type: $type, sort: POPULARITY_DESC) {
+          id idMal title { romaji english }
+        }
+      }
+    }
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                ANILIST_API,
+                json={"query": query, "variables": {"search": query_str, "type": media_type}},
+                headers={"Content-Type": "application/json"},
+            ) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json()
+        results = data.get("data", {}).get("Page", {}).get("media", [])
+        out = []
+        for m in results:
+            title = m["title"].get("english") or m["title"].get("romaji") or "Unknown"
+            out.append({"id": m["id"], "idMal": m.get("idMal"), "title": title})
+        return out
+    except Exception:
+        return []
+
+
+async def _anilist_user_search(query_str: str) -> list:
+    """Search AniList users, returns list of (id, name)."""
+    query = """
+    query ($search: String) {
+      Page(perPage: 25) {
+        users(search: $search) {
+          id name
+        }
+      }
+    }
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                ANILIST_API,
+                json={"query": query, "variables": {"search": query_str}},
+                headers={"Content-Type": "application/json"},
+            ) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json()
+        return data.get("data", {}).get("Page", {}).get("users", [])
+    except Exception:
+        return []
+
+
+async def _mal_get_user_id(mal_username: str) -> int | None:
+    """Fetch MAL user ID from username via Jikan API (no auth needed)."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.jikan.moe/v4/users/{mal_username}",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        return data.get("data", {}).get("mal_id")
+    except Exception:
+        return None
+
+
+# ── Autocomplete functions ─────────────────────────────────────────────────────
+
+
+async def anime_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if not current or len(current) < 2:
+        return []
+    results = await _anilist_search(current, "ANIME")
+    return [
+        app_commands.Choice(
+            name=f"{r['title'][:90]} (AL:{r['id']} MAL:{r['idMal'] or '?'})",
+            value=str(r["id"]),
+        )
+        for r in results
+    ][:25]
+
+
+async def manga_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if not current or len(current) < 2:
+        return []
+    results = await _anilist_search(current, "MANGA")
+    return [
+        app_commands.Choice(
+            name=f"{r['title'][:90]} (AL:{r['id']} MAL:{r['idMal'] or '?'})",
+            value=str(r["id"]),
+        )
+        for r in results
+    ][:25]
+
+
+async def anilist_user_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if not current or len(current) < 2:
+        return []
+    results = await _anilist_user_search(current)
+    return [
+        app_commands.Choice(name=f"{u['name']} (ID: {u['id']})", value=str(u["id"]))
+        for u in results
+    ][:25]
+
+
 # ── on ready ───────────────────────────────────────────────────────────────────
 
 
@@ -865,8 +970,6 @@ async def get_profile(discord_id: str):
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
-    if not process_reminders.is_running():
-        process_reminders.start()
     # Sync slash commands once to avoid Cloudflare rate limiting on every restart
     if not getattr(bot, "_synced", False):
         try:
@@ -887,11 +990,6 @@ async def ensure_json_files():
         FILE_MANGA: [],
         FILE_PREFIXES: DEFAULT_PREFIXES[:],
         FILE_SERVER_CFG: {},
-        FILE_WARNINGS: {},
-        FILE_HONEYPOT: {},
-        FILE_AUTOMOD: {},
-        FILE_REMINDERS: [],
-        FILE_MOD_CASES: {},
     }
     async with aiohttp.ClientSession() as session:
         for filepath, default in files.items():
@@ -920,14 +1018,15 @@ async def ensure_json_files():
     name="setup", description="Link your AniList and MAL accounts to your Discord"
 )
 @app_commands.describe(
-    anilist_user_id="Your AniList user ID",
-    mal_user_id="Your MyAnimeList user ID",
+    anilist_username="Your AniList username (search to find yourself)",
+    mal_username="Your MyAnimeList username",
     author_name="Display name for list entries (defaults to Discord username)",
 )
+@app_commands.autocomplete(anilist_username=anilist_user_autocomplete)
 async def setup(
     interaction: discord.Interaction,
-    anilist_user_id: int,
-    mal_user_id: int,
+    anilist_username: str,
+    mal_username: str,
     author_name: str = "",
 ):
     await interaction.response.defer(ephemeral=True)
@@ -935,15 +1034,43 @@ async def setup(
     discord_id = str(interaction.user.id)
     author_display = author_name or interaction.user.display_name
 
+    # anilist_username is either a numeric ID (from autocomplete) or a raw username
+    if anilist_username.isdigit():
+        anilist_user_id = int(anilist_username)
+        # Fetch the display name for confirmation
+        al_users = await _anilist_user_search("")
+        anilist_display = f"ID {anilist_user_id}"
+    else:
+        # They typed a username manually — look it up
+        results = await _anilist_user_search(anilist_username)
+        match = next((u for u in results if u["name"].lower() == anilist_username.lower()), None)
+        if not match and results:
+            match = results[0]
+        if not match:
+            await interaction.followup.send(
+                f"❌ AniList user `{anilist_username}` not found. Try searching your username in the autocomplete.",
+                ephemeral=True,
+            )
+            return
+        anilist_user_id = match["id"]
+        anilist_display = match["name"]
+
+    # Look up MAL user ID from username via Jikan
+    mal_user_id = await _mal_get_user_id(mal_username)
+    if not mal_user_id:
+        await interaction.followup.send(
+            f"❌ MAL user `{mal_username}` not found. Check your username and try again.",
+            ephemeral=True,
+        )
+        return
+
     async with aiohttp.ClientSession() as session:
         users, sha = await github_read_json(session, FILE_USERS)
-
         users[discord_id] = {
             "anilist_user_id": anilist_user_id,
             "mal_user_id": mal_user_id,
             "author_name": author_display,
         }
-
         ok = await github_write_json(
             session,
             FILE_USERS,
@@ -954,10 +1081,10 @@ async def setup(
 
     if ok:
         embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
-        embed.add_field(name="AniList ID", value=f"`{anilist_user_id}`", inline=True)
-        embed.add_field(name="MAL ID", value=f"`{mal_user_id}`", inline=True)
-        embed.add_field(name="Author Name", value=author_display, inline=True)
-        embed.set_footer(text="You can now use /add_anime, /add_manga and /build!")
+        embed.add_field(name="AniList User", value=f"`{anilist_display}` (ID: `{anilist_user_id}`)", inline=False)
+        embed.add_field(name="MAL User", value=f"`{mal_username}` (ID: `{mal_user_id}`)", inline=False)
+        embed.add_field(name="Author Name", value=author_display, inline=False)
+        embed.set_footer(text="You can now use /add_anime, /add_manga!")
     else:
         embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -983,14 +1110,11 @@ async def myprofile(interaction: discord.Interaction):
         return
 
     embed = discord.Embed(title="👤 Your Profile", color=0x0078D4)
-    embed.add_field(name="Author Name", value=profile.get("author", "—"), inline=True)
+    embed.add_field(name="Author Name", value=profile.get("author_name", "—"), inline=True)
     embed.add_field(
-        name="GitHub", value=f"`{profile.get('github_username', '—')}`", inline=True
+        name="AniList UserID", value=f"`{profile.get('anilist_user_id', '—')}`", inline=True
     )
-    embed.add_field(
-        name="AniList UserID", value=f"`{profile['anilist_user_id']}`", inline=True
-    )
-    embed.add_field(name="MAL UserID", value=f"`{profile['mal_user_id']}`", inline=True)
+    embed.add_field(name="MAL UserID", value=f"`{profile.get('mal_user_id', '—')}`", inline=True)
     embed.set_footer(text="Use /setup to update your profile.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1066,79 +1190,52 @@ class ConfirmView(discord.ui.View):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-async def handle_add(
-    interaction,
-    anilist_link,
-    mal_link,
-    reason,
-    author_override,
-    anilist_uid_override,
-    mal_uid_override,
-    media_type,
-):
+async def handle_add(interaction, anilist_id: int, reason: str, media_type: str):
     await interaction.response.defer()
-
-    anilist_id = extract_anilist_id(anilist_link)
-    mal_id = extract_mal_id(mal_link)
-
-    if not anilist_id:
-        await interaction.followup.send(
-            "❌ Invalid AniList link. Use `https://anilist.co/anime/387`",
-            ephemeral=True,
-        )
-        return
-    if not mal_id:
-        await interaction.followup.send(
-            "❌ Invalid MAL link. Use `https://myanimelist.net/anime/387`",
-            ephemeral=True,
-        )
-        return
 
     async with aiohttp.ClientSession() as session:
         users, _ = await github_read_json(session, FILE_USERS)
         profile = users.get(str(interaction.user.id))
 
-        if not profile and (anilist_uid_override is None or mal_uid_override is None):
+        if not profile:
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="⚠️ Profile not set up",
-                    description="Run `/setup` first, or pass `anilist_user_id` and `mal_user_id` manually.",
+                    description="Run `/setup` first!",
                     color=0xFFA500,
                 ),
                 ephemeral=True,
             )
             return
 
-        anilist_user_id = anilist_uid_override or profile["anilist_user_id"]
-        mal_user_id = mal_uid_override or profile["mal_user_id"]
-        author = author_override or (
-            profile["author"] if profile else interaction.user.display_name
-        )
         media = await fetch_anilist(session, anilist_id, media_type)
 
     if not media:
-        await interaction.followup.send(
-            "❌ Could not fetch info from AniList.", ephemeral=True
-        )
+        await interaction.followup.send("❌ Could not fetch info from AniList.", ephemeral=True)
         return
 
     titles = media["title"]
-    title = (
-        titles.get("english")
-        or titles.get("romaji")
-        or titles.get("native")
-        or "Unknown"
-    )
+    title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
     cover_url = media.get("coverImage", {}).get("large", "")
     score = media.get("averageScore") or "N/A"
     genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
+    mal_id = media.get("idMal")
+
+    # Build AniList and MAL links
+    type_path = "anime" if media_type == "ANIME" else "manga"
+    anilist_url = f"https://anilist.co/{type_path}/{anilist_id}"
+    mal_url = f"https://myanimelist.net/{type_path}/{mal_id}" if mal_id else "N/A"
+
+    author = profile.get("author_name") or profile.get("author") or interaction.user.display_name
 
     entry = {
         "anilist_id": anilist_id,
         "mal_id": mal_id,
         "title": title,
-        "anilist_user_id": anilist_user_id,
-        "mal_user_id": mal_user_id,
+        "anilist_url": anilist_url,
+        "mal_url": mal_url,
+        "anilist_user_id": profile["anilist_user_id"],
+        "mal_user_id": profile["mal_user_id"],
         "author": author,
         "reason": reason,
     }
@@ -1150,24 +1247,17 @@ async def handle_add(
         description=f"*Confirm to add to `{filepath}`*",
         color=0x0078D4,
     )
-    preview.add_field(name="AniList ID", value=f"`{anilist_id}`", inline=True)
-    preview.add_field(name="MAL ID", value=f"`{mal_id}`", inline=True)
+    preview.add_field(name="AniList", value=f"[Link]({anilist_url}) (ID: `{anilist_id}`)", inline=True)
+    preview.add_field(name="MAL", value=f"[Link]({mal_url}) (ID: `{mal_id or '?'}`)", inline=True)
     preview.add_field(name="Score", value=f"`{score}`", inline=True)
     preview.add_field(name="Genres", value=genres, inline=True)
-    preview.add_field(name="AniList User ID", value=f"`{anilist_user_id}`", inline=True)
-    preview.add_field(name="MAL User ID", value=f"`{mal_user_id}`", inline=True)
     preview.add_field(name="Author", value=author, inline=True)
     preview.add_field(name="Reason", value=reason, inline=False)
     if cover_url:
         preview.set_thumbnail(url=cover_url)
     preview.set_footer(text="You have 2 minutes to confirm.")
 
-    view = ConfirmView(
-        entry=entry,
-        filepath=filepath,
-        media_type=media_type.lower(),
-        cover_url=cover_url,
-    )
+    view = ConfirmView(entry=entry, filepath=filepath, media_type=media_type.lower(), cover_url=cover_url)
     await interaction.followup.send(embed=preview, view=view)
 
 
@@ -1178,32 +1268,17 @@ async def handle_add(
 
 @bot.tree.command(name="add_anime", description="Add an underrated anime to the list")
 @app_commands.describe(
-    anilist_link="AniList URL (e.g. https://anilist.co/anime/387)",
-    mal_link="MAL URL (e.g. https://myanimelist.net/anime/387)",
+    title="Search for the anime (type to get suggestions)",
     reason="Why is it underrated?",
-    author="Override display name",
-    anilist_user_id="Override your AniList user ID",
-    mal_user_id="Override your MAL user ID",
 )
-async def add_anime(
-    interaction: discord.Interaction,
-    anilist_link: str,
-    mal_link: str,
-    reason: str,
-    author: str = "",
-    anilist_user_id: int = None,
-    mal_user_id: int = None,
-):
-    await handle_add(
-        interaction,
-        anilist_link,
-        mal_link,
-        reason,
-        author,
-        anilist_user_id,
-        mal_user_id,
-        "ANIME",
-    )
+@app_commands.autocomplete(title=anime_autocomplete)
+async def add_anime(interaction: discord.Interaction, title: str, reason: str):
+    if not title.isdigit():
+        await interaction.response.send_message(
+            "❌ Please select an anime from the dropdown suggestions.", ephemeral=True
+        )
+        return
+    await handle_add(interaction, int(title), reason, "ANIME")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1213,32 +1288,17 @@ async def add_anime(
 
 @bot.tree.command(name="add_manga", description="Add an underrated manga to the list")
 @app_commands.describe(
-    anilist_link="AniList URL (e.g. https://anilist.co/manga/74489)",
-    mal_link="MAL URL (e.g. https://myanimelist.net/manga/44489)",
+    title="Search for the manga (type to get suggestions)",
     reason="Why is it underrated?",
-    author="Override display name",
-    anilist_user_id="Override your AniList user ID",
-    mal_user_id="Override your MAL user ID",
 )
-async def add_manga(
-    interaction: discord.Interaction,
-    anilist_link: str,
-    mal_link: str,
-    reason: str,
-    author: str = "",
-    anilist_user_id: int = None,
-    mal_user_id: int = None,
-):
-    await handle_add(
-        interaction,
-        anilist_link,
-        mal_link,
-        reason,
-        author,
-        anilist_user_id,
-        mal_user_id,
-        "MANGA",
-    )
+@app_commands.autocomplete(title=manga_autocomplete)
+async def add_manga(interaction: discord.Interaction, title: str, reason: str):
+    if not title.isdigit():
+        await interaction.response.send_message(
+            "❌ Please select a manga from the dropdown suggestions.", ephemeral=True
+        )
+        return
+    await handle_add(interaction, int(title), reason, "MANGA")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1247,7 +1307,6 @@ async def add_manga(
 
 
 @bot.tree.command(name="list_anime", description="View the underrated anime list")
-@has_allowed_role()
 async def list_anime(interaction: discord.Interaction):
     await interaction.response.defer()
 
@@ -1286,7 +1345,6 @@ async def list_anime(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="list_manga", description="View the underrated manga list")
-@has_allowed_role()
 async def list_manga(interaction: discord.Interaction):
     await interaction.response.defer()
 
@@ -2730,33 +2788,13 @@ async def prefix_help(ctx, command_name: str = None):
         inline=False,
     )
     embed.add_field(
-        name="⚠️ Moderation (slash)",
-        value="`/warn` `/warnings` `/clearwarnings` `/kick` `/ban` `/unban` `/mute` `/unmute` `/tempban` `/purge` `/slowmode`",
-        inline=False,
-    )
-    embed.add_field(
-        name="🍯 Honeypot (slash)",
-        value="`/honeypot_set` `/honeypot_remove` `/honeypot_list`",
-        inline=False,
-    )
-    embed.add_field(
-        name="🤖 AutoMod (slash)",
-        value="`/automod` — configure spam/caps/invite/mention/blacklist/url rules",
-        inline=False,
-    )
-    embed.add_field(
         name="🔍 AniList (slash)",
         value="`/anime_search` `/manga_search` `/anilist_profile` `/character_search` `/staff_search` `/airing_schedule` `/seasonal_anime`",
         inline=False,
     )
     embed.add_field(
-        name="🛠️ Utility (slash)",
-        value="`/poll` `/remind` `/userinfo` `/serverinfo` `/avatar`",
-        inline=False,
-    )
-    embed.add_field(
         name="⚙️ Config (slash)",
-        value="`/server_config` `/config_role` `/setup_timezone_menu`",
+        value="`/setup_timezone_menu`",
         inline=False,
     )
     embed.add_field(name="⚙️ Admin (prefix)", value="`setprefix`", inline=False)
@@ -3071,7 +3109,6 @@ async def prefix_add_manga(
 
 
 @bot.command(name="list_anime")
-@has_allowed_role_prefix()
 async def prefix_list_anime(ctx):
     async with aiohttp.ClientSession() as session:
         entries, _ = await github_read_json(session, FILE_ANIME)
@@ -3096,7 +3133,6 @@ async def prefix_list_anime(ctx):
 
 
 @bot.command(name="list_manga")
-@has_allowed_role_prefix()
 async def prefix_list_manga(ctx):
     async with aiohttp.ClientSession() as session:
         entries, _ = await github_read_json(session, FILE_MANGA)
@@ -3780,1075 +3816,6 @@ async def prefix_world_clock(ctx):
     await ctx.send(embeds=embeds[:10])
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Run bot + health server together
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SERVER CONFIG COMMANDS
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@bot.tree.command(
-    name="server_config", description="View or update server configuration (Admin only)"
-)
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(
-    mod_log_channel="Channel for moderation logs",
-    join_leave_channel="Channel for join/leave logs",
-    mute_role="Role to apply when muting users",
-    warn_mute_threshold="Number of warnings before auto-mute",
-    warn_ban_threshold="Number of warnings before auto-ban",
-    warn_expiry_days="Days until warnings expire (0 = never)",
-)
-async def server_config(
-    interaction: discord.Interaction,
-    mod_log_channel: discord.TextChannel = None,
-    join_leave_channel: discord.TextChannel = None,
-    mute_role: discord.Role = None,
-    warn_mute_threshold: int = None,
-    warn_ban_threshold: int = None,
-    warn_expiry_days: int = None,
-):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-        changed = False
-        if mod_log_channel:
-            cfg["mod_log_channel"] = mod_log_channel.id
-            changed = True
-        if join_leave_channel:
-            cfg["join_leave_channel"] = join_leave_channel.id
-            changed = True
-        if mute_role:
-            cfg["mute_role"] = mute_role.id
-            changed = True
-        if warn_mute_threshold is not None:
-            cfg["warn_thresholds"][str(warn_mute_threshold)] = "mute"
-            changed = True
-        if warn_ban_threshold is not None:
-            cfg["warn_thresholds"][str(warn_ban_threshold)] = "ban"
-            changed = True
-        if warn_expiry_days is not None:
-            cfg["warn_expiry_days"] = warn_expiry_days
-            changed = True
-        if changed:
-            await save_server_cfg(session, guild_id, cfg)
-    embed = discord.Embed(title="⚙️ Server Configuration", color=0x0066FF)
-    embed.add_field(
-        name="Mod Log",
-        value=(
-            f"<#{cfg['mod_log_channel']}>" if cfg.get("mod_log_channel") else "Not set"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="Join/Leave Log",
-        value=(
-            f"<#{cfg['join_leave_channel']}>"
-            if cfg.get("join_leave_channel")
-            else "Not set"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="Mute Role",
-        value=f"<@&{cfg['mute_role']}>" if cfg.get("mute_role") else "Not set",
-        inline=True,
-    )
-    embed.add_field(
-        name="Warn Thresholds", value=str(cfg.get("warn_thresholds", {})), inline=True
-    )
-    embed.add_field(
-        name="Warn Expiry", value=f"{cfg.get('warn_expiry_days', 30)} days", inline=True
-    )
-    embed.add_field(
-        name="Allowed Roles",
-        value=", ".join(f"<@&{r}>" for r in cfg.get("allowed_roles", [])) or "None",
-        inline=False,
-    )
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(
-    name="config_role",
-    description="Add or remove a role from the allowed roles list (Admin only)",
-)
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(action="add or remove", role="Role to configure")
-@app_commands.choices(
-    action=[
-        app_commands.Choice(name="add", value="add"),
-        app_commands.Choice(name="remove", value="remove"),
-    ]
-)
-async def config_role(
-    interaction: discord.Interaction,
-    action: app_commands.Choice[str],
-    role: discord.Role,
-):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-        roles = cfg.get("allowed_roles", [])
-        if action.value == "add":
-            if role.id not in roles:
-                roles.append(role.id)
-                msg = f"✅ Added {role.mention} to allowed roles."
-            else:
-                msg = f"⚠️ {role.mention} is already in allowed roles."
-        else:
-            if role.id in roles:
-                roles.remove(role.id)
-                msg = f"✅ Removed {role.mention} from allowed roles."
-            else:
-                msg = f"❌ {role.mention} was not in allowed roles."
-        cfg["allowed_roles"] = roles
-        await save_server_cfg(session, guild_id, cfg)
-    await interaction.followup.send(msg, ephemeral=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# WARNING SYSTEM
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-async def _get_guild_warnings(session, guild_id: str) -> tuple:
-    all_warns, sha = await github_read_json(session, FILE_WARNINGS)
-    return all_warns.get(guild_id, {}), sha, all_warns
-
-
-async def _save_guild_warnings(
-    session, guild_id: str, guild_warns: dict, all_warns: dict, sha
-):
-    all_warns[guild_id] = guild_warns
-    return await github_write_json(
-        session, FILE_WARNINGS, all_warns, sha, f"Update warnings for guild {guild_id}"
-    )
-
-
-async def _log_mod_action(guild: discord.Guild, cfg: dict, embed: discord.Embed):
-    ch_id = cfg.get("mod_log_channel")
-    if not ch_id:
-        return
-    ch = guild.get_channel(ch_id)
-    if ch:
-        try:
-            await ch.send(embed=embed)
-        except Exception:
-            pass
-
-
-async def _add_mod_case(session, guild_id: str, case: dict):
-    all_cases, sha = await github_read_json(session, FILE_MOD_CASES)
-    guild_cases = all_cases.get(guild_id, [])
-    case["case_id"] = len(guild_cases) + 1
-    guild_cases.append(case)
-    all_cases[guild_id] = guild_cases
-    await github_write_json(
-        session, FILE_MOD_CASES, all_cases, sha, f"Add mod case for guild {guild_id}"
-    )
-    return case["case_id"]
-
-
-@bot.tree.command(name="warn", description="Warn a user")
-@app_commands.describe(user="User to warn", reason="Reason for warning")
-@has_allowed_role()
-async def warn_user(
-    interaction: discord.Interaction, user: discord.Member, reason: str
-):
-    await interaction.response.defer()
-    guild_id = str(interaction.guild_id)
-    user_id = str(user.id)
-    from datetime import datetime
-
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-        guild_warns, sha, all_warns = await _get_guild_warnings(session, guild_id)
-        expiry_days = cfg.get("warn_expiry_days", 30)
-        now = datetime.utcnow()
-        # Expire old warnings
-        if user_id in guild_warns and expiry_days > 0:
-            guild_warns[user_id] = [
-                w
-                for w in guild_warns[user_id]
-                if (now - datetime.fromisoformat(w["timestamp"])).days < expiry_days
-            ]
-        if user_id not in guild_warns:
-            guild_warns[user_id] = []
-        entry = {
-            "reason": reason,
-            "moderator": str(interaction.user.id),
-            "timestamp": now.isoformat(),
-        }
-        guild_warns[user_id].append(entry)
-        count = len(guild_warns[user_id])
-        await _save_guild_warnings(session, guild_id, guild_warns, all_warns, sha)
-        case_id = await _add_mod_case(
-            session,
-            guild_id,
-            {
-                "type": "warn",
-                "user": user_id,
-                "mod": str(interaction.user.id),
-                "reason": reason,
-                "timestamp": now.isoformat(),
-            },
-        )
-
-        # Check thresholds
-        thresholds = cfg.get("warn_thresholds", {})
-        action_taken = None
-        for threshold_str, action in sorted(
-            thresholds.items(), key=lambda x: int(x[0])
-        ):
-            if count == int(threshold_str):
-                action_taken = action
-                break
-
-        embed = discord.Embed(title=f"⚠️ Warning #{count}", color=0xFFA500)
-        embed.add_field(name="User", value=user.mention, inline=True)
-        embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Reason", value=reason, inline=False)
-        embed.add_field(name="Total Warnings", value=str(count), inline=True)
-        embed.set_footer(text=f"Case #{case_id}")
-
-        log_embed = discord.Embed(
-            title=f"⚠️ User Warned | Case #{case_id}", color=0xFFA500
-        )
-        log_embed.add_field(name="User", value=f"{user} ({user.id})", inline=True)
-        log_embed.add_field(name="Moderator", value=str(interaction.user), inline=True)
-        log_embed.add_field(name="Reason", value=reason, inline=False)
-        log_embed.add_field(name="Warning #", value=str(count), inline=True)
-        await _log_mod_action(interaction.guild, cfg, log_embed)
-
-        if action_taken == "mute":
-            mute_role_id = cfg.get("mute_role")
-            if mute_role_id:
-                mute_role = interaction.guild.get_role(mute_role_id)
-                if mute_role:
-                    await user.add_roles(
-                        mute_role, reason=f"Auto-mute: {count} warnings"
-                    )
-            else:
-                await user.timeout(
-                    discord.utils.utcnow() + __import__("datetime").timedelta(hours=1),
-                    reason=f"Auto-mute: {count} warnings",
-                )
-            embed.add_field(
-                name="Auto Action", value="🔇 Muted (threshold reached)", inline=False
-            )
-        elif action_taken == "ban":
-            await user.ban(reason=f"Auto-ban: {count} warnings")
-            embed.add_field(
-                name="Auto Action", value="🔨 Banned (threshold reached)", inline=False
-            )
-
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="warnings", description="View warnings for a user")
-@app_commands.describe(user="User to check")
-@has_allowed_role()
-async def view_warnings(interaction: discord.Interaction, user: discord.Member):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        guild_warns, _, _ = await _get_guild_warnings(session, guild_id)
-    warns = guild_warns.get(str(user.id), [])
-    if not warns:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title=f"✅ No warnings for {user.display_name}", color=0x2EA043
-            ),
-            ephemeral=True,
-        )
-        return
-    embed = discord.Embed(title=f"⚠️ Warnings for {user.display_name}", color=0xFFA500)
-    for i, w in enumerate(warns[-10:], 1):
-        embed.add_field(
-            name=f"#{i} — {w['timestamp'][:10]}",
-            value=f"**Reason:** {w['reason']}\n**By:** <@{w['moderator']}>",
-            inline=False,
-        )
-    embed.set_footer(text=f"Total: {len(warns)} warning(s)")
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(
-    name="clearwarnings", description="Clear all or specific warnings for a user"
-)
-@app_commands.describe(
-    user="User", index="Warning number to remove (leave blank to clear all)"
-)
-@has_allowed_role()
-async def clear_warnings(
-    interaction: discord.Interaction, user: discord.Member, index: int = None
-):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        guild_warns, sha, all_warns = await _get_guild_warnings(session, guild_id)
-        uid = str(user.id)
-        if uid not in guild_warns or not guild_warns[uid]:
-            await interaction.followup.send("❌ No warnings found.", ephemeral=True)
-            return
-        if index is None:
-            removed = len(guild_warns[uid])
-            guild_warns[uid] = []
-            msg = f"✅ Cleared all {removed} warning(s) for {user.mention}."
-        else:
-            if index < 1 or index > len(guild_warns[uid]):
-                await interaction.followup.send(
-                    "❌ Invalid warning number.", ephemeral=True
-                )
-                return
-            guild_warns[uid].pop(index - 1)
-            msg = f"✅ Removed warning #{index} for {user.mention}."
-        await _save_guild_warnings(session, guild_id, guild_warns, all_warns, sha)
-    await interaction.followup.send(msg, ephemeral=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODERATION COMMANDS
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@bot.tree.command(name="kick", description="Kick a user")
-@app_commands.describe(user="User to kick", reason="Reason")
-@has_allowed_role()
-async def kick_user(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "No reason provided",
-):
-    await interaction.response.defer()
-    from datetime import datetime
-
-    try:
-        await user.kick(reason=reason)
-        embed = discord.Embed(title="👢 User Kicked", color=0xFFA500)
-        embed.add_field(name="User", value=str(user), inline=True)
-        embed.add_field(name="Reason", value=reason, inline=False)
-        embed.set_footer(text=f"By {interaction.user}")
-        async with aiohttp.ClientSession() as session:
-            cfg = await get_server_cfg(session, str(interaction.guild_id))
-            await _log_mod_action(interaction.guild, cfg, embed)
-            await _add_mod_case(
-                session,
-                str(interaction.guild_id),
-                {
-                    "type": "kick",
-                    "user": str(user.id),
-                    "mod": str(interaction.user.id),
-                    "reason": reason,
-                    "timestamp": datetime.utcnow().isoformat(),
-                },
-            )
-        await interaction.followup.send(embed=embed)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ I don't have permission to kick that user.")
-
-
-@bot.tree.command(name="ban", description="Ban a user")
-@app_commands.describe(
-    user="User to ban", reason="Reason", delete_days="Days of messages to delete (0-7)"
-)
-@has_allowed_role()
-async def ban_user(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "No reason provided",
-    delete_days: int = 0,
-):
-    await interaction.response.defer()
-    from datetime import datetime
-
-    try:
-        await user.ban(reason=reason, delete_message_days=min(delete_days, 7))
-        embed = discord.Embed(title="🔨 User Banned", color=0xDA3633)
-        embed.add_field(name="User", value=str(user), inline=True)
-        embed.add_field(name="Reason", value=reason, inline=False)
-        embed.set_footer(text=f"By {interaction.user}")
-        async with aiohttp.ClientSession() as session:
-            cfg = await get_server_cfg(session, str(interaction.guild_id))
-            await _log_mod_action(interaction.guild, cfg, embed)
-            await _add_mod_case(
-                session,
-                str(interaction.guild_id),
-                {
-                    "type": "ban",
-                    "user": str(user.id),
-                    "mod": str(interaction.user.id),
-                    "reason": reason,
-                    "timestamp": datetime.utcnow().isoformat(),
-                },
-            )
-        await interaction.followup.send(embed=embed)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ I don't have permission to ban that user.")
-
-
-@bot.tree.command(name="unban", description="Unban a user by ID")
-@app_commands.describe(user_id="Discord user ID to unban", reason="Reason")
-@has_allowed_role()
-async def unban_user(
-    interaction: discord.Interaction, user_id: str, reason: str = "No reason provided"
-):
-    await interaction.response.defer()
-    try:
-        user = await bot.fetch_user(int(user_id))
-        await interaction.guild.unban(user, reason=reason)
-        embed = discord.Embed(title="✅ User Unbanned", color=0x2EA043)
-        embed.add_field(name="User", value=str(user), inline=True)
-        embed.add_field(name="Reason", value=reason, inline=False)
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}")
-
-
-@bot.tree.command(name="mute", description="Timeout (mute) a user")
-@app_commands.describe(
-    user="User to mute", duration_minutes="Duration in minutes", reason="Reason"
-)
-@has_allowed_role()
-async def mute_user(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    duration_minutes: int = 60,
-    reason: str = "No reason provided",
-):
-    await interaction.response.defer()
-    from datetime import datetime, timedelta
-
-    try:
-        until = discord.utils.utcnow() + timedelta(minutes=duration_minutes)
-        await user.timeout(until, reason=reason)
-        embed = discord.Embed(title="🔇 User Muted", color=0xFFA500)
-        embed.add_field(name="User", value=str(user), inline=True)
-        embed.add_field(
-            name="Duration", value=f"{duration_minutes} minutes", inline=True
-        )
-        embed.add_field(name="Reason", value=reason, inline=False)
-        async with aiohttp.ClientSession() as session:
-            cfg = await get_server_cfg(session, str(interaction.guild_id))
-            await _log_mod_action(interaction.guild, cfg, embed)
-        await interaction.followup.send(embed=embed)
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "❌ I don't have permission to timeout that user."
-        )
-
-
-@bot.tree.command(name="unmute", description="Remove timeout from a user")
-@app_commands.describe(user="User to unmute")
-@has_allowed_role()
-async def unmute_user(interaction: discord.Interaction, user: discord.Member):
-    await interaction.response.defer()
-    try:
-        await user.timeout(None)
-        await interaction.followup.send(
-            embed=discord.Embed(title=f"✅ {user.display_name} unmuted", color=0x2EA043)
-        )
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "❌ I don't have permission to remove that timeout."
-        )
-
-
-@bot.tree.command(name="tempban", description="Temporarily ban a user")
-@app_commands.describe(
-    user="User to tempban", duration_hours="Hours to ban", reason="Reason"
-)
-@has_allowed_role()
-async def tempban_user(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    duration_hours: int = 24,
-    reason: str = "No reason provided",
-):
-    await interaction.response.defer()
-    from datetime import datetime, timedelta
-
-    try:
-        await user.ban(reason=f"[TEMPBAN {duration_hours}h] {reason}")
-        unban_time = datetime.utcnow() + timedelta(hours=duration_hours)
-        # Store pending unban in reminders json
-        async with aiohttp.ClientSession() as session:
-            reminders, sha = await github_read_json(session, FILE_REMINDERS)
-            reminders.append(
-                {
-                    "type": "unban",
-                    "guild_id": str(interaction.guild_id),
-                    "user_id": str(user.id),
-                    "unban_at": unban_time.isoformat(),
-                }
-            )
-            await github_write_json(
-                session, FILE_REMINDERS, reminders, sha, f"Schedule unban for {user.id}"
-            )
-        embed = discord.Embed(title="⏳ User Temp-Banned", color=0xDA3633)
-        embed.add_field(name="User", value=str(user), inline=True)
-        embed.add_field(name="Duration", value=f"{duration_hours} hours", inline=True)
-        embed.add_field(name="Reason", value=reason, inline=False)
-        await interaction.followup.send(embed=embed)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ I don't have permission to ban that user.")
-
-
-@bot.tree.command(name="purge", description="Bulk delete messages")
-@app_commands.describe(
-    amount="Number of messages to delete (max 100)",
-    user="Only delete messages from this user (optional)",
-)
-@has_allowed_role()
-async def purge_messages(
-    interaction: discord.Interaction, amount: int = 10, user: discord.Member = None
-):
-    await interaction.response.defer(ephemeral=True)
-    amount = min(amount, 100)
-
-    def check(m):
-        return (user is None) or (m.author == user)
-
-    deleted = await interaction.channel.purge(limit=amount, check=check)
-    await interaction.followup.send(
-        embed=discord.Embed(
-            title=f"🗑️ Deleted {len(deleted)} message(s)", color=0x2EA043
-        ),
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(name="slowmode", description="Set channel slowmode")
-@app_commands.describe(seconds="Slowmode seconds (0 to disable)")
-@has_allowed_role()
-async def slowmode(interaction: discord.Interaction, seconds: int = 0):
-    await interaction.response.defer()
-    await interaction.channel.edit(slowmode_delay=seconds)
-    msg = f"✅ Slowmode set to {seconds}s" if seconds > 0 else "✅ Slowmode disabled"
-    await interaction.followup.send(embed=discord.Embed(title=msg, color=0x2EA043))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HONEYPOT SYSTEM
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@bot.tree.command(
-    name="honeypot_set", description="Configure a honeypot channel (Admin only)"
-)
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(
-    channel="Channel to set as honeypot",
-    punishment="Action to take on trigger",
-    dm_message="DM message to send before punishment (optional)",
-)
-@app_commands.choices(
-    punishment=[
-        app_commands.Choice(name="kick", value="kick"),
-        app_commands.Choice(name="ban", value="ban"),
-        app_commands.Choice(name="mute", value="mute"),
-        app_commands.Choice(name="softban", value="softban"),
-    ]
-)
-async def honeypot_set(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    punishment: app_commands.Choice[str],
-    dm_message: str = "",
-):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        all_hp, sha = await github_read_json(session, FILE_HONEYPOT)
-        if guild_id not in all_hp:
-            all_hp[guild_id] = {}
-        all_hp[guild_id][str(channel.id)] = {
-            "punishment": punishment.value,
-            "dm_message": dm_message
-            or f"You triggered a honeypot channel and have been {punishment.value}ed.",
-        }
-        await github_write_json(
-            session,
-            FILE_HONEYPOT,
-            all_hp,
-            sha,
-            f"Set honeypot channel {channel.id} for guild {guild_id}",
-        )
-    _invalidate_cache(str(interaction.guild_id))
-    await interaction.followup.send(
-        embed=discord.Embed(
-            title=f"🍯 Honeypot Set",
-            description=f"{channel.mention} → **{punishment.value}**",
-            color=0x2EA043,
-        ),
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(
-    name="honeypot_remove", description="Remove a honeypot channel (Admin only)"
-)
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(channel="Channel to remove from honeypot list")
-async def honeypot_remove(
-    interaction: discord.Interaction, channel: discord.TextChannel
-):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        all_hp, sha = await github_read_json(session, FILE_HONEYPOT)
-        removed = all_hp.get(guild_id, {}).pop(str(channel.id), None)
-        if removed:
-            await github_write_json(
-                session, FILE_HONEYPOT, all_hp, sha, f"Remove honeypot {channel.id}"
-            )
-            _invalidate_cache(str(interaction.guild_id))
-            await interaction.followup.send(
-                f"✅ Removed {channel.mention} from honeypot list.", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                f"❌ {channel.mention} is not a honeypot channel.", ephemeral=True
-            )
-
-
-@bot.tree.command(
-    name="honeypot_list", description="List all honeypot channels (Admin only)"
-)
-@app_commands.default_permissions(administrator=True)
-async def honeypot_list(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        all_hp, _ = await github_read_json(session, FILE_HONEYPOT)
-    guild_hp = all_hp.get(guild_id, {})
-    if not guild_hp:
-        await interaction.followup.send(
-            "No honeypot channels configured.", ephemeral=True
-        )
-        return
-    embed = discord.Embed(title="🍯 Honeypot Channels", color=0xFFA500)
-    for ch_id, cfg in guild_hp.items():
-        embed.add_field(
-            name=f"<#{ch_id}>",
-            value=f"Punishment: **{cfg['punishment']}**",
-            inline=False,
-        )
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-# ── on_message: honeypot + automod ─────────────────────────────────────────────
-
-# ── In-memory cache for on_message hot path (avoids GitHub API on every message) ─
-_cfg_cache: dict = {}  # guild_id -> (cfg_dict, fetched_at_timestamp)
-_hp_cache: dict = {}  # guild_id -> (hp_dict, fetched_at_timestamp)
-_automod_cache: dict = {}  # guild_id -> (am_dict, fetched_at_timestamp)
-_CACHE_TTL = 120  # seconds before re-fetching from GitHub
-
-import time as _time
-
-
-async def _cached_cfg(guild_id: str) -> dict:
-    now = _time.monotonic()
-    if guild_id in _cfg_cache:
-        data, ts = _cfg_cache[guild_id]
-        if now - ts < _CACHE_TTL:
-            return data
-    async with aiohttp.ClientSession() as session:
-        data = await get_server_cfg(session, guild_id)
-    _cfg_cache[guild_id] = (data, now)
-    return data
-
-
-async def _cached_hp(guild_id: str) -> dict:
-    now = _time.monotonic()
-    if guild_id in _hp_cache:
-        data, ts = _hp_cache[guild_id]
-        if now - ts < _CACHE_TTL:
-            return data
-    async with aiohttp.ClientSession() as session:
-        all_hp, _ = await github_read_json(session, FILE_HONEYPOT)
-    data = all_hp.get(guild_id, {})
-    _hp_cache[guild_id] = (data, now)
-    return data
-
-
-async def _cached_automod(guild_id: str) -> dict:
-    now = _time.monotonic()
-    if guild_id in _automod_cache:
-        data, ts = _automod_cache[guild_id]
-        if now - ts < _CACHE_TTL:
-            return data
-    async with aiohttp.ClientSession() as session:
-        all_am, _ = await github_read_json(session, FILE_AUTOMOD)
-    data = {**DEFAULT_AUTOMOD, **all_am.get(guild_id, {})}
-    _automod_cache[guild_id] = (data, now)
-    return data
-
-
-def _invalidate_cache(guild_id: str):
-    """Call after any config write so next message re-fetches fresh data."""
-    _cfg_cache.pop(guild_id, None)
-    _hp_cache.pop(guild_id, None)
-    _automod_cache.pop(guild_id, None)
-
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        await bot.process_commands(message)
-        return
-
-    guild_id = str(message.guild.id)
-    user = message.author
-    channel_id = str(message.channel.id)
-
-    # Use cached reads — no GitHub hit on every message
-    guild_hp = await _cached_hp(guild_id)
-    cfg = await _cached_cfg(guild_id)
-
-    # ── Honeypot Check ─────────────────────────────────────────────────────
-    if channel_id in guild_hp:
-        hp_cfg = guild_hp[channel_id]
-        punishment = hp_cfg["punishment"]
-        dm_msg = hp_cfg.get("dm_message", "You triggered a honeypot.")
-
-        # DM first before punishment
-        try:
-            await user.send(dm_msg)
-        except Exception:
-            pass
-
-        # Apply punishment first so user can't keep posting while we sweep
-        from datetime import datetime, timedelta
-
-        try:
-            if punishment == "kick":
-                await user.kick(reason="Honeypot triggered")
-            elif punishment == "ban":
-                await user.ban(reason="Honeypot triggered", delete_message_days=1)
-            elif punishment == "softban":
-                await user.ban(
-                    reason="Honeypot triggered (softban)", delete_message_days=7
-                )
-                await message.guild.unban(user, reason="Softban — immediate unban")
-            elif punishment == "mute":
-                await user.timeout(
-                    discord.utils.utcnow() + timedelta(hours=24),
-                    reason="Honeypot triggered",
-                )
-        except Exception:
-            pass
-
-        # Sweep messages — rate-limit safe: one channel at a time with sleep
-        cutoff = discord.utils.utcnow() - timedelta(hours=24)
-        for ch in message.guild.text_channels:
-            try:
-                to_delete = [
-                    m
-                    async for m in ch.history(limit=100, after=cutoff)
-                    if m.author.id == user.id
-                ]
-                if to_delete:
-                    # delete_messages only works for ≤100 messages, bulk only for <14 days
-                    await ch.delete_messages(to_delete)
-                    await asyncio.sleep(
-                        0.5
-                    )  # stay well within rate limits between channels
-            except discord.Forbidden:
-                pass
-            except Exception:
-                pass
-
-        log_embed = discord.Embed(title="🍯 Honeypot Triggered", color=0xDA3633)
-        log_embed.add_field(name="User", value=f"{user} ({user.id})", inline=True)
-        log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-        log_embed.add_field(name="Punishment", value=punishment, inline=True)
-        await _log_mod_action(message.guild, cfg, log_embed)
-        async with aiohttp.ClientSession() as session:
-            await _add_mod_case(
-                session,
-                guild_id,
-                {
-                    "type": f"honeypot_{punishment}",
-                    "user": str(user.id),
-                    "mod": "AUTO",
-                    "reason": "Honeypot triggered",
-                    "timestamp": datetime.utcnow().isoformat(),
-                },
-            )
-        await bot.process_commands(message)
-        return
-
-    # ── AutoMod ────────────────────────────────────────────────────────────
-    am = await _cached_automod(guild_id)
-    content = message.content
-
-    async def _automod_action(action: str, reason: str):
-        if action == "delete":
-            try:
-                await message.delete()
-            except Exception:
-                pass
-        elif action == "mute":
-            try:
-                await user.timeout(
-                    discord.utils.utcnow()
-                    + __import__("datetime").timedelta(minutes=10),
-                    reason=reason,
-                )
-            except Exception:
-                pass
-        log_embed = discord.Embed(title=f"🤖 AutoMod: {reason}", color=0xFFA500)
-        log_embed.add_field(name="User", value=f"{user} ({user.id})", inline=True)
-        log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-        log_embed.add_field(name="Action", value=action, inline=True)
-        await _log_mod_action(message.guild, cfg, log_embed)
-
-    # Invite links
-    if am["invite_links"]["enabled"] and re.search(
-        r"discord\.gg/\S+|discord\.com/invite/\S+", content, re.I
-    ):
-        await _automod_action(am["invite_links"]["action"], "Invite Link")
-
-    # Caps filter
-    elif am["caps_filter"]["enabled"] and len(content) > 8:
-        caps_pct = sum(1 for c in content if c.isupper()) / max(len(content), 1) * 100
-        if caps_pct >= am["caps_filter"]["threshold"]:
-            await _automod_action(am["caps_filter"]["action"], "Excessive Caps")
-
-    # Mention spam
-    elif (
-        am["mention_spam"]["enabled"]
-        and len(message.mentions) >= am["mention_spam"]["max_mentions"]
-    ):
-        await _automod_action(am["mention_spam"]["action"], "Mention Spam")
-
-    # Blacklist
-    elif am["blacklist"]["enabled"]:
-        lower_content = content.lower()
-        if any(w in lower_content for w in am["blacklist"]["words"]):
-            await _automod_action(am["blacklist"]["action"], "Blacklisted Word")
-
-    # URL filter
-    elif am["url_filter"]["enabled"]:
-        urls = re.findall(r"https?://\S+", content)
-        whitelist = am["url_filter"].get("whitelist", [])
-        if urls and not all(any(w in u for w in whitelist) for u in urls):
-            await _automod_action(am["url_filter"]["action"], "Blocked URL")
-
-    # Spam detection
-    elif am["spam"]["enabled"]:
-        import time
-
-        now_ts = time.time()
-        key = f"{guild_id}:{user.id}"
-        if guild_id not in _spam_tracker:
-            _spam_tracker[guild_id] = {}
-        timestamps = _spam_tracker[guild_id].get(str(user.id), [])
-        interval = am["spam"]["interval_seconds"]
-        timestamps = [t for t in timestamps if now_ts - t < interval]
-        timestamps.append(now_ts)
-        _spam_tracker[guild_id][str(user.id)] = timestamps
-        if len(timestamps) >= am["spam"]["max_messages"]:
-            await _automod_action(am["spam"]["action"], "Spam")
-
-    await bot.process_commands(message)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# AUTOMOD CONFIG COMMANDS
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@bot.tree.command(name="automod", description="Configure automod rules (Admin only)")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(
-    rule="Rule to configure",
-    enabled="Enable or disable",
-    action="Action to take",
-    threshold="Numeric threshold (varies by rule)",
-    words="Comma-separated words for blacklist",
-    whitelist_domains="Comma-separated allowed domains for URL filter",
-)
-@app_commands.choices(
-    rule=[
-        app_commands.Choice(name="spam", value="spam"),
-        app_commands.Choice(name="invite_links", value="invite_links"),
-        app_commands.Choice(name="caps_filter", value="caps_filter"),
-        app_commands.Choice(name="mention_spam", value="mention_spam"),
-        app_commands.Choice(name="blacklist", value="blacklist"),
-        app_commands.Choice(name="url_filter", value="url_filter"),
-    ],
-    action=[
-        app_commands.Choice(name="delete", value="delete"),
-        app_commands.Choice(name="mute", value="mute"),
-        app_commands.Choice(name="kick", value="kick"),
-        app_commands.Choice(name="ban", value="ban"),
-    ],
-)
-async def automod_config(
-    interaction: discord.Interaction,
-    rule: app_commands.Choice[str],
-    enabled: bool,
-    action: app_commands.Choice[str] = None,
-    threshold: int = None,
-    words: str = None,
-    whitelist_domains: str = None,
-):
-    await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    async with aiohttp.ClientSession() as session:
-        all_am, sha = await github_read_json(session, FILE_AUTOMOD)
-        am = {**DEFAULT_AUTOMOD, **all_am.get(guild_id, {})}
-        rule_cfg = am[rule.value]
-        rule_cfg["enabled"] = enabled
-        if action:
-            rule_cfg["action"] = action.value
-        if threshold is not None:
-            if rule.value == "spam":
-                rule_cfg["max_messages"] = threshold
-            elif rule.value == "caps_filter":
-                rule_cfg["threshold"] = threshold
-            elif rule.value == "mention_spam":
-                rule_cfg["max_mentions"] = threshold
-        if words and rule.value == "blacklist":
-            rule_cfg["words"] = [w.strip().lower() for w in words.split(",")]
-        if whitelist_domains and rule.value == "url_filter":
-            rule_cfg["whitelist"] = [d.strip() for d in whitelist_domains.split(",")]
-        am[rule.value] = rule_cfg
-        all_am[guild_id] = am
-        await github_write_json(
-            session, FILE_AUTOMOD, all_am, sha, f"Update automod for guild {guild_id}"
-        )
-    _invalidate_cache(guild_id)
-    embed = discord.Embed(title=f"🤖 AutoMod: `{rule.value}` updated", color=0x2EA043)
-    embed.add_field(name="Enabled", value=str(enabled), inline=True)
-    embed.add_field(name="Action", value=rule_cfg.get("action", "—"), inline=True)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LOGGING EVENTS
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@bot.event
-async def on_member_join(member: discord.Member):
-    guild_id = str(member.guild.id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-    ch_id = cfg.get("join_leave_channel")
-    if not ch_id:
-        return
-    ch = member.guild.get_channel(ch_id)
-    if ch:
-        embed = discord.Embed(title="📥 Member Joined", color=0x2EA043)
-        embed.add_field(name="User", value=f"{member.mention} ({member})", inline=True)
-        embed.add_field(
-            name="Account Created",
-            value=member.created_at.strftime("%Y-%m-%d"),
-            inline=True,
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        await ch.send(embed=embed)
-
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    guild_id = str(member.guild.id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-    ch_id = cfg.get("join_leave_channel")
-    if not ch_id:
-        return
-    ch = member.guild.get_channel(ch_id)
-    if ch:
-        embed = discord.Embed(title="📤 Member Left", color=0xDA3633)
-        embed.add_field(name="User", value=f"{member} ({member.id})", inline=True)
-        embed.set_thumbnail(url=member.display_avatar.url)
-        await ch.send(embed=embed)
-
-
-@bot.event
-async def on_message_edit(before: discord.Message, after: discord.Message):
-    if before.author.bot or not before.guild or before.content == after.content:
-        return
-    guild_id = str(before.guild.id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-    ch_id = cfg.get("mod_log_channel")
-    if not ch_id:
-        return
-    ch = before.guild.get_channel(ch_id)
-    if ch:
-        embed = discord.Embed(title="✏️ Message Edited", color=0x0066FF)
-        embed.add_field(name="Author", value=f"{before.author.mention}", inline=True)
-        embed.add_field(name="Channel", value=before.channel.mention, inline=True)
-        embed.add_field(name="Before", value=before.content[:512] or "—", inline=False)
-        embed.add_field(name="After", value=after.content[:512] or "—", inline=False)
-        embed.add_field(
-            name="Jump", value=f"[Go to message]({after.jump_url})", inline=False
-        )
-        await ch.send(embed=embed)
-
-
-@bot.event
-async def on_message_delete(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
-    guild_id = str(message.guild.id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-    ch_id = cfg.get("mod_log_channel")
-    if not ch_id:
-        return
-    ch = message.guild.get_channel(ch_id)
-    if ch:
-        embed = discord.Embed(title="🗑️ Message Deleted", color=0xFFA500)
-        embed.add_field(name="Author", value=f"{message.author.mention}", inline=True)
-        embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-        embed.add_field(
-            name="Content", value=message.content[:512] or "—", inline=False
-        )
-        await ch.send(embed=embed)
-
-
-@bot.event
-async def on_voice_state_update(
-    member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
-):
-    if before.channel == after.channel:
-        return
-    guild_id = str(member.guild.id)
-    async with aiohttp.ClientSession() as session:
-        cfg = await get_server_cfg(session, guild_id)
-    ch_id = cfg.get("mod_log_channel")
-    if not ch_id:
-        return
-    ch = member.guild.get_channel(ch_id)
-    if ch:
-        if before.channel is None:
-            desc = f"Joined **{after.channel.name}**"
-            color = 0x2EA043
-        elif after.channel is None:
-            desc = f"Left **{before.channel.name}**"
-            color = 0xDA3633
-        else:
-            desc = f"Moved from **{before.channel.name}** → **{after.channel.name}**"
-            color = 0x0066FF
-        embed = discord.Embed(
-            title="🎙️ Voice State", description=f"{member.mention} {desc}", color=color
-        )
-        await ch.send(embed=embed)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # ANILIST INTEGRATION (SLASH)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -5150,148 +4117,10 @@ async def seasonal_anime(
     await interaction.followup.send(embed=embed)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# UTILITY COMMANDS
-# ══════════════════════════════════════════════════════════════════════════════
 
-
-@bot.tree.command(name="poll", description="Create a poll")
-@app_commands.describe(
-    question="Poll question", options="Comma-separated options (max 9)"
-)
-async def create_poll(interaction: discord.Interaction, question: str, options: str):
-    await interaction.response.defer()
-    opts = [o.strip() for o in options.split(",") if o.strip()][:9]
-    if len(opts) < 2:
-        await interaction.followup.send(
-            "❌ Provide at least 2 options.", ephemeral=True
-        )
-        return
-    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
-    embed = discord.Embed(title=f"📊 {question}", color=0x0066FF)
-    desc = "\n".join(f"{number_emojis[i]} {opt}" for i, opt in enumerate(opts))
-    embed.description = desc
-    embed.set_footer(text=f"Poll by {interaction.user.display_name}")
-    msg = await interaction.followup.send(embed=embed)
-    for i in range(len(opts)):
-        await msg.add_reaction(number_emojis[i])
-
-
-@bot.tree.command(name="remind", description="Set a reminder")
-@app_commands.describe(
-    minutes="Remind you in how many minutes", message="What to remind you about"
-)
-async def remind(interaction: discord.Interaction, minutes: int, message: str):
-    await interaction.response.defer(ephemeral=True)
-    from datetime import datetime, timedelta
-
-    remind_at = (datetime.utcnow() + timedelta(minutes=minutes)).isoformat()
-    async with aiohttp.ClientSession() as session:
-        reminders, sha = await github_read_json(session, FILE_REMINDERS)
-        reminders.append(
-            {
-                "type": "remind",
-                "user_id": str(interaction.user.id),
-                "channel_id": str(interaction.channel_id),
-                "message": message,
-                "remind_at": remind_at,
-            }
-        )
-        await github_write_json(session, FILE_REMINDERS, reminders, sha, "Add reminder")
-    await interaction.followup.send(
-        f"✅ I'll remind you in **{minutes}** minute(s): *{message}*", ephemeral=True
-    )
-
-
-@bot.tree.command(name="userinfo", description="View information about a user")
-@app_commands.describe(user="User to look up (defaults to yourself)")
-async def userinfo(interaction: discord.Interaction, user: discord.Member = None):
-    await interaction.response.defer()
-    target = user or interaction.user
-    roles = [r.mention for r in target.roles if r.name != "@everyone"][-10:]
-    embed = discord.Embed(title=f"👤 {target}", color=target.color)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="ID", value=str(target.id), inline=True)
-    embed.add_field(name="Nickname", value=target.nick or "None", inline=True)
-    embed.add_field(
-        name="Joined Server", value=target.joined_at.strftime("%Y-%m-%d"), inline=True
-    )
-    embed.add_field(
-        name="Account Created",
-        value=target.created_at.strftime("%Y-%m-%d"),
-        inline=True,
-    )
-    embed.add_field(name="Roles", value=" ".join(roles) or "None", inline=False)
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="serverinfo", description="View server information")
-async def serverinfo(interaction: discord.Interaction):
-    await interaction.response.defer()
-    g = interaction.guild
-    embed = discord.Embed(title=g.name, color=0x0066FF)
-    if g.icon:
-        embed.set_thumbnail(url=g.icon.url)
-    embed.add_field(name="Owner", value=str(g.owner), inline=True)
-    embed.add_field(name="Members", value=str(g.member_count), inline=True)
-    embed.add_field(name="Channels", value=str(len(g.channels)), inline=True)
-    embed.add_field(name="Roles", value=str(len(g.roles)), inline=True)
-    embed.add_field(
-        name="Created", value=g.created_at.strftime("%Y-%m-%d"), inline=True
-    )
-    embed.add_field(name="Boost Tier", value=str(g.premium_tier), inline=True)
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="avatar", description="Get a user's avatar")
-@app_commands.describe(user="User whose avatar to fetch")
-async def avatar(interaction: discord.Interaction, user: discord.User = None):
-    await interaction.response.defer()
-    target = user or interaction.user
-    embed = discord.Embed(title=f"🖼️ {target.display_name}'s Avatar", color=0x0066FF)
-    embed.set_image(url=target.display_avatar.url)
-    await interaction.followup.send(embed=embed)
-
-
-# ── Background task: process reminders and tempbans ────────────────────────────
-
-
-@tasks.loop(minutes=1)
-async def process_reminders():
-    from datetime import datetime
-
-    now = datetime.utcnow()
-    async with aiohttp.ClientSession() as session:
-        reminders, sha = await github_read_json(session, FILE_REMINDERS)
-        remaining = []
-        changed = False
-        for r in reminders:
-            remind_at = datetime.fromisoformat(r["remind_at"])
-            if now >= remind_at:
-                changed = True
-                if r["type"] == "remind":
-                    ch = bot.get_channel(int(r["channel_id"]))
-                    if ch:
-                        try:
-                            await ch.send(
-                                f"<@{r['user_id']}> ⏰ Reminder: **{r['message']}**"
-                            )
-                        except Exception:
-                            pass
-                elif r["type"] == "unban":
-                    guild = bot.get_guild(int(r["guild_id"]))
-                    if guild:
-                        try:
-                            user = await bot.fetch_user(int(r["user_id"]))
-                            await guild.unban(user, reason="Tempban expired")
-                        except Exception:
-                            pass
-            else:
-                remaining.append(r)
-        if changed:
-            await github_write_json(
-                session, FILE_REMINDERS, remaining, sha, "Process reminders"
-            )
+@bot.event
+async def on_message(message: discord.Message):
+    await bot.process_commands(message)
 
 
 async def main():
