@@ -5650,7 +5650,7 @@ async def force_sync(ctx):
 # DASHBOARD SYSTEM
 # ══════════════════════════════════════════════════════════════════════════════
 
-USERS_PER_BLOCK = 20  # users per embed message
+USERS_PER_BLOCK = 12  # users per embed message (safe for Discord 1024-char field limit)
 
 _RE_ANILIST_USER = re.compile(r"anilist\.co/user/([A-Za-z0-9_-]+)", re.IGNORECASE)
 _RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+)", re.IGNORECASE)
@@ -5681,12 +5681,47 @@ def _build_header_embed() -> discord.Embed:
 
 
 def _build_block_embed(rows: list) -> discord.Embed:
-    """Two inline fields: left = mentions, right = links."""
-    mentions = "\n".join(f"<@{uid}>" for uid, _ in rows)
-    links    = "\n".join(_build_user_links(profile) for _, profile in rows)
+    """Two inline fields: left = mentions, right = links.
+
+    Discord embed field values are limited to 1024 characters.
+    If a block's content exceeds this, it is split across multiple embeds.
+    """
+    MAX_FIELD_LEN = 1024
+    # Pre-compute per-row strings so we can chunk them
+    mention_lines = [f"<@{uid}>" for uid, _ in rows]
+    link_lines    = [_build_user_links(profile) for _, profile in rows]
+
+    # Build a list of (mention_text, link_text) pairs that each fit within the limit
+    chunks: list[tuple[str, str]] = []
+    cur_mentions: list[str] = []
+    cur_links: list[str] = []
+    for ml, ll in zip(mention_lines, link_lines):
+        test_m = "\n".join(cur_mentions + [ml])
+        test_l = "\n".join(cur_links + [ll])
+        if len(test_m) > MAX_FIELD_LEN or len(test_l) > MAX_FIELD_LEN:
+            # Flush current chunk
+            chunks.append(("\n".join(cur_mentions), "\n".join(cur_links)))
+            cur_mentions = [ml]
+            cur_links = [ll]
+        else:
+            cur_mentions.append(ml)
+            cur_links.append(ll)
+    if cur_mentions:
+        chunks.append(("\n".join(cur_mentions), "\n".join(cur_links)))
+
+    if not chunks:
+        embed = discord.Embed(color=0x2B2D31)
+        embed.add_field(name="Member", value="No members", inline=True)
+        embed.add_field(name="Profiles", value="—", inline=True)
+        return embed
+
     embed = discord.Embed(color=0x2B2D31)
-    embed.add_field(name="Member", value=mentions, inline=True)
-    embed.add_field(name="Profiles", value=links, inline=True)
+    embed.add_field(name="Member", value=chunks[0][0], inline=True)
+    embed.add_field(name="Profiles", value=chunks[0][1], inline=True)
+    # If the rows overflowed into extra chunks, add additional field pairs
+    for idx, (m_text, l_text) in enumerate(chunks[1:], start=2):
+        embed.add_field(name=f"Member (cont {idx-1})", value=m_text, inline=True)
+        embed.add_field(name=f"Profiles (cont {idx-1})", value=l_text, inline=True)
     return embed
 
 
