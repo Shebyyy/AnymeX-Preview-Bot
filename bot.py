@@ -1282,13 +1282,16 @@ async def migrate_entries_to_new_format():
                         },
                     }
 
-                # Fetch poster from AniList if missing or null
+                # Fetch poster + score from AniList if missing or null
                 media_type_str = "ANIME" if label == "anime" else "MANGA"
-                if not entry.get("poster"):
+                if not entry.get("poster") or not entry.get("score"):
                     try:
                         media = await fetch_anilist(session, entry["anilist_id"], media_type_str)
                         if media:
-                            entry["poster"] = media.get("coverImage", {}).get("large")
+                            if not entry.get("poster"):
+                                entry["poster"] = media.get("coverImage", {}).get("large")
+                            if not entry.get("score"):
+                                entry["score"] = media.get("averageScore")
                     except Exception:
                         pass
                 # Also rename legacy coverImage field just in case
@@ -4813,6 +4816,16 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
 
+            # Refresh poster + score from AniList
+            try:
+                media = await fetch_anilist(session, entry["anilist_id"], "ANIME")
+                if media:
+                    entry["poster"] = media.get("coverImage", {}).get("large")
+                    entry["score"] = media.get("averageScore")
+                    changed = True
+            except Exception:
+                pass
+
             if changed:
                 result["anime_entries_updated"] += 1
 
@@ -4832,6 +4845,16 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
+
+            # Refresh poster + score from AniList
+            try:
+                media = await fetch_anilist(session, entry["anilist_id"], "MANGA")
+                if media:
+                    entry["poster"] = media.get("coverImage", {}).get("large")
+                    entry["score"] = media.get("averageScore")
+                    changed = True
+            except Exception:
+                pass
 
             if changed:
                 result["manga_entries_updated"] += 1
