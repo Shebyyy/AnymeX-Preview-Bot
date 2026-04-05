@@ -5706,7 +5706,11 @@ async def _save_dashboard(session, dashboard: dict, sha, msg: str = "Update dash
 
 
 async def _render_dashboard(channel: discord.TextChannel, users: dict, dashboard: dict) -> dict:
-    """Full render: edit existing messages where possible, post new ones if needed."""
+    """Full render: edit existing messages where possible, post new ones if needed.
+
+    Returns the updated dashboard dict.  All per-message exceptions are caught so
+    a single failure does not abort the entire render.
+    """
     sorted_users = sorted(
         users.items(),
         key=lambda kv: (kv[1].get("author_name") or kv[1].get("discord_display_name") or "").lower()
@@ -5721,6 +5725,10 @@ async def _render_dashboard(channel: discord.TextChannel, users: dict, dashboard
             msg = await channel.fetch_message(header_id)
             await msg.edit(embed=header_embed)
         except discord.NotFound:
+            msg = await channel.send(embed=header_embed)
+            dashboard["header_message_id"] = msg.id
+        except Exception as e:
+            print(f"⚠️ Failed to edit header message {header_id}: {e}")
             msg = await channel.send(embed=header_embed)
             dashboard["header_message_id"] = msg.id
     else:
@@ -5741,10 +5749,29 @@ async def _render_dashboard(channel: discord.TextChannel, users: dict, dashboard
             except discord.NotFound:
                 msg = await channel.send(embed=block_embed)
                 new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
+            except Exception as e:
+                print(f"⚠️ Failed to edit block {i} message {existing_blocks[i]['message_id']}: {e}")
+                msg = await channel.send(embed=block_embed)
+                new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
         else:
-            msg = await channel.send(embed=block_embed)
-            new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
+            try:
+                msg = await channel.send(embed=block_embed)
+                new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
+            except Exception as e:
+                print(f"⚠️ Failed to send block {i}: {e}")
     dashboard["blocks"] = new_blocks
+
+    # Clean up orphan block messages (blocks that existed before but no longer needed)
+    for i in range(len(new_blocks), len(existing_blocks)):
+        try:
+            orphan_id = existing_blocks[i]["message_id"]
+            orphan_msg = await channel.fetch_message(orphan_id)
+            await orphan_msg.delete()
+            print(f"🗑️ Deleted orphan block message {orphan_id}")
+        except discord.NotFound:
+            pass  # already gone
+        except Exception as e:
+            print(f"⚠️ Failed to delete orphan block message {existing_blocks[i]['message_id']}: {e}")
 
     # Footer
     footer_embed = _build_footer_embed()
@@ -5754,6 +5781,10 @@ async def _render_dashboard(channel: discord.TextChannel, users: dict, dashboard
             msg = await channel.fetch_message(footer_id)
             await msg.edit(embed=footer_embed)
         except discord.NotFound:
+            msg = await channel.send(embed=footer_embed)
+            dashboard["footer_message_id"] = msg.id
+        except Exception as e:
+            print(f"⚠️ Failed to edit footer message {footer_id}: {e}")
             msg = await channel.send(embed=footer_embed)
             dashboard["footer_message_id"] = msg.id
     else:
@@ -5806,26 +5837,50 @@ async def set_dashboard_channel(interaction: discord.Interaction, channel: disco
         ephemeral=True,
     )
 
-    # Load data from GitHub
-    async with aiohttp.ClientSession() as session:
-        dashboard, sha = await _load_dashboard(session)
-        users, _ = await github_read_json(session, FILE_USERS)
-
-    # Purge the entire channel first
     try:
-        await channel.purge(limit=None)
-    except discord.Forbidden:
-        pass
+        # Load data from GitHub
+        async with aiohttp.ClientSession() as session:
+            dashboard, sha = await _load_dashboard(session)
+            users, _ = await github_read_json(session, FILE_USERS)
 
-    # Reset dashboard state and repost everything
-    dashboard["channel_id"] = channel.id
-    dashboard["header_message_id"] = None
-    dashboard["footer_message_id"] = None
-    dashboard["blocks"] = []
-    dashboard = await _render_dashboard(channel, users, dashboard)
+        # Purge the entire channel first
+        try:
+            await channel.purge(limit=None)
+        except discord.Forbidden:
+            print(f"⚠️ Missing Manage Messages permission in {channel.name}, skipping purge.")
+        except Exception as e:
+            print(f"⚠️ Purge failed in {channel.name}: {e}")
 
-    async with aiohttp.ClientSession() as session:
-        await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
+        # Reset dashboard state and repost everything
+        dashboard["channel_id"] = channel.id
+        dashboard["header_message_id"] = None
+        dashboard["footer_message_id"] = None
+        dashboard["blocks"] = []
+        dashboard = await _render_dashboard(channel, users, dashboard)
+
+        async with aiohttp.ClientSession() as session:
+            await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
+
+        user_count = len(users)
+        block_count = len(dashboard.get("blocks", []))
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="✅ Dashboard Set Up!",
+                description=f"Channel: {channel.mention}\nUsers: **{user_count}**\nMessage blocks: **{block_count}**",
+                color=0x2EA043,
+            ),
+            ephemeral=True,
+        )
+    except Exception as e:
+        print(f"❌ set_dashboard_channel failed: {e}")
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Dashboard Setup Failed",
+                description=f"An error occurred:\n```{e}```",
+                color=0xDA3633,
+            ),
+            ephemeral=True,
+        )
 
 
 # ── /refresh_dashboard ─────────────────────────────────────────────────────────
@@ -5838,47 +5893,75 @@ async def set_dashboard_channel(interaction: discord.Interaction, channel: disco
 async def refresh_dashboard(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    async with aiohttp.ClientSession() as session:
-        dashboard, sha = await _load_dashboard(session)
-        users, _ = await github_read_json(session, FILE_USERS)
+    try:
+        async with aiohttp.ClientSession() as session:
+            dashboard, sha = await _load_dashboard(session)
+            users, _ = await github_read_json(session, FILE_USERS)
 
-    channel_id = DASHBOARD_CHANNEL_ID or dashboard.get("channel_id")
-    if not channel_id:
+        channel_id = DASHBOARD_CHANNEL_ID or dashboard.get("channel_id")
+        if not channel_id:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="No dashboard channel set",
+                    description="Use `/set_dashboard_channel` first.",
+                    color=0xDA3633,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Try cache first, fall back to fetch (cache can be stale or empty)
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+
+        if not channel:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Channel not found",
+                    description=f"Could not find the dashboard channel (ID: `{channel_id}`). It may have been deleted.",
+                    color=0xDA3633,
+                ),
+                ephemeral=True,
+            )
+            return
+
         await interaction.followup.send(
             embed=discord.Embed(
-                title="No dashboard channel set",
-                description="Use `/set_dashboard_channel` first.",
+                title="Refreshing dashboard...",
+                description=f"Channel: {channel.mention}\nUsers: **{len(users)}**\nThis may take a moment.",
+                color=0x0078D4,
+            ),
+            ephemeral=True,
+        )
+
+        dashboard = await _render_dashboard(channel, users, dashboard)
+
+        async with aiohttp.ClientSession() as session:
+            await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
+
+        block_count = len(dashboard.get("blocks", []))
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="✅ Dashboard Refreshed!",
+                description=f"Users: **{len(users)}**\nMessage blocks: **{block_count}**",
+                color=0x2EA043,
+            ),
+            ephemeral=True,
+        )
+    except Exception as e:
+        print(f"❌ refresh_dashboard failed: {e}")
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Dashboard Refresh Failed",
+                description=f"An error occurred:\n```{e}```",
                 color=0xDA3633,
             ),
             ephemeral=True,
         )
-        return
-
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="Channel not found",
-                description="The configured dashboard channel no longer exists.",
-                color=0xDA3633,
-            ),
-            ephemeral=True,
-        )
-        return
-
-    await interaction.followup.send(
-        embed=discord.Embed(
-            title="Refreshing dashboard...",
-            description="This may take a moment.",
-            color=0x0078D4,
-        ),
-        ephemeral=True,
-    )
-
-    dashboard = await _render_dashboard(channel, users, dashboard)
-
-    async with aiohttp.ClientSession() as session:
-        await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
 
 
 # ── Intake handler ─────────────────────────────────────────────────────────────
