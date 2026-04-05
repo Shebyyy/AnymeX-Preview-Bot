@@ -43,6 +43,7 @@ FILE_USERS = "users.json"
 FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
+FILE_VOTES = "votes.json"               # upvote/downvote records per media item
 
 
 DEFAULT_PREFIXES = ["?"]
@@ -747,20 +748,24 @@ async def _api_add_media(request, media_type: str):
 
     anilist_id = body.get("anilist_id")
     mal_id = body.get("mal_id")             # optional — falls back to AniList's idMal
-    anilist_user_id = body.get("anilist_user_id")
-    mal_user_id = body.get("mal_user_id")
+    anilist_user_id = body.get("anilist_user_id")   # optional
+    anilist_username = (body.get("anilist_username") or "").strip() or None
+    mal_user_id = body.get("mal_user_id")           # optional
+    mal_username = (body.get("mal_username") or "").strip() or None
     author = (body.get("author") or "").strip()
     reason = (body.get("reason") or "").strip()
 
+    # At least one of anilist_user_id or mal_user_id must be present
     missing = [k for k, v in [
         ("anilist_id", anilist_id),
-        ("anilist_user_id", anilist_user_id),
-        ("mal_user_id", mal_user_id),
         ("author", author),
         ("reason", reason),
     ] if not v]
     if missing:
         return web.json_response({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    if not anilist_user_id and not mal_user_id:
+        return web.json_response({"error": "Provide at least one of: anilist_user_id, mal_user_id"}, status=400)
 
     if not isinstance(anilist_id, int):
         return web.json_response({"error": "anilist_id must be an integer"}, status=400)
@@ -776,18 +781,47 @@ async def _api_add_media(request, media_type: str):
         titles = media["title"]
         title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
         resolved_mal_id = mal_id if mal_id is not None else media.get("idMal")
+        score = media.get("averageScore") or "N/A"
         type_path = "anime" if media_type == "ANIME" else "manga"
         anilist_url = f"https://anilist.co/{type_path}/{anilist_id}"
         mal_url = f"https://myanimelist.net/{type_path}/{resolved_mal_id}" if resolved_mal_id else "N/A"
 
+        # Try to find this user's full profile from users.json for the snapshot
+        users_data, _ = await github_read_json(session, FILE_USERS)
+        matched_profile = None
+        for _discord_id, p in users_data.items():
+            if anilist_user_id and p.get("anilist_user_id") == anilist_user_id:
+                matched_profile = p
+                break
+            if mal_user_id and p.get("mal_user_id") == mal_user_id:
+                matched_profile = p
+                break
+
+        if matched_profile:
+            user_snapshot = _build_user_snapshot(matched_profile)
+        else:
+            # API caller not in users.json — build a minimal snapshot from request body
+            user_snapshot = {
+                "anilist": {
+                    "id": anilist_user_id,
+                    "username": anilist_username,
+                    "avatar": None,
+                },
+                "mal": {
+                    "id": mal_user_id,
+                    "username": mal_username,
+                    "avatar": None,
+                },
+            }
+
         entry = {
+            "title": title,
+            "poster": media.get("coverImage", {}).get("large", ""),
+            "score": score,
             "anilist_id": anilist_id,
             "mal_id": resolved_mal_id,
-            "title": title,
-            "anilist_user_id": anilist_user_id,
-            "mal_user_id": mal_user_id,
-            "author": author,
             "reason": reason,
+            "user": user_snapshot,
         }
 
         filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
@@ -825,8 +859,15 @@ async def start_health_server():
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    # ── media add ──────────────────────────────────────────────────────────────
     app.router.add_post("/api/add_anime", api_add_anime)
     app.router.add_post("/api/add_manga", api_add_manga)
+    # ── voting ─────────────────────────────────────────────────────────────────
+    app.router.add_post("/api/vote/anime/{anilist_id}", api_vote_anime)
+    app.router.add_post("/api/vote/manga/{anilist_id}", api_vote_manga)
+    app.router.add_get("/api/votes/anime/{anilist_id}", api_get_votes_anime)
+    app.router.add_get("/api/votes/manga/{anilist_id}", api_get_votes_manga)
+    app.router.add_get("/api/votes/leaderboard", api_leaderboard)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -856,6 +897,7 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tup
                 FILE_USERS,
                 FILE_TIMEZONES,
                 FILE_SERVER_CFG,
+                FILE_VOTES,
             )
             list_files = (FILE_ANIME, FILE_MANGA)
             if filepath in dict_files:
@@ -941,6 +983,29 @@ async def get_profile(discord_id: str):
     return users.get(discord_id)
 
 
+def _build_user_snapshot(profile: dict) -> dict:
+    """
+    Build the compact 'user' sub-object embedded in every anime/manga entry.
+    Shape:
+      {
+        "anilist": {"id": int|None, "username": str|None, "avatar": str|None},
+        "mal":     {"id": int|None, "username": str|None, "avatar": str|None}
+      }
+    """
+    return {
+        "anilist": {
+            "id": profile.get("anilist_user_id"),
+            "username": profile.get("anilist_username"),
+            "avatar": profile.get("anilist_avatar"),
+        },
+        "mal": {
+            "id": profile.get("mal_user_id"),
+            "username": profile.get("mal_username"),
+            "avatar": profile.get("mal_avatar"),
+        },
+    }
+
+
 # ── AniList autocomplete search helpers ────────────────────────────────────────
 
 
@@ -976,12 +1041,20 @@ async def _anilist_search(query_str: str, media_type: str) -> list:
 
 
 async def _anilist_user_search(query_str: str) -> list:
-    """Search AniList users, returns list of (id, name)."""
+    """Search AniList users, returns list with full profile info."""
     query = """
     query ($search: String) {
       Page(perPage: 25) {
         users(search: $search) {
           id name
+          avatar { large }
+          bannerImage
+          siteUrl
+          about
+          statistics {
+            anime { count meanScore minutesWatched episodesWatched }
+            manga { count chaptersRead volumesRead }
+          }
         }
       }
     }
@@ -1001,18 +1074,79 @@ async def _anilist_user_search(query_str: str) -> list:
         return []
 
 
-async def _mal_get_user_id(mal_username: str) -> int | None:
-    """Fetch MAL user ID from username via Jikan API (no auth needed)."""
+async def _anilist_fetch_user_by_id(user_id: int) -> dict | None:
+    """Fetch full AniList user profile by ID."""
+    query = """
+    query ($id: Int) {
+      User(id: $id) {
+        id name
+        avatar { large }
+        bannerImage
+        siteUrl
+        about
+        statistics {
+          anime { count meanScore minutesWatched episodesWatched }
+          manga { count chaptersRead volumesRead }
+        }
+      }
+    }
+    """
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://api.jikan.moe/v4/users/{mal_username}",
-                timeout=aiohttp.ClientTimeout(total=5),
+            async with session.post(
+                ANILIST_API,
+                json={"query": query, "variables": {"id": user_id}},
+                headers={"Content-Type": "application/json"},
             ) as r:
                 if r.status != 200:
                     return None
                 data = await r.json()
-        return data.get("data", {}).get("mal_id")
+        return data.get("data", {}).get("User")
+    except Exception:
+        return None
+
+
+async def _mal_get_user_id(mal_username: str) -> int | None:
+    """Fetch MAL user ID from username via Jikan API (no auth needed)."""
+    profile = await _mal_fetch_full_profile(mal_username)
+    return profile.get("mal_id") if profile else None
+
+
+async def _mal_fetch_full_profile(mal_username: str) -> dict | None:
+    """Fetch full MAL user profile via Jikan API."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.jikan.moe/v4/users/{mal_username}/full",
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        d = data.get("data", {})
+        if not d:
+            return None
+        return {
+            "mal_id": d.get("mal_id"),
+            "username": d.get("username"),
+            "url": d.get("url"),
+            "image_url": d.get("images", {}).get("jpg", {}).get("image_url"),
+            "about": (d.get("about") or "")[:300],
+            "anime_stats": {
+                "days_watched": d.get("statistics", {}).get("anime", {}).get("days_watched"),
+                "mean_score": d.get("statistics", {}).get("anime", {}).get("mean_score"),
+                "watching": d.get("statistics", {}).get("anime", {}).get("watching"),
+                "completed": d.get("statistics", {}).get("anime", {}).get("completed"),
+                "total_entries": d.get("statistics", {}).get("anime", {}).get("total_entries"),
+            },
+            "manga_stats": {
+                "days_read": d.get("statistics", {}).get("manga", {}).get("days_read"),
+                "mean_score": d.get("statistics", {}).get("manga", {}).get("mean_score"),
+                "reading": d.get("statistics", {}).get("manga", {}).get("reading"),
+                "completed": d.get("statistics", {}).get("manga", {}).get("completed"),
+                "total_entries": d.get("statistics", {}).get("manga", {}).get("total_entries"),
+            },
+        }
     except Exception:
         return None
 
@@ -1066,9 +1200,114 @@ async def anilist_user_autocomplete(
 
 
 @bot.event
+async def migrate_entries_to_new_format():
+    """
+    One-time safe migration: converts old flat entry shape into the new shape.
+
+    Old shape (what's currently in the JSON on GitHub):
+      { "anilist_id", "mal_id", "title", "score", "reason",
+        "anilist_user_id", "author", ... }
+
+    New shape:
+      { "title", "poster", "score", "anilist_id", "mal_id", "reason",
+        "user": { "anilist": {"id", "username", "avatar"},
+                  "mal":     {"id", "username", "avatar"} } }
+
+    Entries already in the new shape (have a "user" key) are left untouched.
+    Returns counts of migrated entries per file.
+    """
+    migrated = {"anime": 0, "manga": 0}
+
+    async with aiohttp.ClientSession() as session:
+        users, _ = await github_read_json(session, FILE_USERS)
+
+        for filepath, label in [(FILE_ANIME, "anime"), (FILE_MANGA, "manga")]:
+            entries, sha = await github_read_json(session, filepath)
+            if not entries:
+                continue
+
+            changed = False
+            for entry in entries:
+                # Already migrated — skip
+                if "user" in entry:
+                    continue
+
+                # Pull flat fields from old format
+                al_uid = entry.pop("anilist_user_id", None)
+                mal_uid = entry.pop("mal_user_id", None)
+
+                # Try to find matching user profile for richer data
+                matched = None
+                for profile in users.values():
+                    if al_uid and profile.get("anilist_user_id") == al_uid:
+                        matched = profile
+                        break
+                    if mal_uid and profile.get("mal_user_id") == mal_uid:
+                        matched = profile
+                        break
+
+                if matched:
+                    entry["user"] = _build_user_snapshot(matched)
+                else:
+                    # Fallback: build minimal user block from whatever we have
+                    al_username = entry.pop("anilist_username", None) or entry.pop("author", None)
+                    mal_username = entry.pop("mal_username", None)
+                    entry.pop("author", None)  # remove stale flat field
+                    entry["user"] = {
+                        "anilist": {
+                            "id": al_uid,
+                            "username": al_username,
+                            "avatar": entry.pop("anilist_avatar", None),
+                        },
+                        "mal": {
+                            "id": mal_uid,
+                            "username": mal_username,
+                            "avatar": entry.pop("mal_avatar", None),
+                        },
+                    }
+
+                # Rename coverImage → poster if needed
+                if "poster" not in entry:
+                    entry["poster"] = entry.pop("cover_url", entry.pop("coverImage", None))
+
+                # Strip any other leftover flat profile fields
+                for stale in [
+                    "discord_username", "discord_display_name",
+                    "anilist_url", "anilist_banner", "anilist_about",
+                    "anilist_anime_count", "anilist_manga_count",
+                    "anilist_mean_score", "anilist_minutes_watched", "anilist_chapters_read",
+                    "mal_url", "mal_about", "mal_anime_completed",
+                    "mal_anime_mean_score", "mal_manga_completed", "mal_manga_mean_score",
+                ]:
+                    entry.pop(stale, None)
+
+                changed = True
+                migrated[label] += 1
+
+            if changed:
+                await github_write_json(
+                    session, filepath, entries, sha,
+                    f"chore: migrate {label} entries to new user shape"
+                )
+                print(f"✅ Migrated {migrated[label]} {label} entries to new format")
+            else:
+                print(f"✅ {filepath} already in new format — no migration needed")
+
+    return migrated
+
+
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
+
+    # ── Migrate old JSON entries to new format (safe, skips already-migrated) ──
+    print("🔄 Checking for entries that need migration...")
+    try:
+        migrated = await migrate_entries_to_new_format()
+        print(f"✅ Migration complete: {migrated}")
+    except Exception as e:
+        print(f"⚠️ Migration failed: {e}")
+
     # Sync slash commands once to avoid Cloudflare rate limiting on every restart
     if not getattr(bot, "_synced", False):
         try:
@@ -1078,6 +1317,22 @@ async def on_ready():
         except Exception as e:
             print(f"⚠️ Failed to sync slash commands: {e}")
 
+    # ── Run repopulator on startup ─────────────────────────────────────────────
+    print("🔄 Running startup repopulator...")
+    try:
+        result = await run_repopulator(triggered_by="bot startup")
+        print(f"✅ Startup repopulator done: {result}")
+        channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
+        if channel:
+            embed = _build_repopulator_embed(result, "🚀 Startup Profile Sync Complete")
+            await channel.send(embed=embed)
+    except Exception as e:
+        print(f"⚠️ Startup repopulator failed: {e}")
+
+    # ── Start weekly loop if not already running ───────────────────────────────
+    if not weekly_repopulator.is_running():
+        weekly_repopulator.start()
+        print("✅ Weekly repopulator loop started")
 
 async def ensure_json_files():
     """Auto-create all required JSON files on GitHub if they don't exist."""
@@ -1089,6 +1344,7 @@ async def ensure_json_files():
         FILE_MANGA: [],
         FILE_PREFIXES: DEFAULT_PREFIXES[:],
         FILE_SERVER_CFG: {},
+        FILE_VOTES: {},
     }
     async with aiohttp.ClientSession() as session:
         for filepath, default in files.items():
@@ -1114,18 +1370,18 @@ async def ensure_json_files():
 
 
 @bot.tree.command(
-    name="setup", description="Link your AniList and MAL accounts to your Discord"
+    name="setup", description="Link your AniList and/or MAL accounts to your Discord"
 )
 @app_commands.describe(
-    anilist_username="Your AniList username (search to find yourself)",
-    mal_username="Your MyAnimeList username",
+    anilist_username="Your AniList username (optional — leave blank if you don't have one)",
+    mal_username="Your MyAnimeList username (optional — leave blank if you don't have one)",
     author_name="Display name for list entries (defaults to Discord username)",
 )
 @app_commands.autocomplete(anilist_username=anilist_user_autocomplete)
 async def setup(
     interaction: discord.Interaction,
-    anilist_username: str,
-    mal_username: str,
+    anilist_username: str = "",
+    mal_username: str = "",
     author_name: str = "",
 ):
     await interaction.response.defer(ephemeral=True)
@@ -1133,43 +1389,120 @@ async def setup(
     discord_id = str(interaction.user.id)
     author_display = author_name or interaction.user.display_name
 
-    # anilist_username is either a numeric ID (from autocomplete) or a raw username
-    if anilist_username.isdigit():
-        anilist_user_id = int(anilist_username)
-        # Fetch the display name for confirmation
-        al_users = await _anilist_user_search("")
-        anilist_display = f"ID {anilist_user_id}"
-    else:
-        # They typed a username manually — look it up
-        results = await _anilist_user_search(anilist_username)
-        match = next((u for u in results if u["name"].lower() == anilist_username.lower()), None)
-        if not match and results:
-            match = results[0]
-        if not match:
-            await interaction.followup.send(
-                f"❌ AniList user `{anilist_username}` not found. Try searching your username in the autocomplete.",
-                ephemeral=True,
-            )
-            return
-        anilist_user_id = match["id"]
-        anilist_display = match["name"]
-
-    # Look up MAL user ID from username via Jikan
-    mal_user_id = await _mal_get_user_id(mal_username)
-    if not mal_user_id:
+    if not anilist_username and not mal_username:
         await interaction.followup.send(
-            f"❌ MAL user `{mal_username}` not found. Check your username and try again.",
+            "❌ Please provide at least one of: AniList username or MAL username.",
             ephemeral=True,
         )
         return
 
+    # ── AniList resolution ────────────────────────────────────────────────────
+    anilist_profile_data = None
+    anilist_user_id = None
+    anilist_username_display = None
+
+    if anilist_username:
+        if anilist_username.isdigit():
+            anilist_user_id = int(anilist_username)
+            anilist_profile_data = await _anilist_fetch_user_by_id(anilist_user_id)
+            if not anilist_profile_data:
+                await interaction.followup.send(
+                    f"❌ AniList user with ID `{anilist_user_id}` not found.",
+                    ephemeral=True,
+                )
+                return
+            anilist_username_display = anilist_profile_data["name"]
+        else:
+            results = await _anilist_user_search(anilist_username)
+            match = next((u for u in results if u["name"].lower() == anilist_username.lower()), None)
+            if not match and results:
+                match = results[0]
+            if not match:
+                await interaction.followup.send(
+                    f"❌ AniList user `{anilist_username}` not found. Try the autocomplete suggestions.",
+                    ephemeral=True,
+                )
+                return
+            anilist_user_id = match["id"]
+            anilist_username_display = match["name"]
+            anilist_profile_data = match  # already has full fields from expanded query
+
+    # ── MAL resolution ────────────────────────────────────────────────────────
+    mal_profile_data = None
+    mal_user_id = None
+
+    if mal_username:
+        mal_profile_data = await _mal_fetch_full_profile(mal_username)
+        if not mal_profile_data:
+            await interaction.followup.send(
+                f"❌ MAL user `{mal_username}` not found. Check your username and try again.",
+                ephemeral=True,
+            )
+            return
+        mal_user_id = mal_profile_data["mal_id"]
+
+    # ── Build stored profile ──────────────────────────────────────────────────
+    profile_entry = {
+        "author_name": author_display,
+        "discord_username": interaction.user.name,
+        "discord_display_name": interaction.user.display_name,
+        # AniList — None if user has no AniList
+        "anilist_user_id": anilist_user_id,
+        "anilist_username": anilist_username_display,
+        "anilist_url": anilist_profile_data.get("siteUrl") if anilist_profile_data else None,
+        "anilist_avatar": (
+            anilist_profile_data.get("avatar", {}).get("large")
+            if anilist_profile_data else None
+        ),
+        "anilist_banner": anilist_profile_data.get("bannerImage") if anilist_profile_data else None,
+        "anilist_about": (anilist_profile_data.get("about") or "")[:300] if anilist_profile_data else None,
+        "anilist_anime_count": (
+            anilist_profile_data.get("statistics", {}).get("anime", {}).get("count")
+            if anilist_profile_data else None
+        ),
+        "anilist_manga_count": (
+            anilist_profile_data.get("statistics", {}).get("manga", {}).get("count")
+            if anilist_profile_data else None
+        ),
+        "anilist_mean_score": (
+            anilist_profile_data.get("statistics", {}).get("anime", {}).get("meanScore")
+            if anilist_profile_data else None
+        ),
+        "anilist_minutes_watched": (
+            anilist_profile_data.get("statistics", {}).get("anime", {}).get("minutesWatched")
+            if anilist_profile_data else None
+        ),
+        "anilist_chapters_read": (
+            anilist_profile_data.get("statistics", {}).get("manga", {}).get("chaptersRead")
+            if anilist_profile_data else None
+        ),
+        # MAL — None if user has no MAL
+        "mal_user_id": mal_user_id,
+        "mal_username": mal_profile_data.get("username") if mal_profile_data else None,
+        "mal_url": mal_profile_data.get("url") if mal_profile_data else None,
+        "mal_avatar": mal_profile_data.get("image_url") if mal_profile_data else None,
+        "mal_about": mal_profile_data.get("about") if mal_profile_data else None,
+        "mal_anime_completed": (
+            mal_profile_data.get("anime_stats", {}).get("completed")
+            if mal_profile_data else None
+        ),
+        "mal_anime_mean_score": (
+            mal_profile_data.get("anime_stats", {}).get("mean_score")
+            if mal_profile_data else None
+        ),
+        "mal_manga_completed": (
+            mal_profile_data.get("manga_stats", {}).get("completed")
+            if mal_profile_data else None
+        ),
+        "mal_manga_mean_score": (
+            mal_profile_data.get("manga_stats", {}).get("mean_score")
+            if mal_profile_data else None
+        ),
+    }
+
     async with aiohttp.ClientSession() as session:
         users, sha = await github_read_json(session, FILE_USERS)
-        users[discord_id] = {
-            "anilist_user_id": anilist_user_id,
-            "mal_user_id": mal_user_id,
-            "author_name": author_display,
-        }
+        users[discord_id] = profile_entry
         ok = await github_write_json(
             session,
             FILE_USERS,
@@ -1180,9 +1513,28 @@ async def setup(
 
     if ok:
         embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
-        embed.add_field(name="AniList User", value=f"`{anilist_display}` (ID: `{anilist_user_id}`)", inline=False)
-        embed.add_field(name="MAL User", value=f"`{mal_username}` (ID: `{mal_user_id}`)", inline=False)
         embed.add_field(name="Author Name", value=author_display, inline=False)
+        if anilist_user_id:
+            embed.add_field(
+                name="AniList",
+                value=f"[{anilist_username_display}]({profile_entry['anilist_url']}) (ID: `{anilist_user_id}`)",
+                inline=True,
+            )
+        else:
+            embed.add_field(name="AniList", value="Not linked", inline=True)
+        if mal_user_id:
+            embed.add_field(
+                name="MAL",
+                value=f"[{mal_profile_data['username']}]({mal_profile_data['url']}) (ID: `{mal_user_id}`)",
+                inline=True,
+            )
+        else:
+            embed.add_field(name="MAL", value="Not linked", inline=True)
+
+        # Set avatar: prefer AniList, fallback to MAL
+        avatar = profile_entry.get("anilist_avatar") or profile_entry.get("mal_avatar")
+        if avatar:
+            embed.set_thumbnail(url=avatar)
         embed.set_footer(text="You can now use /add_anime, /add_manga!")
     else:
         embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
@@ -1208,12 +1560,71 @@ async def myprofile(interaction: discord.Interaction):
         )
         return
 
-    embed = discord.Embed(title="👤 Your Profile", color=0x0078D4)
-    embed.add_field(name="Author Name", value=profile.get("author_name", "—"), inline=True)
-    embed.add_field(
-        name="AniList UserID", value=f"`{profile.get('anilist_user_id', '—')}`", inline=True
-    )
-    embed.add_field(name="MAL UserID", value=f"`{profile.get('mal_user_id', '—')}`", inline=True)
+    embed = discord.Embed(title=f"👤 {profile.get('author_name', interaction.user.display_name)}'s Profile", color=0x0078D4)
+
+    # ── AniList section ──────────────────────────────────────────────────────
+    al_id = profile.get("anilist_user_id")
+    al_name = profile.get("anilist_username")
+    al_url = profile.get("anilist_url")
+    al_avatar = profile.get("anilist_avatar")
+    al_anime = profile.get("anilist_anime_count")
+    al_manga = profile.get("anilist_manga_count")
+    al_score = profile.get("anilist_mean_score")
+    al_minutes = profile.get("anilist_minutes_watched")
+    al_chapters = profile.get("anilist_chapters_read")
+
+    if al_id:
+        al_link = f"[{al_name}]({al_url})" if al_url else (al_name or str(al_id))
+        embed.add_field(name="🔵 AniList", value=al_link, inline=True)
+        embed.add_field(name="AL ID", value=f"`{al_id}`", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer
+        stats_lines = []
+        if al_anime is not None:
+            stats_lines.append(f"Anime: **{al_anime}** | Score: **{al_score or 'N/A'}**")
+        if al_minutes is not None:
+            days = round(al_minutes / 1440, 1)
+            stats_lines.append(f"Days Watched: **{days}**")
+        if al_manga is not None:
+            stats_lines.append(f"Manga: **{al_manga}** | Chapters: **{al_chapters or 'N/A'}**")
+        if stats_lines:
+            embed.add_field(name="AniList Stats", value="\n".join(stats_lines), inline=False)
+    else:
+        embed.add_field(name="🔵 AniList", value="*Not linked*", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    # ── MAL section ───────────────────────────────────────────────────────────
+    mal_id = profile.get("mal_user_id")
+    mal_name = profile.get("mal_username")
+    mal_url = profile.get("mal_url")
+    mal_avatar = profile.get("mal_avatar")
+    mal_anime_done = profile.get("mal_anime_completed")
+    mal_anime_score = profile.get("mal_anime_mean_score")
+    mal_manga_done = profile.get("mal_manga_completed")
+    mal_manga_score = profile.get("mal_manga_mean_score")
+
+    if mal_id:
+        mal_link = f"[{mal_name}]({mal_url})" if mal_url else (mal_name or str(mal_id))
+        embed.add_field(name="🔴 MAL", value=mal_link, inline=True)
+        embed.add_field(name="MAL ID", value=f"`{mal_id}`", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        mal_stats_lines = []
+        if mal_anime_done is not None:
+            mal_stats_lines.append(f"Anime Completed: **{mal_anime_done}** | Score: **{mal_anime_score or 'N/A'}**")
+        if mal_manga_done is not None:
+            mal_stats_lines.append(f"Manga Completed: **{mal_manga_done}** | Score: **{mal_manga_score or 'N/A'}**")
+        if mal_stats_lines:
+            embed.add_field(name="MAL Stats", value="\n".join(mal_stats_lines), inline=False)
+    else:
+        embed.add_field(name="🔴 MAL", value="*Not linked*", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    # Avatar: prefer AniList, fallback to MAL
+    avatar = al_avatar or mal_avatar
+    if avatar:
+        embed.set_thumbnail(url=avatar)
+
     embed.set_footer(text="Use /setup to update your profile.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1263,7 +1674,10 @@ class ConfirmView(discord.ui.View):
                 title=f"🎉 Added to underrated_{self.media_type}s!", color=0x2EA043
             )
             embed.add_field(name="Title", value=self.entry["title"], inline=True)
-            embed.add_field(name="Author", value=self.entry["author"], inline=True)
+            u = self.entry.get("user", {})
+            al = u.get("anilist", {})
+            author_display = (al.get("username") or u.get("mal", {}).get("username") or "Unknown")
+            embed.add_field(name="Author", value=author_display, inline=True)
             embed.add_field(name="Reason", value=self.entry["reason"], inline=False)
             if self.cover_url:
                 embed.set_thumbnail(url=self.cover_url)
@@ -1327,17 +1741,34 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
 
     author = profile.get("author_name") or profile.get("author") or interaction.user.display_name
 
+    user_snapshot = _build_user_snapshot(profile)
+
     entry = {
+        "title": title,
+        "poster": cover_url,
+        "score": score,
         "anilist_id": anilist_id,
         "mal_id": mal_id,
-        "title": title,
-        "anilist_user_id": profile["anilist_user_id"],
-        "mal_user_id": profile["mal_user_id"],
-        "author": author,
         "reason": reason,
+        "user": user_snapshot,
     }
 
     filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
+
+    # Build preview embed — show profile links for the submitter
+    al_uid = user_snapshot["anilist"]["id"]
+    al_uname = user_snapshot["anilist"]["username"]
+    mal_uid = user_snapshot["mal"]["id"]
+    mal_uname = user_snapshot["mal"]["username"]
+
+    al_profile_link = (
+        f"[{al_uname}](https://anilist.co/user/{al_uname})" if al_uid and al_uname
+        else (f"ID `{al_uid}`" if al_uid else "Not linked")
+    )
+    mal_profile_link = (
+        f"[{mal_uname}](https://myanimelist.net/profile/{mal_uname})" if mal_uid and mal_uname
+        else (f"ID `{mal_uid}`" if mal_uid else "Not linked")
+    )
 
     preview = discord.Embed(
         title=f"📋 Preview — {title}",
@@ -1349,6 +1780,8 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     preview.add_field(name="Score", value=f"`{score}`", inline=True)
     preview.add_field(name="Genres", value=genres, inline=True)
     preview.add_field(name="Author", value=author, inline=True)
+    preview.add_field(name="AniList Profile", value=al_profile_link, inline=True)
+    preview.add_field(name="MAL Profile", value=mal_profile_link, inline=True)
     preview.add_field(name="Reason", value=reason, inline=False)
     if cover_url:
         preview.set_thumbnail(url=cover_url)
@@ -1424,12 +1857,17 @@ async def list_anime(interaction: discord.Interaction):
             description=entry.get("reason", "No reason"),
             color=0x0066FF,
         )
+        u = entry.get("user", {})
+        al = u.get("anilist", {})
+        author_display = al.get("username") or u.get("mal", {}).get("username") or "Unknown"
         embed.add_field(
-            name="Author", value=entry.get("author", "Unknown"), inline=True
+            name="Author", value=author_display, inline=True
         )
         embed.add_field(
             name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True
         )
+        if entry.get("poster"):
+            embed.set_thumbnail(url=entry["poster"])
         embed.set_footer(text=f"{i}/{len(entries)}")
         embeds.append(embed)
 
@@ -1462,12 +1900,17 @@ async def list_manga(interaction: discord.Interaction):
             description=entry.get("reason", "No reason"),
             color=0xFF6B6B,
         )
+        u = entry.get("user", {})
+        al = u.get("anilist", {})
+        author_display = al.get("username") or u.get("mal", {}).get("username") or "Unknown"
         embed.add_field(
-            name="Author", value=entry.get("author", "Unknown"), inline=True
+            name="Author", value=author_display, inline=True
         )
         embed.add_field(
             name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True
         )
+        if entry.get("poster"):
+            embed.set_thumbnail(url=entry["poster"])
         embed.set_footer(text=f"{i}/{len(entries)}")
         embeds.append(embed)
 
@@ -4213,6 +4656,760 @@ async def seasonal_anime(
         embed.add_field(name=t, value=f"Score: {score}/100 | Eps: {eps}", inline=False)
     await interaction.followup.send(embed=embed)
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Profile Repopulator — refreshes user info in users.json, anime/manga JSONs
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Channel ID to post weekly/startup repopulator reports (set via env var)
+REPOPULATOR_CHANNEL_ID = int(os.environ.get("REPOPULATOR_CHANNEL_ID", 0))
+
+
+async def run_repopulator(triggered_by: str = "system") -> dict:
+    """
+    Re-fetches every user's AniList + MAL profile and updates:
+      - users.json            (full profile refresh)
+      - underrated_anime.json (author name, anilist_username, mal_username, score per entry)
+      - underrated_manga.json (same)
+
+    Returns a result dict with counts for reporting.
+    """
+    result = {
+        "users_updated": 0,
+        "users_skipped": 0,
+        "users_failed": 0,
+        "anime_entries_updated": 0,
+        "manga_entries_updated": 0,
+        "triggered_by": triggered_by,
+    }
+
+    async with aiohttp.ClientSession() as session:
+        # ── Step 1: Load all data at once ─────────────────────────────────────
+        users, users_sha = await github_read_json(session, FILE_USERS)
+        anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
+        manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
+
+        if not users:
+            result["note"] = "No users found in users.json — nothing to repopulate."
+            return result
+
+        # ── Step 2: Refresh each user's profile ───────────────────────────────
+        # Build a lookup: anilist_user_id → refreshed profile data
+        # and:            mal_user_id     → refreshed profile data
+        al_id_to_profile: dict[int, dict] = {}
+        mal_id_to_profile: dict[int, dict] = {}
+
+        for discord_id, profile in users.items():
+            al_id = profile.get("anilist_user_id")
+            mal_uname = profile.get("mal_username")
+            refreshed = False
+
+            # -- AniList refresh --
+            if al_id:
+                try:
+                    al_data = await _anilist_fetch_user_by_id(al_id)
+                    if al_data:
+                        profile["anilist_username"] = al_data.get("name")
+                        profile["anilist_url"] = al_data.get("siteUrl")
+                        profile["anilist_avatar"] = (al_data.get("avatar") or {}).get("large")
+                        profile["anilist_banner"] = al_data.get("bannerImage")
+                        profile["anilist_about"] = (al_data.get("about") or "")[:300]
+                        stats = al_data.get("statistics") or {}
+                        a_stats = stats.get("anime") or {}
+                        m_stats = stats.get("manga") or {}
+                        profile["anilist_anime_count"] = a_stats.get("count")
+                        profile["anilist_manga_count"] = m_stats.get("count")
+                        profile["anilist_mean_score"] = a_stats.get("meanScore")
+                        profile["anilist_minutes_watched"] = a_stats.get("minutesWatched")
+                        profile["anilist_chapters_read"] = m_stats.get("chaptersRead")
+                        al_id_to_profile[al_id] = profile
+                        refreshed = True
+                    else:
+                        # Account gone — keep old data, still register lookup
+                        if al_id:
+                            al_id_to_profile[al_id] = profile
+                except Exception:
+                    if al_id:
+                        al_id_to_profile[al_id] = profile
+
+            # -- MAL refresh --
+            mal_id = profile.get("mal_user_id")
+            if mal_uname and mal_id:
+                try:
+                    mal_data = await _mal_fetch_full_profile(mal_uname)
+                    if mal_data:
+                        profile["mal_username"] = mal_data.get("username", mal_uname)
+                        profile["mal_url"] = mal_data.get("url")
+                        profile["mal_avatar"] = mal_data.get("image_url")
+                        profile["mal_about"] = mal_data.get("about")
+                        a = mal_data.get("anime_stats") or {}
+                        m = mal_data.get("manga_stats") or {}
+                        profile["mal_anime_completed"] = a.get("completed")
+                        profile["mal_anime_mean_score"] = a.get("mean_score")
+                        profile["mal_manga_completed"] = m.get("completed")
+                        profile["mal_manga_mean_score"] = m.get("mean_score")
+                        mal_id_to_profile[mal_id] = profile
+                        refreshed = True
+                    else:
+                        if mal_id:
+                            mal_id_to_profile[mal_id] = profile
+                except Exception:
+                    if mal_id:
+                        mal_id_to_profile[mal_id] = profile
+
+            if refreshed:
+                result["users_updated"] += 1
+            else:
+                result["users_skipped"] += 1
+
+            users[discord_id] = profile
+
+        # ── Step 3: Update anime entries ──────────────────────────────────────
+        for entry in anime_entries:
+            changed = False
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                changed = True
+
+            if changed:
+                result["anime_entries_updated"] += 1
+
+        # ── Step 4: Update manga entries ──────────────────────────────────────
+        for entry in manga_entries:
+            changed = False
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                changed = True
+
+            if changed:
+                result["manga_entries_updated"] += 1
+
+        # ── Step 5: Write all three files ─────────────────────────────────────
+        await github_write_json(
+            session, FILE_USERS, users, users_sha,
+            f"chore: repopulate user profiles ({triggered_by})"
+        )
+        await github_write_json(
+            session, FILE_ANIME, anime_entries, anime_sha,
+            f"chore: sync anime entry usernames ({triggered_by})"
+        )
+        await github_write_json(
+            session, FILE_MANGA, manga_entries, manga_sha,
+            f"chore: sync manga entry usernames ({triggered_by})"
+        )
+
+    return result
+
+
+def _build_repopulator_embed(result: dict, title: str) -> discord.Embed:
+    """Build a nice embed from repopulator result dict."""
+    embed = discord.Embed(title=title, color=0x2EA043)
+    embed.add_field(
+        name="👥 Users",
+        value=(
+            f"✅ Updated: **{result['users_updated']}**\n"
+            f"⏭️ Skipped: **{result['users_skipped']}**"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="📺 Anime Entries",
+        value=f"🔄 Synced: **{result['anime_entries_updated']}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="📖 Manga Entries",
+        value=f"🔄 Synced: **{result['manga_entries_updated']}**",
+        inline=True,
+    )
+    if result.get("note"):
+        embed.add_field(name="ℹ️ Note", value=result["note"], inline=False)
+    embed.set_footer(text=f"Triggered by: {result.get('triggered_by', 'system')}")
+    return embed
+
+
+# ── Weekly task (runs every Sunday at midnight UTC) ────────────────────────────
+
+@tasks.loop(hours=168)  # 168 hours = 7 days
+async def weekly_repopulator():
+    print("🔄 Weekly repopulator running...")
+    result = await run_repopulator(triggered_by="weekly scheduler")
+    channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
+    if channel:
+        embed = _build_repopulator_embed(result, "🔄 Weekly Profile Sync Complete")
+        await channel.send(embed=embed)
+    print(f"✅ Weekly repopulator done: {result}")
+
+
+# ── Slash command: /repopulate ─────────────────────────────────────────────────
+
+@bot.tree.command(
+    name="repopulate",
+    description="Manually refresh all user profiles and sync anime/manga entries (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+async def repopulate(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embed=discord.Embed(
+            title="🔄 Repopulator Started",
+            description=(
+                "Fetching all user profiles from AniList and MAL...\n"
+                "This may take a moment depending on how many users are registered.\n"
+                "I'll send a follow-up here when done!"
+            ),
+            color=0x0078D4,
+        )
+    )
+
+    try:
+        result = await run_repopulator(triggered_by=f"{interaction.user.display_name} (manual)")
+        embed = _build_repopulator_embed(result, "✅ Repopulator Complete")
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Repopulator Failed",
+            description=f"An error occurred:\n```{e}```",
+            color=0xDA3633,
+        )
+
+    await interaction.followup.send(embed=embed)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Voting System — upvote/downvote for underrated anime & manga
+# ══════════════════════════════════════════════════════════════════════════════
+
+import time
+
+# In-memory rate limit store: { "discord_id:vote_key" -> timestamp_of_last_vote }
+# Resets on bot restart — intentional, lightweight, no DB needed
+_vote_rate_limit: dict[str, float] = {}
+VOTE_COOLDOWN_SECONDS = 300  # 5 minutes per user per item
+
+
+def _vote_key(media_type: str, anilist_id: int) -> str:
+    """Canonical key used in votes.json and rate limit store."""
+    return f"{media_type}:{anilist_id}"
+
+
+def _check_vote_rate_limit(discord_id: str, vote_key: str) -> float | None:
+    """
+    Returns None if allowed, or seconds remaining on cooldown if blocked.
+    Also cleans up expired entries to keep memory tidy.
+    """
+    rl_key = f"{discord_id}:{vote_key}"
+    now = time.monotonic()
+    last = _vote_rate_limit.get(rl_key)
+    if last is not None:
+        elapsed = now - last
+        if elapsed < VOTE_COOLDOWN_SECONDS:
+            return VOTE_COOLDOWN_SECONDS - elapsed
+    return None
+
+
+def _stamp_vote_rate_limit(discord_id: str, vote_key: str):
+    """Record that this user just voted on this item."""
+    _vote_rate_limit[f"{discord_id}:{vote_key}"] = time.monotonic()
+
+
+async def _cast_vote(
+    voter_id: str,
+    display_name: str,
+    media_type: str,
+    anilist_id: int,
+    direction: str,  # "up" or "down"
+) -> dict:
+    """
+    Core vote logic. voter_id is the AniList user ID (or MAL user ID prefixed
+    with 'mal:') of the person voting — NOT a Discord ID.
+    Returns a result dict: { success, upvotes, downvotes, action, title }
+    action is one of: "added_up", "added_down", "switched_to_up",
+                      "switched_to_down", "removed_up", "removed_down"
+    """
+    vote_key = _vote_key(media_type, anilist_id)
+
+    async with aiohttp.ClientSession() as session:
+        votes, votes_sha = await github_read_json(session, FILE_VOTES)
+        media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
+        entries, _ = await github_read_json(session, media_file)
+
+    entry = next((e for e in entries if e.get("anilist_id") == anilist_id), None)
+    if not entry:
+        return {"success": False, "error": f"No {media_type} with AniList ID {anilist_id} found in the list."}
+
+    title = entry.get("title", str(anilist_id))
+
+    record = votes.get(vote_key, {
+        "media_type": media_type,
+        "anilist_id": anilist_id,
+        "title": title,
+        "upvotes": [],
+        "downvotes": [],
+        "total_upvotes": 0,
+        "total_downvotes": 0,
+    })
+
+    upvotes: list = record.get("upvotes", [])
+    downvotes: list = record.get("downvotes", [])
+
+    action = ""
+    if direction == "up":
+        if voter_id in upvotes:
+            upvotes.remove(voter_id)
+            action = "removed_up"
+        else:
+            upvotes.append(voter_id)
+            if voter_id in downvotes:
+                downvotes.remove(voter_id)
+                action = "switched_to_up"
+            else:
+                action = "added_up"
+    else:  # down
+        if voter_id in downvotes:
+            downvotes.remove(voter_id)
+            action = "removed_down"
+        else:
+            downvotes.append(voter_id)
+            if voter_id in upvotes:
+                upvotes.remove(voter_id)
+                action = "switched_to_down"
+            else:
+                action = "added_down"
+
+    record["upvotes"] = upvotes
+    record["downvotes"] = downvotes
+    record["total_upvotes"] = len(upvotes)
+    record["total_downvotes"] = len(downvotes)
+    record["title"] = title
+    votes[vote_key] = record
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, FILE_VOTES, votes, votes_sha,
+            f"vote: {display_name} {action} {media_type} '{title}' (id:{anilist_id})"
+        )
+
+    if not ok:
+        return {"success": False, "error": "Failed to save vote to GitHub."}
+
+    return {
+        "success": True,
+        "action": action,
+        "title": title,
+        "upvotes": len(upvotes),
+        "downvotes": len(downvotes),
+        "net": len(upvotes) - len(downvotes),
+    }
+
+
+def _vote_action_text(action: str) -> str:
+    return {
+        "added_up": "✅ Upvoted",
+        "added_down": "❌ Downvoted",
+        "switched_to_up": "🔄 Switched to upvote",
+        "switched_to_down": "🔄 Switched to downvote",
+        "removed_up": "↩️ Upvote removed",
+        "removed_down": "↩️ Downvote removed",
+    }.get(action, "Voted")
+
+
+async def _handle_vote_interaction(
+    interaction: discord.Interaction,
+    media_type: str,
+    anilist_id_str: str,
+    direction: str,
+):
+    """Shared slash command handler for voting."""
+    await interaction.response.defer(ephemeral=True)
+
+    if not anilist_id_str.isdigit():
+        await interaction.followup.send("❌ Please select an item from the dropdown.", ephemeral=True)
+        return
+
+    anilist_id = int(anilist_id_str)
+    discord_id = str(interaction.user.id)
+
+    # Resolve the voter's AniList or MAL ID from their profile
+    async with aiohttp.ClientSession() as session:
+        users, _ = await github_read_json(session, FILE_USERS)
+    profile = users.get(discord_id)
+
+    if not profile:
+        await interaction.followup.send(
+            "❌ You need to run `/setup` and link your AniList or MAL account before voting.",
+            ephemeral=True,
+        )
+        return
+
+    al_id = profile.get("anilist_user_id")
+    mal_id = profile.get("mal_user_id")
+
+    if al_id:
+        voter_id = f"al:{al_id}"
+        display_name = profile.get("anilist_username") or interaction.user.display_name
+    elif mal_id:
+        voter_id = f"mal:{mal_id}"
+        display_name = profile.get("mal_username") or interaction.user.display_name
+    else:
+        await interaction.followup.send(
+            "❌ Your profile has no linked AniList or MAL account. Run `/setup` to link one.",
+            ephemeral=True,
+        )
+        return
+
+    vote_key = _vote_key(media_type, anilist_id)
+
+    # Rate limit check (keyed on voter_id, not discord_id)
+    cooldown = _check_vote_rate_limit(voter_id, vote_key)
+    if cooldown is not None:
+        mins = int(cooldown // 60)
+        secs = int(cooldown % 60)
+        await interaction.followup.send(
+            f"⏳ You already voted on this recently. Try again in **{mins}m {secs}s**.",
+            ephemeral=True,
+        )
+        return
+
+    result = await _cast_vote(voter_id, display_name, media_type, anilist_id, direction)
+
+    if not result["success"]:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+
+    _stamp_vote_rate_limit(voter_id, vote_key)
+
+    action_text = _vote_action_text(result["action"])
+    color = 0x2EA043 if "up" in result["action"] else (0xDA3633 if "down" in result["action"] else 0x888888)
+
+    embed = discord.Embed(
+        title=f"{action_text} — {result['title']}",
+        color=color,
+    )
+    embed.add_field(name="👍 Upvotes", value=f"**{result['upvotes']}**", inline=True)
+    embed.add_field(name="👎 Downvotes", value=f"**{result['downvotes']}**", inline=True)
+    embed.add_field(name="📊 Net", value=f"**{result['net']:+d}**", inline=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ── Autocomplete for existing list entries ─────────────────────────────────────
+
+async def _existing_anime_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_ANIME)
+    filtered = [e for e in entries if current.lower() in e.get("title", "").lower()]
+    return [
+        app_commands.Choice(name=e["title"][:100], value=str(e["anilist_id"]))
+        for e in filtered[:25]
+    ]
+
+
+async def _existing_manga_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_MANGA)
+    filtered = [e for e in entries if current.lower() in e.get("title", "").lower()]
+    return [
+        app_commands.Choice(name=e["title"][:100], value=str(e["anilist_id"]))
+        for e in filtered[:25]
+    ]
+
+
+# ── /vote_anime ────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="vote_anime", description="Upvote or downvote an underrated anime")
+@app_commands.describe(
+    title="Search for the anime in the list",
+    direction="Upvote or downvote",
+)
+@app_commands.choices(direction=[
+    app_commands.Choice(name="👍 Upvote", value="up"),
+    app_commands.Choice(name="👎 Downvote", value="down"),
+])
+@app_commands.autocomplete(title=_existing_anime_autocomplete)
+async def vote_anime(
+    interaction: discord.Interaction,
+    title: str,
+    direction: app_commands.Choice[str],
+):
+    await _handle_vote_interaction(interaction, "anime", title, direction.value)
+
+
+# ── /vote_manga ────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="vote_manga", description="Upvote or downvote an underrated manga")
+@app_commands.describe(
+    title="Search for the manga in the list",
+    direction="Upvote or downvote",
+)
+@app_commands.choices(direction=[
+    app_commands.Choice(name="👍 Upvote", value="up"),
+    app_commands.Choice(name="👎 Downvote", value="down"),
+])
+@app_commands.autocomplete(title=_existing_manga_autocomplete)
+async def vote_manga(
+    interaction: discord.Interaction,
+    title: str,
+    direction: app_commands.Choice[str],
+):
+    await _handle_vote_interaction(interaction, "manga", title, direction.value)
+
+
+# ── /vote_stats ────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="vote_stats", description="See vote leaderboard for anime or manga")
+@app_commands.describe(media_type="Which list to show")
+@app_commands.choices(media_type=[
+    app_commands.Choice(name="Anime", value="anime"),
+    app_commands.Choice(name="Manga", value="manga"),
+])
+async def vote_stats(interaction: discord.Interaction, media_type: app_commands.Choice[str]):
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        votes, _ = await github_read_json(session, FILE_VOTES)
+
+    # Filter by media type and sort by net score desc
+    relevant = [
+        v for k, v in votes.items()
+        if v.get("media_type") == media_type.value
+    ]
+    relevant.sort(key=lambda v: v.get("total_upvotes", 0) - v.get("total_downvotes", 0), reverse=True)
+
+    if not relevant:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title=f"No votes yet for {media_type.name}",
+                description="Be the first to vote using `/vote_anime` or `/vote_manga`!",
+                color=0x0078D4,
+            )
+        )
+        return
+
+    emoji = "📺" if media_type.value == "anime" else "📖"
+    embed = discord.Embed(
+        title=f"{emoji} {media_type.name} Vote Leaderboard",
+        color=0x0078D4,
+    )
+
+    medals = ["🥇", "🥈", "🥉"]
+    for i, v in enumerate(relevant[:10]):
+        up = v.get("total_upvotes", 0)
+        down = v.get("total_downvotes", 0)
+        net = up - down
+        prefix = medals[i] if i < 3 else f"`#{i+1}`"
+        embed.add_field(
+            name=f"{prefix} {v.get('title', '?')}",
+            value=f"👍 {up}  👎 {down}  📊 **{net:+d}**",
+            inline=False,
+        )
+
+    embed.set_footer(text=f"Showing top {min(len(relevant), 10)} of {len(relevant)} entries")
+    await interaction.followup.send(embed=embed)
+
+
+# ── /my_votes ──────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="my_votes", description="See all your votes")
+async def my_votes(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+
+    async with aiohttp.ClientSession() as session:
+        users, _ = await github_read_json(session, FILE_USERS)
+        votes, _ = await github_read_json(session, FILE_VOTES)
+
+    profile = users.get(discord_id)
+    if not profile:
+        await interaction.followup.send(
+            "❌ No profile found. Run `/setup` first!", ephemeral=True
+        )
+        return
+
+    al_id = profile.get("anilist_user_id")
+    mal_id = profile.get("mal_user_id")
+    voter_id = f"al:{al_id}" if al_id else (f"mal:{mal_id}" if mal_id else None)
+
+    if not voter_id:
+        await interaction.followup.send(
+            "❌ Your profile has no linked AniList or MAL account.", ephemeral=True
+        )
+        return
+
+    my_up = []
+    my_down = []
+    for key, v in votes.items():
+        if voter_id in v.get("upvotes", []):
+            my_up.append(f"👍 **{v.get('title', key)}** ({v.get('media_type', '?')})")
+        elif voter_id in v.get("downvotes", []):
+            my_down.append(f"👎 **{v.get('title', key)}** ({v.get('media_type', '?')})")
+
+    embed = discord.Embed(title=f"🗳️ {interaction.user.display_name}'s Votes", color=0x0078D4)
+
+    if my_up:
+        embed.add_field(name="👍 Upvoted", value="\n".join(my_up[:15]), inline=False)
+    if my_down:
+        embed.add_field(name="👎 Downvoted", value="\n".join(my_down[:15]), inline=False)
+    if not my_up and not my_down:
+        embed.description = "You haven't voted on anything yet!\nUse `/vote_anime` or `/vote_manga` to get started."
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Voting API endpoints
+# POST /api/vote/anime/{anilist_id}   body: { "anilist_user_id": int } or { "mal_user_id": int }, "direction": "up"/"down"
+# POST /api/vote/manga/{anilist_id}
+# GET  /api/votes/anime/{anilist_id}
+# GET  /api/votes/manga/{anilist_id}
+# GET  /api/votes/leaderboard?type=anime|manga&limit=10
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def api_vote_handler(request, media_type: str):
+    """POST /api/vote/{media_type}/{anilist_id}
+    Body: { "anilist_user_id": int } OR { "mal_user_id": int }, plus "direction": "up"/"down"
+    """
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        anilist_id = int(request.match_info["anilist_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid anilist_id in URL"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    al_uid = body.get("anilist_user_id")
+    mal_uid = body.get("mal_user_id")
+    display_name = str(body.get("display_name", "API User")).strip()
+    direction = str(body.get("direction", "")).strip().lower()
+
+    if not al_uid and not mal_uid:
+        return web.json_response({"error": "Provide at least one of: anilist_user_id, mal_user_id"}, status=400)
+    if direction not in ("up", "down"):
+        return web.json_response({"error": "direction must be 'up' or 'down'"}, status=400)
+
+    voter_id = f"al:{al_uid}" if al_uid else f"mal:{mal_uid}"
+
+    vote_key = _vote_key(media_type, anilist_id)
+    cooldown = _check_vote_rate_limit(voter_id, vote_key)
+    if cooldown is not None:
+        return web.json_response(
+            {"error": "Rate limited", "retry_after_seconds": round(cooldown, 1)},
+            status=429,
+        )
+
+    result = await _cast_vote(voter_id, display_name, media_type, anilist_id, direction)
+    if not result["success"]:
+        status = 404 if "found" in result.get("error", "") else 500
+        return web.json_response({"error": result["error"]}, status=status)
+
+    _stamp_vote_rate_limit(voter_id, vote_key)
+    return web.json_response(result, status=200)
+
+
+async def api_get_votes(request, media_type: str):
+    """GET /api/votes/{media_type}/{anilist_id}"""
+    try:
+        anilist_id = int(request.match_info["anilist_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid anilist_id in URL"}, status=400)
+
+    vote_key = _vote_key(media_type, anilist_id)
+    async with aiohttp.ClientSession() as session:
+        votes, _ = await github_read_json(session, FILE_VOTES)
+
+    record = votes.get(vote_key)
+    if not record:
+        return web.json_response({
+            "media_type": media_type,
+            "anilist_id": anilist_id,
+            "upvotes": 0,
+            "downvotes": 0,
+            "net": 0,
+            "voters": [],
+        })
+
+    return web.json_response({
+        "media_type": media_type,
+        "anilist_id": anilist_id,
+        "title": record.get("title"),
+        "total_upvotes": record.get("total_upvotes", 0),
+        "total_downvotes": record.get("total_downvotes", 0),
+        "net": record.get("total_upvotes", 0) - record.get("total_downvotes", 0),
+        "upvoters": record.get("upvotes", []),
+        "downvoters": record.get("downvotes", []),
+    })
+
+
+async def api_leaderboard(request):
+    """GET /api/votes/leaderboard?type=anime|manga&limit=10"""
+    media_type = request.rel_url.query.get("type", "anime").lower()
+    if media_type not in ("anime", "manga"):
+        return web.json_response({"error": "type must be 'anime' or 'manga'"}, status=400)
+    try:
+        limit = min(int(request.rel_url.query.get("limit", 10)), 50)
+    except ValueError:
+        limit = 10
+
+    async with aiohttp.ClientSession() as session:
+        votes, _ = await github_read_json(session, FILE_VOTES)
+
+    relevant = [
+        v for k, v in votes.items() if v.get("media_type") == media_type
+    ]
+    relevant.sort(
+        key=lambda v: v.get("total_upvotes", 0) - v.get("total_downvotes", 0),
+        reverse=True,
+    )
+
+    return web.json_response({
+        "media_type": media_type,
+        "leaderboard": [
+            {
+                "rank": i + 1,
+                "anilist_id": v.get("anilist_id"),
+                "title": v.get("title"),
+                "total_upvotes": v.get("total_upvotes", 0),
+                "total_downvotes": v.get("total_downvotes", 0),
+                "net": v.get("total_upvotes", 0) - v.get("total_downvotes", 0),
+            }
+            for i, v in enumerate(relevant[:limit])
+        ],
+    })
+
+
+# Route shims
+async def api_vote_anime(request): return await api_vote_handler(request, "anime")
+async def api_vote_manga(request): return await api_vote_handler(request, "manga")
+async def api_get_votes_anime(request): return await api_get_votes(request, "anime")
+async def api_get_votes_manga(request): return await api_get_votes(request, "manga")
 
 
 @bot.event
