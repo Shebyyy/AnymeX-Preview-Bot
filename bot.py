@@ -5797,30 +5797,32 @@ async def _update_user_in_dashboard(channel: discord.TextChannel, discord_id: st
 @app_commands.default_permissions(administrator=True)
 async def set_dashboard_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await interaction.response.defer(ephemeral=True)
-
-    # Respond immediately — work happens after
     await interaction.followup.send(
         embed=discord.Embed(
             title="Setting up dashboard...",
-            description=f"Posting to {channel.mention}, this may take a moment.",
+            description=f"Clearing {channel.mention} and posting fresh. This may take a moment.",
             color=0x0078D4,
         ),
         ephemeral=True,
     )
 
+    # Load data from GitHub
     async with aiohttp.ClientSession() as session:
         dashboard, sha = await _load_dashboard(session)
         users, _ = await github_read_json(session, FILE_USERS)
 
+    # Purge the entire channel first
+    try:
+        await channel.purge(limit=None)
+    except discord.Forbidden:
+        pass
+
+    # Reset dashboard state and repost everything
     dashboard["channel_id"] = channel.id
     dashboard["header_message_id"] = None
     dashboard["footer_message_id"] = None
     dashboard["blocks"] = []
-
-    try:
-        dashboard = await _render_dashboard(channel, users, dashboard)
-    except discord.Forbidden:
-        return
+    dashboard = await _render_dashboard(channel, users, dashboard)
 
     async with aiohttp.ClientSession() as session:
         await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
@@ -5840,7 +5842,7 @@ async def refresh_dashboard(interaction: discord.Interaction):
         dashboard, sha = await _load_dashboard(session)
         users, _ = await github_read_json(session, FILE_USERS)
 
-    channel_id = dashboard.get("channel_id")
+    channel_id = DASHBOARD_CHANNEL_ID or dashboard.get("channel_id")
     if not channel_id:
         await interaction.followup.send(
             embed=discord.Embed(
@@ -5864,7 +5866,6 @@ async def refresh_dashboard(interaction: discord.Interaction):
         )
         return
 
-    # Respond immediately so Discord doesn't time out
     await interaction.followup.send(
         embed=discord.Embed(
             title="Refreshing dashboard...",
@@ -5874,14 +5875,8 @@ async def refresh_dashboard(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-    # Read from GitHub
-    async with aiohttp.ClientSession() as session:
-        dashboard, sha = await _load_dashboard(session)
-
-    # Do Discord edits outside session (they take time)
     dashboard = await _render_dashboard(channel, users, dashboard)
 
-    # Write back to GitHub
     async with aiohttp.ClientSession() as session:
         await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
 
@@ -5893,7 +5888,12 @@ async def _handle_intake_message(message: discord.Message):
     al_match  = _RE_ANILIST_USER.search(content)
     mal_match = _RE_MAL_PROFILE.search(content)
 
+    # No valid links — delete and done
     if not al_match and not mal_match:
+        try:
+            await message.delete()
+        except Exception:
+            pass
         return
 
     al_username_raw  = al_match.group(1)  if al_match  else None
@@ -5907,7 +5907,7 @@ async def _handle_intake_message(message: discord.Message):
         async with aiohttp.ClientSession() as session:
             users, users_sha = await github_read_json(session, FILE_USERS)
             dashboard, dash_sha = await _load_dashboard(session)
-        
+
         existing = users.get(discord_id, {})
 
         # Resolve AniList
@@ -5932,6 +5932,7 @@ async def _handle_intake_message(message: discord.Message):
             if mal_profile_data:
                 mal_user_id = mal_profile_data["mal_id"]
 
+        # Links found but couldn't resolve either — delete and bail
         if not anilist_user_id and not mal_user_id:
             try:
                 await message.delete()
@@ -5977,25 +5978,22 @@ async def _handle_intake_message(message: discord.Message):
                 session, FILE_USERS, users, users_sha,
                 f"intake: update profile for {message.author.display_name}",
             )
+            if ok:
+                channel_id = DASHBOARD_CHANNEL_ID or dashboard.get("channel_id")
+                if channel_id:
+                    channel = bot.get_channel(channel_id)
+                    if channel:
+                        try:
+                            dashboard, dash_sha = await _load_dashboard(session)
+                            dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
+                            await _save_dashboard(
+                                session, dashboard, dash_sha,
+                                f"intake: update dashboard for {message.author.display_name}",
+                            )
+                        except Exception as e:
+                            print(f"⚠️ Dashboard update failed for {discord_id}: {e}")
 
-            if not ok:
-                return  # don't delete if save failed
-
-            # Update dashboard in the same session
-            channel_id = DASHBOARD_CHANNEL_ID or dashboard.get("channel_id")
-            if channel_id:
-                channel = bot.get_channel(channel_id)
-                if channel:
-                    try:
-                        dashboard, dash_sha = await _load_dashboard(session)
-                        dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
-                        await _save_dashboard(
-                            session, dashboard, dash_sha,
-                            f"intake: update dashboard for {message.author.display_name}",
-                        )
-                    except Exception as e:
-                        print(f"⚠️ Dashboard update failed for {discord_id}: {e}")
-
+        # Delete after processing — always
         try:
             await message.delete()
         except Exception:
@@ -6019,6 +6017,8 @@ async def on_message(message: discord.Message):
             dashboard, _ = await _load_dashboard(session)
         channel_id = dashboard.get("channel_id")
 
+    # If message is in the dashboard channel, handle it
+    # _handle_intake_message deletes the message first thing, always
     if channel_id and message.channel.id == channel_id:
         await _handle_intake_message(message)
 
