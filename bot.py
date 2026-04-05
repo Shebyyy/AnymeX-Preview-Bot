@@ -15,6 +15,8 @@ import threading
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 PORT = int(os.environ.get("PORT", 8080))
+_env_dcid = os.environ.get("DASHBOARD_CHANNEL_ID")
+DASHBOARD_CHANNEL_ID = int(_env_dcid) if _env_dcid else None
 
 # ── Proxy Config ───────────────────────────────────────────────────────────────
 _PROXY_HOST = os.environ.get("PROXY_HOST")
@@ -44,6 +46,7 @@ FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
+FILE_DASHBOARD = "dashboard.json"       # member profiles dashboard state
 
 
 DEFAULT_PREFIXES = ["?"]
@@ -752,13 +755,12 @@ async def _api_add_media(request, media_type: str):
     anilist_username = (body.get("anilist_username") or "").strip() or None
     mal_user_id = body.get("mal_user_id")           # optional
     mal_username = (body.get("mal_username") or "").strip() or None
-    author = (body.get("author") or "").strip()
+    author = (body.get("author") or "").strip() or None  # optional — falls back to anilist/mal username
     reason = (body.get("reason") or "").strip()
 
-    # At least one of anilist_user_id or mal_user_id must be present
+    # Required fields
     missing = [k for k, v in [
         ("anilist_id", anilist_id),
-        ("author", author),
         ("reason", reason),
     ] if not v]
     if missing:
@@ -814,14 +816,23 @@ async def _api_add_media(request, media_type: str):
                 },
             }
 
+        # Resolve author: use provided value, fall back to anilist username → mal username → "Unknown"
+        resolved_author = (
+            author
+            or user_snapshot.get("anilist", {}).get("username")
+            or user_snapshot.get("mal", {}).get("username")
+            or "Unknown"
+        )
+
         entry = {
-            "title": title,
-            "poster": media.get("coverImage", {}).get("large", ""),
-            "score": score,
             "anilist_id": anilist_id,
             "mal_id": resolved_mal_id,
+            "title": title,
+            "author": resolved_author,
             "reason": reason,
             "user": user_snapshot,
+            "poster": media.get("coverImage", {}).get("large", ""),
+            "score": score,
         }
 
         filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
@@ -1372,6 +1383,7 @@ async def ensure_json_files():
         FILE_PREFIXES: DEFAULT_PREFIXES[:],
         FILE_SERVER_CFG: {},
         FILE_VOTES: {},
+        FILE_DASHBOARD: {},
     }
     async with aiohttp.ClientSession() as session:
         for filepath, default in files.items():
@@ -1773,13 +1785,14 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     user_snapshot = _build_user_snapshot(profile)
 
     entry = {
-        "title": title,
-        "poster": cover_url,
-        "score": score,
         "anilist_id": anilist_id,
         "mal_id": mal_id,
+        "title": title,
+        "author": author,
         "reason": reason,
         "user": user_snapshot,
+        "poster": cover_url,
+        "score": score,
     }
 
     filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
@@ -3576,20 +3589,21 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
 
     user_snapshot = _build_user_snapshot(profile)
 
-    entry = {
-        "title": title,
-        "poster": cover_url,
-        "score": score,
-        "anilist_id": anilist_id,
-        "mal_id": mal_id,
-        "reason": reason,
-        "user": user_snapshot,
-    }
-    filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
-
     al_uname = user_snapshot["anilist"]["username"]
     mal_uname = user_snapshot["mal"]["username"]
     author_display = al_uname or mal_uname or ctx.author.display_name
+
+    entry = {
+        "anilist_id": anilist_id,
+        "mal_id": mal_id,
+        "title": title,
+        "author": author_display,
+        "reason": reason,
+        "user": user_snapshot,
+        "poster": cover_url,
+        "score": score,
+    }
+    filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
 
     preview = discord.Embed(
         title=f"📋 Preview — {title}",
@@ -5364,16 +5378,17 @@ async def my_votes(interaction: discord.Interaction):
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def api_vote_handler(request, media_type: str):
-    """POST /api/vote/{media_type}/{anilist_id}
+    """POST /api/vote/{media_type}/{media_id}
     Body: { "anilist_user_id": int } OR { "mal_user_id": int }, plus "direction": "up"/"down"
+    Supports looking up entry by anilist_id or mal_id via "id_type": "anilist" | "mal"
     """
     if not _check_auth(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
     try:
-        anilist_id = int(request.match_info["anilist_id"])
+        media_id = int(request.match_info["anilist_id"])
     except (KeyError, ValueError):
-        return web.json_response({"error": "Invalid anilist_id in URL"}, status=400)
+        return web.json_response({"error": "Invalid media_id in URL"}, status=400)
 
     try:
         body = await request.json()
@@ -5384,14 +5399,34 @@ async def api_vote_handler(request, media_type: str):
     mal_uid = body.get("mal_user_id")
     display_name = str(body.get("display_name", "API User")).strip()
     direction = str(body.get("direction", "")).strip().lower()
+    id_type = str(body.get("id_type", "anilist")).strip().lower()  # "anilist" or "mal"
 
     if not al_uid and not mal_uid:
         return web.json_response({"error": "Provide at least one of: anilist_user_id, mal_user_id"}, status=400)
     if direction not in ("up", "down"):
         return web.json_response({"error": "direction must be 'up' or 'down'"}, status=400)
+    if id_type not in ("anilist", "mal"):
+        return web.json_response({"error": "id_type must be 'anilist' or 'mal'"}, status=400)
 
     voter_id = f"al:{al_uid}" if al_uid else f"mal:{mal_uid}"
 
+    # Resolve anilist_id from the media_id — if id_type is "mal", look up by mal_id
+    async with aiohttp.ClientSession() as session:
+        media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
+        entries, _ = await github_read_json(session, media_file)
+
+    if id_type == "mal":
+        entry = next((e for e in entries if e.get("mal_id") == media_id), None)
+    else:
+        entry = next((e for e in entries if e.get("anilist_id") == media_id), None)
+
+    if not entry:
+        return web.json_response(
+            {"error": f"No {media_type} with {id_type}_id={media_id} found in the list."},
+            status=404,
+        )
+
+    anilist_id = entry["anilist_id"]
     vote_key = _vote_key(media_type, anilist_id)
     cooldown = _check_vote_rate_limit(voter_id, vote_key)
     if cooldown is not None:
@@ -5410,25 +5445,43 @@ async def api_vote_handler(request, media_type: str):
 
 
 async def api_get_votes(request, media_type: str):
-    """GET /api/votes/{media_type}/{anilist_id}"""
-    try:
-        anilist_id = int(request.match_info["anilist_id"])
-    except (KeyError, ValueError):
-        return web.json_response({"error": "Invalid anilist_id in URL"}, status=400)
+    """GET /api/votes/{media_type}/{media_id}?id_type=anilist|mal"""
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
 
-    vote_key = _vote_key(media_type, anilist_id)
+    try:
+        media_id = int(request.match_info["anilist_id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid media_id in URL"}, status=400)
+
+    id_type = request.rel_url.query.get("id_type", "anilist").lower()
+    if id_type not in ("anilist", "mal"):
+        return web.json_response({"error": "id_type must be 'anilist' or 'mal'"}, status=400)
+
     async with aiohttp.ClientSession() as session:
         votes, _ = await github_read_json(session, FILE_VOTES)
+        # Resolve anilist_id if mal id_type provided
+        if id_type == "mal":
+            media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
+            entries, _ = await github_read_json(session, media_file)
+            entry = next((e for e in entries if e.get("mal_id") == media_id), None)
+            if not entry:
+                return web.json_response({"error": f"No {media_type} with mal_id={media_id} found."}, status=404)
+            anilist_id = entry["anilist_id"]
+        else:
+            anilist_id = media_id
 
+    vote_key = _vote_key(media_type, anilist_id)
     record = votes.get(vote_key)
     if not record:
         return web.json_response({
             "media_type": media_type,
             "anilist_id": anilist_id,
-            "upvotes": 0,
-            "downvotes": 0,
+            "total_upvotes": 0,
+            "total_downvotes": 0,
             "net": 0,
-            "voters": [],
+            "upvoters": [],
+            "downvoters": [],
         })
 
     return web.json_response({
@@ -5445,6 +5498,9 @@ async def api_get_votes(request, media_type: str):
 
 async def api_leaderboard(request):
     """GET /api/votes/leaderboard?type=anime|manga&limit=10"""
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
     media_type = request.rel_url.query.get("type", "anime").lower()
     if media_type not in ("anime", "manga"):
         return web.json_response({"error": "type must be 'anime' or 'manga'"}, status=400)
@@ -5485,85 +5541,6 @@ async def api_vote_anime(request): return await api_vote_handler(request, "anime
 async def api_vote_manga(request): return await api_vote_handler(request, "manga")
 async def api_get_votes_anime(request): return await api_get_votes(request, "anime")
 async def api_get_votes_manga(request): return await api_get_votes(request, "manga")
-
-
-@bot.tree.command(
-    name="fix_manga_posters",
-    description="One-time fix: fetch missing posters and scores for manga entries (Admin only)",
-)
-@app_commands.default_permissions(administrator=True)
-async def fix_manga_posters(interaction: discord.Interaction):
-    await interaction.response.send_message(
-        embed=discord.Embed(
-            title="🔧 Fixing Manga Posters...",
-            description="Fetching missing posters from AniList. This will take a moment.",
-            color=0x0078D4,
-        )
-    )
-
-    async with aiohttp.ClientSession() as session:
-        entries, sha = await github_read_json(session, FILE_MANGA)
-
-        null_entries = [e for e in entries if not e.get("poster") or not e.get("score")]
-
-        if not null_entries:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="✅ Nothing to fix!",
-                    description="All manga entries already have posters and scores.",
-                    color=0x2EA043,
-                )
-            )
-            return
-
-        fixed = []
-        failed = []
-
-        for entry in entries:
-            if entry.get("poster") and entry.get("score"):
-                continue  # skip already complete entries
-
-            await asyncio.sleep(0.8)
-            try:
-                media = await fetch_anilist(session, entry["anilist_id"], "MANGA")
-                if media:
-                    entry["poster"] = media.get("coverImage", {}).get("large")
-                    entry["score"] = media.get("averageScore")
-                    fixed.append(entry["title"])
-                    print(f"✅ Fixed manga poster: {entry['title']}")
-                else:
-                    failed.append(entry["title"])
-                    print(f"⚠️ AniList returned no data for manga {entry['anilist_id']} ({entry.get('title')})")
-            except Exception as e:
-                failed.append(entry["title"])
-                print(f"⚠️ Failed to fetch manga {entry['anilist_id']} ({entry.get('title')}): {e}")
-
-        ok = await github_write_json(
-            session,
-            FILE_MANGA,
-            entries,
-            sha,
-            f"fix: backfill missing manga posters and scores ({len(fixed)} fixed)",
-        )
-
-    if ok:
-        embed = discord.Embed(title="✅ Manga Posters Fixed!", color=0x2EA043)
-        if fixed:
-            embed.add_field(
-                name=f"✅ Fixed ({len(fixed)})",
-                value="\n".join(fixed) or "None",
-                inline=False,
-            )
-        if failed:
-            embed.add_field(
-                name=f"❌ Failed ({len(failed)})",
-                value="\n".join(failed) or "None",
-                inline=False,
-            )
-    else:
-        embed = discord.Embed(title="❌ Failed to write to GitHub", color=0xDA3633)
-
-    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(
@@ -5668,9 +5645,377 @@ async def force_sync(ctx):
     await ctx.send("✅ Slash commands synced!")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DASHBOARD SYSTEM
+# ══════════════════════════════════════════════════════════════════════════════
+
+USERS_PER_BLOCK = 20  # users per embed message
+
+_RE_ANILIST_USER = re.compile(r"anilist\.co/user/([A-Za-z0-9_-]+)", re.IGNORECASE)
+_RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+)", re.IGNORECASE)
+
+_intake_locks: dict[int, asyncio.Lock] = {}
+
+
+def _build_user_row(discord_id: str, profile: dict) -> str:
+    al_username = profile.get("anilist_username")
+    al_url = profile.get("anilist_url") or (
+        f"https://anilist.co/user/{al_username}" if al_username else None
+    )
+    mal_username = profile.get("mal_username")
+    mal_url = profile.get("mal_url") or (
+        f"https://myanimelist.net/profile/{mal_username}" if mal_username else None
+    )
+    al_part  = f"[AL]({al_url})"   if al_url  else "—"
+    mal_part = f"[MAL]({mal_url})" if mal_url else "—"
+    return f"<@{discord_id}>  ·  {al_part}  ·  {mal_part}"
+
+
+def _build_header_embed() -> discord.Embed:
+    return discord.Embed(
+        title="Member Profiles",
+        description="AniList and MAL accounts of our members.",
+        color=0x2B2D31,
+    )
+
+
+def _build_block_embed(rows: list) -> discord.Embed:
+    return discord.Embed(description="\n".join(rows), color=0x2B2D31)
+
+
+def _build_footer_embed() -> discord.Embed:
+    return discord.Embed(
+        description="Share your AniList or MAL profile URL in this channel to be added.",
+        color=0x2B2D31,
+    )
+
+
+async def _load_dashboard(session) -> tuple:
+    return await github_read_json(session, FILE_DASHBOARD)
+
+
+async def _save_dashboard(session, dashboard: dict, sha, msg: str = "Update dashboard"):
+    return await github_write_json(session, FILE_DASHBOARD, dashboard, sha, msg)
+
+
+async def _render_dashboard(channel: discord.TextChannel, users: dict, dashboard: dict) -> dict:
+    """Full render: edit existing messages where possible, post new ones if needed."""
+    sorted_users = sorted(
+        users.items(),
+        key=lambda kv: (kv[1].get("author_name") or kv[1].get("discord_display_name") or "").lower()
+    )
+    chunks = [sorted_users[i:i + USERS_PER_BLOCK] for i in range(0, len(sorted_users), USERS_PER_BLOCK)]
+
+    # Header
+    header_embed = _build_header_embed()
+    header_id = dashboard.get("header_message_id")
+    if header_id:
+        try:
+            msg = await channel.fetch_message(header_id)
+            await msg.edit(embed=header_embed)
+        except discord.NotFound:
+            msg = await channel.send(embed=header_embed)
+            dashboard["header_message_id"] = msg.id
+    else:
+        msg = await channel.send(embed=header_embed)
+        dashboard["header_message_id"] = msg.id
+
+    # User blocks
+    existing_blocks = dashboard.get("blocks", [])
+    new_blocks = []
+    for i, chunk in enumerate(chunks):
+        rows = [_build_user_row(uid, profile) for uid, profile in chunk]
+        block_embed = _build_block_embed(rows)
+        user_ids = [uid for uid, _ in chunk]
+        if i < len(existing_blocks):
+            try:
+                msg = await channel.fetch_message(existing_blocks[i]["message_id"])
+                await msg.edit(embed=block_embed)
+                new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
+            except discord.NotFound:
+                msg = await channel.send(embed=block_embed)
+                new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
+        else:
+            msg = await channel.send(embed=block_embed)
+            new_blocks.append({"message_id": msg.id, "user_ids": user_ids})
+    dashboard["blocks"] = new_blocks
+
+    # Footer
+    footer_embed = _build_footer_embed()
+    footer_id = dashboard.get("footer_message_id")
+    if footer_id:
+        try:
+            msg = await channel.fetch_message(footer_id)
+            await msg.edit(embed=footer_embed)
+        except discord.NotFound:
+            msg = await channel.send(embed=footer_embed)
+            dashboard["footer_message_id"] = msg.id
+    else:
+        msg = await channel.send(embed=footer_embed)
+        dashboard["footer_message_id"] = msg.id
+
+    return dashboard
+
+
+async def _update_user_in_dashboard(channel: discord.TextChannel, discord_id: str, users: dict, dashboard: dict) -> dict:
+    """Edit only the block message that contains this user. Full render if user is new."""
+    blocks = dashboard.get("blocks", [])
+    target_idx = None
+    for i, block in enumerate(blocks):
+        if discord_id in block.get("user_ids", []):
+            target_idx = i
+            break
+
+    if target_idx is None:
+        # New user — full render to slot them in sorted order
+        return await _render_dashboard(channel, users, dashboard)
+
+    block = blocks[target_idx]
+    rows = [_build_user_row(uid, users.get(uid, {})) for uid in block["user_ids"]]
+    try:
+        msg = await channel.fetch_message(block["message_id"])
+        await msg.edit(embed=_build_block_embed(rows))
+    except discord.NotFound:
+        return await _render_dashboard(channel, users, dashboard)
+
+    return dashboard
+
+
+# ── /set_dashboard_channel ─────────────────────────────────────────────────────
+
+@bot.tree.command(
+    name="set_dashboard_channel",
+    description="Set the channel for the member profiles dashboard (Admin only)",
+)
+@app_commands.describe(channel="Channel to use as the profiles dashboard")
+@app_commands.default_permissions(administrator=True)
+async def set_dashboard_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        dashboard, sha = await _load_dashboard(session)
+        users, _ = await github_read_json(session, FILE_USERS)
+
+    dashboard["channel_id"] = channel.id
+    dashboard["header_message_id"] = None
+    dashboard["footer_message_id"] = None
+    dashboard["blocks"] = []
+
+    try:
+        dashboard = await _render_dashboard(channel, users, dashboard)
+    except discord.Forbidden:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="Missing permissions",
+                description=f"I cannot send messages in {channel.mention}.",
+                color=0xDA3633,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    async with aiohttp.ClientSession() as session:
+        await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
+
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="Dashboard set",
+            description=f"Member profiles dashboard is now in {channel.mention}.",
+            color=0x2EA043,
+        ),
+        ephemeral=True,
+    )
+
+
+# ── /refresh_dashboard ─────────────────────────────────────────────────────────
+
+@bot.tree.command(
+    name="refresh_dashboard",
+    description="Force a full refresh of the member profiles dashboard (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+async def refresh_dashboard(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        dashboard, sha = await _load_dashboard(session)
+        users, _ = await github_read_json(session, FILE_USERS)
+
+    channel_id = dashboard.get("channel_id")
+    if not channel_id:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="No dashboard channel set",
+                description="Use `/set_dashboard_channel` first.",
+                color=0xDA3633,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="Channel not found",
+                description="The configured dashboard channel no longer exists.",
+                color=0xDA3633,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    async with aiohttp.ClientSession() as session:
+        dashboard, sha = await _load_dashboard(session)
+        dashboard = await _render_dashboard(channel, users, dashboard)
+        await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
+
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="Dashboard refreshed",
+            description=f"Updated {len(users)} member profiles.",
+            color=0x2EA043,
+        ),
+        ephemeral=True,
+    )
+
+
+# ── Intake handler ─────────────────────────────────────────────────────────────
+
+async def _handle_intake_message(message: discord.Message):
+    content = message.content
+    al_match  = _RE_ANILIST_USER.search(content)
+    mal_match = _RE_MAL_PROFILE.search(content)
+
+    if not al_match and not mal_match:
+        return
+
+    al_username_raw  = al_match.group(1)  if al_match  else None
+    mal_username_raw = mal_match.group(1) if mal_match else None
+    discord_id = str(message.author.id)
+
+    if message.author.id not in _intake_locks:
+        _intake_locks[message.author.id] = asyncio.Lock()
+
+    async with _intake_locks[message.author.id]:
+        async with aiohttp.ClientSession() as session:
+            users, users_sha = await github_read_json(session, FILE_USERS)
+            dashboard, dash_sha = await _load_dashboard(session)
+
+        existing = users.get(discord_id, {})
+
+        # Resolve AniList
+        anilist_profile_data = None
+        anilist_user_id = None
+        anilist_username_display = None
+        if al_username_raw:
+            results = await _anilist_user_search(al_username_raw)
+            match = next((u for u in results if u["name"].lower() == al_username_raw.lower()), None)
+            if not match and results:
+                match = results[0]
+            if match:
+                anilist_user_id = match["id"]
+                anilist_username_display = match["name"]
+                anilist_profile_data = match
+
+        # Resolve MAL
+        mal_profile_data = None
+        mal_user_id = None
+        if mal_username_raw:
+            mal_profile_data = await _mal_fetch_full_profile(mal_username_raw)
+            if mal_profile_data:
+                mal_user_id = mal_profile_data["mal_id"]
+
+        if not anilist_user_id and not mal_user_id:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return
+
+        # Build merged profile
+        profile_entry = {
+            "author_name":          existing.get("author_name") or message.author.display_name,
+            "discord_id":           message.author.id,
+            "discord_username":     message.author.name,
+            "discord_display_name": message.author.display_name,
+            "discord_avatar":       str(message.author.display_avatar.url) if message.author.display_avatar else None,
+
+            "anilist_user_id":        anilist_user_id or existing.get("anilist_user_id"),
+            "anilist_username":       anilist_username_display or existing.get("anilist_username"),
+            "anilist_url":            (anilist_profile_data.get("siteUrl") if anilist_profile_data else None) or existing.get("anilist_url"),
+            "anilist_avatar":         ((anilist_profile_data.get("avatar") or {}).get("large") if anilist_profile_data else None) or existing.get("anilist_avatar"),
+            "anilist_banner":         (anilist_profile_data.get("bannerImage") if anilist_profile_data else None) or existing.get("anilist_banner"),
+            "anilist_about":          ((anilist_profile_data.get("about") or "")[:300] if anilist_profile_data else None) or existing.get("anilist_about"),
+            "anilist_anime_count":    ((anilist_profile_data.get("statistics") or {}).get("anime", {}).get("count") if anilist_profile_data else None) or existing.get("anilist_anime_count"),
+            "anilist_manga_count":    ((anilist_profile_data.get("statistics") or {}).get("manga", {}).get("count") if anilist_profile_data else None) or existing.get("anilist_manga_count"),
+            "anilist_mean_score":     ((anilist_profile_data.get("statistics") or {}).get("anime", {}).get("meanScore") if anilist_profile_data else None) or existing.get("anilist_mean_score"),
+            "anilist_minutes_watched":((anilist_profile_data.get("statistics") or {}).get("anime", {}).get("minutesWatched") if anilist_profile_data else None) or existing.get("anilist_minutes_watched"),
+            "anilist_chapters_read":  ((anilist_profile_data.get("statistics") or {}).get("manga", {}).get("chaptersRead") if anilist_profile_data else None) or existing.get("anilist_chapters_read"),
+
+            "mal_user_id":          mal_user_id or existing.get("mal_user_id"),
+            "mal_username":         (mal_profile_data.get("username") if mal_profile_data else None) or existing.get("mal_username"),
+            "mal_url":              (mal_profile_data.get("url") if mal_profile_data else None) or existing.get("mal_url"),
+            "mal_avatar":           (mal_profile_data.get("image_url") if mal_profile_data else None) or existing.get("mal_avatar"),
+            "mal_about":            (mal_profile_data.get("about") if mal_profile_data else None) or existing.get("mal_about"),
+            "mal_anime_completed":  ((mal_profile_data.get("anime_stats") or {}).get("completed") if mal_profile_data else None) or existing.get("mal_anime_completed"),
+            "mal_anime_mean_score": ((mal_profile_data.get("anime_stats") or {}).get("mean_score") if mal_profile_data else None) or existing.get("mal_anime_mean_score"),
+            "mal_manga_completed":  ((mal_profile_data.get("manga_stats") or {}).get("completed") if mal_profile_data else None) or existing.get("mal_manga_completed"),
+            "mal_manga_mean_score": ((mal_profile_data.get("manga_stats") or {}).get("mean_score") if mal_profile_data else None) or existing.get("mal_manga_mean_score"),
+        }
+
+        users[discord_id] = profile_entry
+        async with aiohttp.ClientSession() as session:
+            ok = await github_write_json(
+                session, FILE_USERS, users, users_sha,
+                f"intake: update profile for {message.author.display_name}",
+            )
+
+        if not ok:
+            return  # don't delete if save failed
+
+        # Update dashboard
+        channel_id = dashboard.get("channel_id")
+        if channel_id:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                async with aiohttp.ClientSession() as session:
+                    dashboard, dash_sha = await _load_dashboard(session)
+                try:
+                    dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
+                    async with aiohttp.ClientSession() as session:
+                        await _save_dashboard(
+                            session, dashboard, dash_sha,
+                            f"intake: update dashboard for {message.author.display_name}",
+                        )
+                except Exception as e:
+                    print(f"⚠️ Dashboard update failed for {discord_id}: {e}")
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+
+# ── on_message ─────────────────────────────────────────────────────────────────
+
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
+
+    if message.author.bot:
+        return
+
+    # Env var = no GitHub read. No env var = fallback to dashboard.json
+    if DASHBOARD_CHANNEL_ID:
+        channel_id = DASHBOARD_CHANNEL_ID
+    else:
+        async with aiohttp.ClientSession() as session:
+            dashboard, _ = await _load_dashboard(session)
+        channel_id = dashboard.get("channel_id")
+
+    if channel_id and message.channel.id == channel_id:
+        await _handle_intake_message(message)
 
 
 async def main():
