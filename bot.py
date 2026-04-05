@@ -649,6 +649,7 @@ def has_allowed_role_prefix():
 
 intents = discord.Intents.default()
 intents.message_content = True  # required for prefix commands
+intents.members = True          # required for mention rendering in dashboard
 
 # In-memory prefix cache (loaded on startup)
 _prefix_cache = ["?"]
@@ -5657,7 +5658,7 @@ _RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+)", re.I
 _intake_locks: dict[int, asyncio.Lock] = {}
 
 
-def _build_user_row(discord_id: str, profile: dict) -> str:
+def _build_user_links(profile: dict) -> str:
     al_username = profile.get("anilist_username")
     al_url = profile.get("anilist_url") or (
         f"https://anilist.co/user/{al_username}" if al_username else None
@@ -5668,7 +5669,7 @@ def _build_user_row(discord_id: str, profile: dict) -> str:
     )
     al_part  = f"[AL]({al_url})"   if al_url  else "—"
     mal_part = f"[MAL]({mal_url})" if mal_url else "—"
-    return f"<@{discord_id}>  ·  {al_part}  ·  {mal_part}"
+    return f"{al_part} · {mal_part}"
 
 
 def _build_header_embed() -> discord.Embed:
@@ -5680,7 +5681,13 @@ def _build_header_embed() -> discord.Embed:
 
 
 def _build_block_embed(rows: list) -> discord.Embed:
-    return discord.Embed(description="\n".join(rows), color=0x2B2D31)
+    """Two inline fields: left = mentions, right = links."""
+    mentions = "\n".join(f"<@{uid}>" for uid, _ in rows)
+    links    = "\n".join(_build_user_links(profile) for _, profile in rows)
+    embed = discord.Embed(color=0x2B2D31)
+    embed.add_field(name="Member", value=mentions, inline=True)
+    embed.add_field(name="Profiles", value=links, inline=True)
+    return embed
 
 
 def _build_footer_embed() -> discord.Embed:
@@ -5724,8 +5731,7 @@ async def _render_dashboard(channel: discord.TextChannel, users: dict, dashboard
     existing_blocks = dashboard.get("blocks", [])
     new_blocks = []
     for i, chunk in enumerate(chunks):
-        rows = [_build_user_row(uid, profile) for uid, profile in chunk]
-        block_embed = _build_block_embed(rows)
+        block_embed = _build_block_embed(chunk)
         user_ids = [uid for uid, _ in chunk]
         if i < len(existing_blocks):
             try:
@@ -5771,7 +5777,7 @@ async def _update_user_in_dashboard(channel: discord.TextChannel, discord_id: st
         return await _render_dashboard(channel, users, dashboard)
 
     block = blocks[target_idx]
-    rows = [_build_user_row(uid, users.get(uid, {})) for uid in block["user_ids"]]
+    rows = [(uid, users.get(uid, {})) for uid in block["user_ids"]]
     try:
         msg = await channel.fetch_message(block["message_id"])
         await msg.edit(embed=_build_block_embed(rows))
