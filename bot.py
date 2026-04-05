@@ -4833,13 +4833,16 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
             # Refresh poster + score from AniList
             try:
+                await asyncio.sleep(0.8)
                 media = await fetch_anilist(session, entry["anilist_id"], "ANIME")
                 if media:
                     entry["poster"] = media.get("coverImage", {}).get("large")
                     entry["score"] = media.get("averageScore")
                     changed = True
-            except Exception:
-                pass
+                else:
+                    print(f"⚠️ AniList returned no data for anime {entry['anilist_id']} ({entry.get('title')})")
+            except Exception as e:
+                print(f"⚠️ Failed to fetch AniList for anime {entry['anilist_id']} ({entry.get('title')}): {e}")
 
             if changed:
                 result["anime_entries_updated"] += 1
@@ -4863,13 +4866,16 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
             # Refresh poster + score from AniList
             try:
+                await asyncio.sleep(0.8)
                 media = await fetch_anilist(session, entry["anilist_id"], "MANGA")
                 if media:
                     entry["poster"] = media.get("coverImage", {}).get("large")
                     entry["score"] = media.get("averageScore")
                     changed = True
-            except Exception:
-                pass
+                else:
+                    print(f"⚠️ AniList returned no data for manga {entry['anilist_id']} ({entry.get('title')})")
+            except Exception as e:
+                print(f"⚠️ Failed to fetch AniList for manga {entry['anilist_id']} ({entry.get('title')}): {e}")
 
             if changed:
                 result["manga_entries_updated"] += 1
@@ -5479,6 +5485,85 @@ async def api_vote_anime(request): return await api_vote_handler(request, "anime
 async def api_vote_manga(request): return await api_vote_handler(request, "manga")
 async def api_get_votes_anime(request): return await api_get_votes(request, "anime")
 async def api_get_votes_manga(request): return await api_get_votes(request, "manga")
+
+
+@bot.tree.command(
+    name="fix_manga_posters",
+    description="One-time fix: fetch missing posters and scores for manga entries (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+async def fix_manga_posters(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embed=discord.Embed(
+            title="🔧 Fixing Manga Posters...",
+            description="Fetching missing posters from AniList. This will take a moment.",
+            color=0x0078D4,
+        )
+    )
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, FILE_MANGA)
+
+        null_entries = [e for e in entries if not e.get("poster") or not e.get("score")]
+
+        if not null_entries:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="✅ Nothing to fix!",
+                    description="All manga entries already have posters and scores.",
+                    color=0x2EA043,
+                )
+            )
+            return
+
+        fixed = []
+        failed = []
+
+        for entry in entries:
+            if entry.get("poster") and entry.get("score"):
+                continue  # skip already complete entries
+
+            await asyncio.sleep(0.8)
+            try:
+                media = await fetch_anilist(session, entry["anilist_id"], "MANGA")
+                if media:
+                    entry["poster"] = media.get("coverImage", {}).get("large")
+                    entry["score"] = media.get("averageScore")
+                    fixed.append(entry["title"])
+                    print(f"✅ Fixed manga poster: {entry['title']}")
+                else:
+                    failed.append(entry["title"])
+                    print(f"⚠️ AniList returned no data for manga {entry['anilist_id']} ({entry.get('title')})")
+            except Exception as e:
+                failed.append(entry["title"])
+                print(f"⚠️ Failed to fetch manga {entry['anilist_id']} ({entry.get('title')}): {e}")
+
+        ok = await github_write_json(
+            session,
+            FILE_MANGA,
+            entries,
+            sha,
+            f"fix: backfill missing manga posters and scores ({len(fixed)} fixed)",
+        )
+
+    if ok:
+        embed = discord.Embed(title="✅ Manga Posters Fixed!", color=0x2EA043)
+        if fixed:
+            embed.add_field(
+                name=f"✅ Fixed ({len(fixed)})",
+                value="\n".join(fixed) or "None",
+                inline=False,
+            )
+        if failed:
+            embed.add_field(
+                name=f"❌ Failed ({len(failed)})",
+                value="\n".join(failed) or "None",
+                inline=False,
+            )
+    else:
+        embed = discord.Embed(title="❌ Failed to write to GitHub", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed)
 
 
 @bot.event
