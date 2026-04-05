@@ -5566,7 +5566,101 @@ async def fix_manga_posters(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
-@bot.command(name="sync")
+@bot.tree.command(
+    name="fix_discord_info",
+    description="Backfill missing Discord info for all users and entries (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+async def fix_discord_info(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embed=discord.Embed(
+            title="🔧 Fixing Discord Info...",
+            description="Fetching Discord profiles for all users. This will take a moment.",
+            color=0x0078D4,
+        )
+    )
+
+    async with aiohttp.ClientSession() as session:
+        users, users_sha = await github_read_json(session, FILE_USERS)
+        anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
+        manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
+
+        fixed_users = 0
+        failed_users = 0
+
+        # Step 1: update discord info in users.json using bot.fetch_user
+        for discord_id, profile in users.items():
+            try:
+                user = await bot.fetch_user(int(discord_id))
+                profile["discord_id"] = user.id
+                profile["discord_username"] = user.name
+                profile["discord_display_name"] = user.display_name
+                profile["discord_avatar"] = str(user.display_avatar.url) if user.display_avatar else None
+                fixed_users += 1
+                print(f"✅ Updated discord info for {user.name} ({discord_id})")
+            except Exception as e:
+                failed_users += 1
+                print(f"⚠️ Failed to fetch Discord user {discord_id}: {e}")
+            await asyncio.sleep(0.5)
+
+        # Build lookups: anilist_user_id -> profile, mal_user_id -> profile
+        al_id_to_profile = {}
+        mal_id_to_profile = {}
+        for profile in users.values():
+            al_id = profile.get("anilist_user_id")
+            mal_id = profile.get("mal_user_id")
+            if al_id:
+                al_id_to_profile[al_id] = profile
+            if mal_id:
+                mal_id_to_profile[mal_id] = profile
+
+        # Step 2: update anime entries
+        anime_updated = 0
+        for entry in anime_entries:
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                anime_updated += 1
+
+        # Step 3: update manga entries
+        manga_updated = 0
+        for entry in manga_entries:
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                manga_updated += 1
+
+        # Step 4: write all 3 files
+        await github_write_json(session, FILE_USERS, users, users_sha, "fix: backfill discord info for all users")
+        await github_write_json(session, FILE_ANIME, anime_entries, anime_sha, "fix: sync discord info in anime entries")
+        await github_write_json(session, FILE_MANGA, manga_entries, manga_sha, "fix: sync discord info in manga entries")
+
+    embed = discord.Embed(title="✅ Discord Info Fixed!", color=0x2EA043)
+    embed.add_field(
+        name="👥 Users",
+        value=f"✅ Fixed: **{fixed_users}**\n❌ Failed: **{failed_users}**",
+        inline=True,
+    )
+    embed.add_field(name="📺 Anime Entries", value=f"🔄 Updated: **{anime_updated}**", inline=True)
+    embed.add_field(name="📖 Manga Entries", value=f"🔄 Updated: **{manga_updated}**", inline=True)
+    await interaction.followup.send(embed=embed)
+
+
+
 async def force_sync(ctx):
     if not ctx.author.guild_permissions.administrator:
         return
