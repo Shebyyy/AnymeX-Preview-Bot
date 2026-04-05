@@ -5802,25 +5802,24 @@ async def set_dashboard_channel(interaction: discord.Interaction, channel: disco
         dashboard, sha = await _load_dashboard(session)
         users, _ = await github_read_json(session, FILE_USERS)
 
-    dashboard["channel_id"] = channel.id
-    dashboard["header_message_id"] = None
-    dashboard["footer_message_id"] = None
-    dashboard["blocks"] = []
+        dashboard["channel_id"] = channel.id
+        dashboard["header_message_id"] = None
+        dashboard["footer_message_id"] = None
+        dashboard["blocks"] = []
 
-    try:
-        dashboard = await _render_dashboard(channel, users, dashboard)
-    except discord.Forbidden:
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="Missing permissions",
-                description=f"I cannot send messages in {channel.mention}.",
-                color=0xDA3633,
-            ),
-            ephemeral=True,
-        )
-        return
+        try:
+            dashboard = await _render_dashboard(channel, users, dashboard)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Missing permissions",
+                    description=f"I cannot send messages in {channel.mention}.",
+                    color=0xDA3633,
+                ),
+                ephemeral=True,
+            )
+            return
 
-    async with aiohttp.ClientSession() as session:
         await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
 
     await interaction.followup.send(
@@ -5871,19 +5870,21 @@ async def refresh_dashboard(interaction: discord.Interaction):
         )
         return
 
+    # Respond immediately so Discord doesn't time out
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="Refreshing dashboard...",
+            description="This may take a moment.",
+            color=0x0078D4,
+        ),
+        ephemeral=True,
+    )
+
+    # Do everything in one session
     async with aiohttp.ClientSession() as session:
         dashboard, sha = await _load_dashboard(session)
         dashboard = await _render_dashboard(channel, users, dashboard)
         await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
-
-    await interaction.followup.send(
-        embed=discord.Embed(
-            title="Dashboard refreshed",
-            description=f"Updated {len(users)} member profiles.",
-            color=0x2EA043,
-        ),
-        ephemeral=True,
-    )
 
 
 # ── Intake handler ─────────────────────────────────────────────────────────────
@@ -5907,7 +5908,7 @@ async def _handle_intake_message(message: discord.Message):
         async with aiohttp.ClientSession() as session:
             users, users_sha = await github_read_json(session, FILE_USERS)
             dashboard, dash_sha = await _load_dashboard(session)
-
+        
         existing = users.get(discord_id, {})
 
         # Resolve AniList
@@ -5971,31 +5972,30 @@ async def _handle_intake_message(message: discord.Message):
         }
 
         users[discord_id] = profile_entry
+
         async with aiohttp.ClientSession() as session:
             ok = await github_write_json(
                 session, FILE_USERS, users, users_sha,
                 f"intake: update profile for {message.author.display_name}",
             )
 
-        if not ok:
-            return  # don't delete if save failed
+            if not ok:
+                return  # don't delete if save failed
 
-        # Update dashboard
-        channel_id = dashboard.get("channel_id")
-        if channel_id:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                async with aiohttp.ClientSession() as session:
-                    dashboard, dash_sha = await _load_dashboard(session)
-                try:
-                    dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
-                    async with aiohttp.ClientSession() as session:
+            # Update dashboard in the same session
+            channel_id = DASHBOARD_CHANNEL_ID or dashboard.get("channel_id")
+            if channel_id:
+                channel = bot.get_channel(channel_id)
+                if channel:
+                    try:
+                        dashboard, dash_sha = await _load_dashboard(session)
+                        dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
                         await _save_dashboard(
                             session, dashboard, dash_sha,
                             f"intake: update dashboard for {message.author.display_name}",
                         )
-                except Exception as e:
-                    print(f"⚠️ Dashboard update failed for {discord_id}: {e}")
+                    except Exception as e:
+                        print(f"⚠️ Dashboard update failed for {discord_id}: {e}")
 
         try:
             await message.delete()
