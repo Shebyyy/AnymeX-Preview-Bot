@@ -5798,38 +5798,32 @@ async def _update_user_in_dashboard(channel: discord.TextChannel, discord_id: st
 async def set_dashboard_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await interaction.response.defer(ephemeral=True)
 
+    # Respond immediately — work happens after
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="Setting up dashboard...",
+            description=f"Posting to {channel.mention}, this may take a moment.",
+            color=0x0078D4,
+        ),
+        ephemeral=True,
+    )
+
     async with aiohttp.ClientSession() as session:
         dashboard, sha = await _load_dashboard(session)
         users, _ = await github_read_json(session, FILE_USERS)
 
-        dashboard["channel_id"] = channel.id
-        dashboard["header_message_id"] = None
-        dashboard["footer_message_id"] = None
-        dashboard["blocks"] = []
+    dashboard["channel_id"] = channel.id
+    dashboard["header_message_id"] = None
+    dashboard["footer_message_id"] = None
+    dashboard["blocks"] = []
 
-        try:
-            dashboard = await _render_dashboard(channel, users, dashboard)
-        except discord.Forbidden:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="Missing permissions",
-                    description=f"I cannot send messages in {channel.mention}.",
-                    color=0xDA3633,
-                ),
-                ephemeral=True,
-            )
-            return
+    try:
+        dashboard = await _render_dashboard(channel, users, dashboard)
+    except discord.Forbidden:
+        return
 
+    async with aiohttp.ClientSession() as session:
         await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
-
-    await interaction.followup.send(
-        embed=discord.Embed(
-            title="Dashboard set",
-            description=f"Member profiles dashboard is now in {channel.mention}.",
-            color=0x2EA043,
-        ),
-        ephemeral=True,
-    )
 
 
 # ── /refresh_dashboard ─────────────────────────────────────────────────────────
@@ -5880,10 +5874,15 @@ async def refresh_dashboard(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-    # Do everything in one session
+    # Read from GitHub
     async with aiohttp.ClientSession() as session:
         dashboard, sha = await _load_dashboard(session)
-        dashboard = await _render_dashboard(channel, users, dashboard)
+
+    # Do Discord edits outside session (they take time)
+    dashboard = await _render_dashboard(channel, users, dashboard)
+
+    # Write back to GitHub
+    async with aiohttp.ClientSession() as session:
         await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
 
 
