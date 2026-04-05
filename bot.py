@@ -1296,6 +1296,7 @@ async def migrate_entries_to_new_format():
     return migrated
 
 
+@bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
