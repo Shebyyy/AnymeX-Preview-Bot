@@ -1112,6 +1112,22 @@ async def _mal_get_user_id(mal_username: str) -> int | None:
     return profile.get("mal_id") if profile else None
 
 
+async def _mal_fetch_username_by_id(mal_id: int) -> str | None:
+    """Fetch MAL username from user ID via Jikan API."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://api.jikan.moe/v4/users/userbyid/{mal_id}",
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        return data.get("data", {}).get("username")
+    except Exception:
+        return None
+
+
 async def _mal_fetch_full_profile(mal_username: str) -> dict | None:
     """Fetch full MAL user profile via Jikan API."""
     try:
@@ -1266,7 +1282,16 @@ async def migrate_entries_to_new_format():
                         },
                     }
 
-                # Rename coverImage → poster if needed
+                # Fetch poster from AniList if missing or null
+                media_type_str = "ANIME" if label == "anime" else "MANGA"
+                if not entry.get("poster"):
+                    try:
+                        media = await fetch_anilist(session, entry["anilist_id"], media_type_str)
+                        if media:
+                            entry["poster"] = media.get("coverImage", {}).get("large")
+                    except Exception:
+                        pass
+                # Also rename legacy coverImage field just in case
                 if "poster" not in entry:
                     entry["poster"] = entry.pop("cover_url", entry.pop("coverImage", None))
 
@@ -4736,9 +4761,14 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
             # -- MAL refresh --
             mal_id = profile.get("mal_user_id")
-            if mal_uname and mal_id:
+            if mal_id:
+                # If username is missing, resolve it from the ID first
+                if not mal_uname:
+                    mal_uname = await _mal_fetch_username_by_id(mal_id)
+                    if mal_uname:
+                        profile["mal_username"] = mal_uname
                 try:
-                    mal_data = await _mal_fetch_full_profile(mal_uname)
+                    mal_data = await _mal_fetch_full_profile(mal_uname) if mal_uname else None
                     if mal_data:
                         profile["mal_username"] = mal_data.get("username", mal_uname)
                         profile["mal_url"] = mal_data.get("url")
