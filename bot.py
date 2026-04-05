@@ -5566,6 +5566,14 @@ async def fix_manga_posters(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+@bot.command(name="sync")
+async def force_sync(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return
+    await bot.tree.sync()
+    await ctx.send("✅ Slash commands synced!")
+
+
 @bot.event
 async def on_message(message: discord.Message):
     await bot.process_commands(message)
