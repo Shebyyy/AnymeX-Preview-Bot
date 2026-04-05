@@ -5650,7 +5650,7 @@ async def force_sync(ctx):
 # DASHBOARD SYSTEM
 # ══════════════════════════════════════════════════════════════════════════════
 
-USERS_PER_BLOCK = 12  # users per embed message (safe for Discord 1024-char field limit)
+USERS_PER_BLOCK = 10  # users per embed (~100 chars/line with mentions + links, fits ~10 in 1000)
 
 _RE_ANILIST_USER = re.compile(r"anilist\.co/user/([A-Za-z0-9_-]+)", re.IGNORECASE)
 _RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+)", re.IGNORECASE)
@@ -5658,77 +5658,72 @@ _RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+)", re.I
 _intake_locks: dict[int, asyncio.Lock] = {}
 
 
-def _build_user_links(profile: dict) -> str:
-    al_username = profile.get("anilist_username")
-    al_url = profile.get("anilist_url") or (
-        f"https://anilist.co/user/{al_username}" if al_username else None
-    )
-    mal_username = profile.get("mal_username")
-    mal_url = profile.get("mal_url") or (
-        f"https://myanimelist.net/profile/{mal_username}" if mal_username else None
-    )
-    al_part  = f"[AL]({al_url})"   if al_url  else "—"
-    mal_part = f"[MAL]({mal_url})" if mal_url else "—"
-    return f"{al_part} · {mal_part}"
-
-
 def _build_header_embed() -> discord.Embed:
     return discord.Embed(
         title="Member Profiles",
         description="AniList and MAL accounts of our members.",
-        color=0x2B2D31,
+        color=0x5865F2,
     )
 
 
-def _build_block_embed(rows: list) -> discord.Embed:
-    """Two inline fields: left = mentions, right = links.
-
-    Discord embed field values are limited to 1024 characters.
-    If a block's content exceeds this, it is split across multiple embeds.
+def _build_link_lines(rows: list) -> list[str]:
+    """Build clickable lines with Discord mentions + AniList/MAL hyperlinks.
+    Each line: <@discord_id> — [AniList](url) · [MAL](url)
     """
-    MAX_FIELD_LEN = 1024
-    # Pre-compute per-row strings so we can chunk them
-    mention_lines = [f"<@{uid}>" for uid, _ in rows]
-    link_lines    = [_build_user_links(profile) for _, profile in rows]
+    lines = []
+    for uid, p in rows:
+        mention = f"<@{uid}>"
+        al = p.get("anilist_username")
+        mal = p.get("mal_username")
+        al_part = f"**AL** [{al}](https://anilist.co/user/{al})" if al else "AL —"
+        mal_part = f"**MAL** [{mal}](https://myanimelist.net/profile/{mal})" if mal else "MAL —"
+        lines.append(f"{mention}  {al_part} · {mal_part}")
+    return lines
 
-    # Build a list of (mention_text, link_text) pairs that each fit within the limit
-    chunks: list[tuple[str, str]] = []
-    cur_mentions: list[str] = []
-    cur_links: list[str] = []
-    for ml, ll in zip(mention_lines, link_lines):
-        test_m = "\n".join(cur_mentions + [ml])
-        test_l = "\n".join(cur_links + [ll])
-        if len(test_m) > MAX_FIELD_LEN or len(test_l) > MAX_FIELD_LEN:
-            # Flush current chunk
-            chunks.append(("\n".join(cur_mentions), "\n".join(cur_links)))
-            cur_mentions = [ml]
-            cur_links = [ll]
+
+def _split_field_text(text: str, max_len: int = 1000) -> list[str]:
+    """Split multi-line text into chunks that fit within max_len characters."""
+    chunks: list[str] = []
+    cur_lines: list[str] = []
+    cur_len = 0
+    for line in text.split("\n"):
+        line_len = len(line) + 1  # +1 for newline
+        if cur_len + line_len > max_len and cur_lines:
+            chunks.append("\n".join(cur_lines))
+            cur_lines = [line]
+            cur_len = line_len
         else:
-            cur_mentions.append(ml)
-            cur_links.append(ll)
-    if cur_mentions:
-        chunks.append(("\n".join(cur_mentions), "\n".join(cur_links)))
+            cur_lines.append(line)
+            cur_len += line_len
+    if cur_lines:
+        chunks.append("\n".join(cur_lines))
+    return chunks
 
-    if not chunks:
-        embed = discord.Embed(color=0x2B2D31)
-        embed.add_field(name="Member", value="No members", inline=True)
-        embed.add_field(name="Profiles", value="—", inline=True)
+
+def _build_block_embed(rows: list) -> discord.Embed:
+    """Build a single embed with clickable Discord mentions + AniList/MAL hyperlinks.
+
+    One field, one user per line. Respects Discord's 1024-char field value limit.
+    """
+    if not rows:
+        embed = discord.Embed(color=0x5865F2)
+        embed.add_field(name="Members", value="No members yet.", inline=False)
         return embed
 
-    embed = discord.Embed(color=0x2B2D31)
-    embed.add_field(name="Member", value=chunks[0][0], inline=True)
-    embed.add_field(name="Profiles", value=chunks[0][1], inline=True)
-    # If the rows overflowed into extra chunks, add additional field pairs
-    for idx, (m_text, l_text) in enumerate(chunks[1:], start=2):
-        embed.add_field(name=f"Member (cont {idx-1})", value=m_text, inline=True)
-        embed.add_field(name=f"Profiles (cont {idx-1})", value=l_text, inline=True)
+    link_text = "\n".join(_build_link_lines(rows))
+    chunks = _split_field_text(link_text, 1000)
+
+    embed = discord.Embed(color=0x5865F2)
+    for i, chunk in enumerate(chunks):
+        fname = "Members & Profiles" if i == 0 else f"Members & Profiles (cont {i+1})"
+        embed.add_field(name=fname, value=chunk, inline=False)
     return embed
 
 
 def _build_footer_embed() -> discord.Embed:
     return discord.Embed(
         description="Share your AniList or MAL profile URL in this channel to be added.",
-        color=0x2B2D31,
+        color=0x5865F2,
     )
 
 
