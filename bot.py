@@ -984,15 +984,12 @@ async def get_profile(discord_id: str):
 
 
 def _build_user_snapshot(profile: dict) -> dict:
-    """
-    Build the compact 'user' sub-object embedded in every anime/manga entry.
-    Shape:
-      {
-        "anilist": {"id": int|None, "username": str|None, "avatar": str|None},
-        "mal":     {"id": int|None, "username": str|None, "avatar": str|None}
-      }
-    """
     return {
+        "discord": {
+            "id": profile.get("discord_id"),
+            "username": profile.get("discord_username"),
+            "avatar": profile.get("discord_avatar"),
+        },
         "anilist": {
             "id": profile.get("anilist_user_id"),
             "username": profile.get("anilist_username"),
@@ -1300,6 +1297,7 @@ async def migrate_entries_to_new_format():
 
                 # Strip any other leftover flat profile fields
                 for stale in [
+                    "author",
                     "discord_username", "discord_display_name",
                     "anilist_url", "anilist_banner", "anilist_about",
                     "anilist_anime_count", "anilist_manga_count",
@@ -1473,8 +1471,10 @@ async def setup(
     # ── Build stored profile ──────────────────────────────────────────────────
     profile_entry = {
         "author_name": author_display,
+        "discord_id": interaction.user.id,
         "discord_username": interaction.user.name,
         "discord_display_name": interaction.user.display_name,
+        "discord_avatar": str(interaction.user.display_avatar.url) if interaction.user.display_avatar else None,
         # AniList — None if user has no AniList
         "anilist_user_id": anilist_user_id,
         "anilist_username": anilist_username_display,
@@ -3490,6 +3490,10 @@ async def prefix_setup(
     async with aiohttp.ClientSession() as session:
         users, sha = await github_read_json(session, FILE_USERS)
         users[discord_id] = {
+            "discord_id": ctx.author.id,
+            "discord_username": ctx.author.name,
+            "discord_display_name": ctx.author.display_name,
+            "discord_avatar": str(ctx.author.display_avatar.url) if ctx.author.display_avatar else None,
             "anilist_user_id": anilist_user_id,
             "mal_user_id": mal_user_id,
             "author_name": author_display,
@@ -3569,20 +3573,23 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
     )
     cover_url = media.get("coverImage", {}).get("large", "")
     score = media.get("averageScore") or "N/A"
-    author = (
-        profile.get("author_name") or profile.get("author") or ctx.author.display_name
-    )
+
+    user_snapshot = _build_user_snapshot(profile)
 
     entry = {
+        "title": title,
+        "poster": cover_url,
+        "score": score,
         "anilist_id": anilist_id,
         "mal_id": mal_id,
-        "title": title,
-        "anilist_user_id": profile["anilist_user_id"],
-        "mal_user_id": profile["mal_user_id"],
-        "author": author,
         "reason": reason,
+        "user": user_snapshot,
     }
     filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
+
+    al_uname = user_snapshot["anilist"]["username"]
+    mal_uname = user_snapshot["mal"]["username"]
+    author_display = al_uname or mal_uname or ctx.author.display_name
 
     preview = discord.Embed(
         title=f"📋 Preview — {title}",
@@ -3590,7 +3597,7 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
         color=0x0078D4,
     )
     preview.add_field(name="Score", value=f"`{score}`", inline=True)
-    preview.add_field(name="Author", value=author, inline=True)
+    preview.add_field(name="Author", value=author_display, inline=True)
     preview.add_field(name="Reason", value=reason, inline=False)
     if cover_url:
         preview.set_thumbnail(url=cover_url)
@@ -3695,7 +3702,11 @@ async def prefix_list_anime(ctx):
             description=entry.get("reason", "No reason"),
             color=0x0066FF,
         )
-        e.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        u = entry.get("user", {})
+        author_display = u.get("anilist", {}).get("username") or u.get("mal", {}).get("username") or "Unknown"
+        e.add_field(name="Author", value=author_display, inline=True)
+        if entry.get("poster"):
+            e.set_thumbnail(url=entry["poster"])
         e.set_footer(text=f"{i}/{len(entries)}")
         embeds.append(e)
     await ctx.send(embeds=embeds[:10])
@@ -3719,7 +3730,11 @@ async def prefix_list_manga(ctx):
             description=entry.get("reason", "No reason"),
             color=0xFF6B6B,
         )
-        e.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        u = entry.get("user", {})
+        author_display = u.get("anilist", {}).get("username") or u.get("mal", {}).get("username") or "Unknown"
+        e.add_field(name="Author", value=author_display, inline=True)
+        if entry.get("poster"):
+            e.set_thumbnail(url=entry["poster"])
         e.set_footer(text=f"{i}/{len(entries)}")
         embeds.append(e)
     await ctx.send(embeds=embeds[:10])
