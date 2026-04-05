@@ -1115,6 +1115,38 @@ async def _anilist_fetch_user_by_id(user_id: int) -> dict | None:
         return None
 
 
+async def _anilist_fetch_user_by_name(username: str) -> dict | None:
+    """Fetch exact AniList user profile by username. Returns None if not found."""
+    query = """
+    query ($name: String) {
+      User(name: $name) {
+        id name
+        avatar { large }
+        bannerImage
+        siteUrl
+        about
+        statistics {
+          anime { count meanScore minutesWatched episodesWatched }
+          manga { count chaptersRead volumesRead }
+        }
+      }
+    }
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                ANILIST_API,
+                json={"query": query, "variables": {"name": username}},
+                headers={"Content-Type": "application/json"},
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        return data.get("data", {}).get("User")
+    except Exception:
+        return None
+
+
 async def _mal_get_user_id(mal_username: str) -> int | None:
     """Fetch MAL user ID from username via Jikan API (no auth needed)."""
     profile = await _mal_fetch_full_profile(mal_username)
@@ -1453,19 +1485,15 @@ async def setup(
                 return
             anilist_username_display = anilist_profile_data["name"]
         else:
-            results = await _anilist_user_search(anilist_username)
-            match = next((u for u in results if u["name"].lower() == anilist_username.lower()), None)
-            if not match and results:
-                match = results[0]
-            if not match:
+            anilist_profile_data = await _anilist_fetch_user_by_name(anilist_username)
+            if not anilist_profile_data:
                 await interaction.followup.send(
                     f"❌ AniList user `{anilist_username}` not found. Try the autocomplete suggestions.",
                     ephemeral=True,
                 )
                 return
-            anilist_user_id = match["id"]
-            anilist_username_display = match["name"]
-            anilist_profile_data = match  # already has full fields from expanded query
+            anilist_user_id = anilist_profile_data["id"]
+            anilist_username_display = anilist_profile_data["name"]
 
     # ── MAL resolution ────────────────────────────────────────────────────────
     mal_profile_data = None
@@ -5652,10 +5680,11 @@ async def force_sync(ctx):
 
 USERS_PER_BLOCK = 10  # users per embed (~100 chars/line with mentions + links, fits ~10 in 1000)
 
-_RE_ANILIST_USER = re.compile(r"anilist\.co/user/([A-Za-z0-9_-]+)", re.IGNORECASE)
-_RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+)", re.IGNORECASE)
+_RE_ANILIST_USER = re.compile(r"anilist\.co/user/([A-Za-z0-9_-]+?)(?:/|$|\s|[^A-Za-z0-9_-])", re.IGNORECASE)
+_RE_MAL_PROFILE  = re.compile(r"myanimelist\.net/profile/([A-Za-z0-9_-]+?)(?:/|$|\s|[^A-Za-z0-9_-])", re.IGNORECASE)
 
 _intake_locks: dict[int, asyncio.Lock] = {}
+_dashboard_render_lock = asyncio.Lock()  # prevents concurrent full renders (race condition)
 
 
 def _build_header_embed() -> discord.Embed:
@@ -5706,14 +5735,18 @@ def _build_block_embed(rows: list) -> discord.Embed:
     One field, one user per line. Respects Discord's 1024-char field value limit.
     """
     if not rows:
-        embed = discord.Embed(color=0x5865F2)
+        embed = discord.Embed(title=None, color=0x5865F2)
         embed.add_field(name="Members", value="No members yet.", inline=False)
         return embed
 
     link_text = "\n".join(_build_link_lines(rows))
     chunks = _split_field_text(link_text, 1000)
 
-    embed = discord.Embed(color=0x5865F2)
+    # Discord limits embeds to 25 fields — safety cap
+    if len(chunks) > 25:
+        chunks = chunks[:25]
+
+    embed = discord.Embed(title=None, color=0x5865F2)
     for i, chunk in enumerate(chunks):
         fname = "Members & Profiles" if i == 0 else f"Members & Profiles (cont {i+1})"
         embed.add_field(name=fname, value=chunk, inline=False)
@@ -5722,6 +5755,7 @@ def _build_block_embed(rows: list) -> discord.Embed:
 
 def _build_footer_embed() -> discord.Embed:
     return discord.Embed(
+        title=None,
         description="Share your AniList or MAL profile URL in this channel to be added.",
         color=0x5865F2,
     )
@@ -5886,7 +5920,8 @@ async def set_dashboard_channel(interaction: discord.Interaction, channel: disco
         dashboard["header_message_id"] = None
         dashboard["footer_message_id"] = None
         dashboard["blocks"] = []
-        dashboard = await _render_dashboard(channel, users, dashboard)
+        async with _dashboard_render_lock:
+            dashboard = await _render_dashboard(channel, users, dashboard)
 
         async with aiohttp.ClientSession() as session:
             await _save_dashboard(session, dashboard, sha, f"Set dashboard channel to {channel.id}")
@@ -5968,7 +6003,8 @@ async def refresh_dashboard(interaction: discord.Interaction):
             ephemeral=True,
         )
 
-        dashboard = await _render_dashboard(channel, users, dashboard)
+        async with _dashboard_render_lock:
+            dashboard = await _render_dashboard(channel, users, dashboard)
 
         async with aiohttp.ClientSession() as session:
             await _save_dashboard(session, dashboard, sha, "Refresh dashboard")
@@ -6028,14 +6064,10 @@ async def _handle_intake_message(message: discord.Message):
         anilist_user_id = None
         anilist_username_display = None
         if al_username_raw:
-            results = await _anilist_user_search(al_username_raw)
-            match = next((u for u in results if u["name"].lower() == al_username_raw.lower()), None)
-            if not match and results:
-                match = results[0]
-            if match:
-                anilist_user_id = match["id"]
-                anilist_username_display = match["name"]
-                anilist_profile_data = match
+            anilist_profile_data = await _anilist_fetch_user_by_name(al_username_raw)
+            if anilist_profile_data:
+                anilist_user_id = anilist_profile_data["id"]
+                anilist_username_display = anilist_profile_data["name"]
 
         # Resolve MAL
         mal_profile_data = None
@@ -6097,14 +6129,25 @@ async def _handle_intake_message(message: discord.Message):
                     channel = bot.get_channel(channel_id)
                     if channel:
                         try:
-                            dashboard, dash_sha = await _load_dashboard(session)
-                            dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
-                            await _save_dashboard(
-                                session, dashboard, dash_sha,
-                                f"intake: update dashboard for {message.author.display_name}",
-                            )
+                            async with _dashboard_render_lock:
+                                dashboard, dash_sha = await _load_dashboard(session)
+                                dashboard = await _update_user_in_dashboard(channel, discord_id, users, dashboard)
+                                await _save_dashboard(
+                                    session, dashboard, dash_sha,
+                                    f"intake: update dashboard for {message.author.display_name}",
+                                )
                         except Exception as e:
                             print(f"⚠️ Dashboard update failed for {discord_id}: {e}")
+
+                # Confirmation message (auto-deletes after 5 seconds)
+                try:
+                    if channel:
+                        confirm = await channel.send(
+                            f"✅ Profile updated for {message.author.mention}",
+                            delete_after=5,
+                        )
+                except Exception:
+                    pass
 
         # Delete after processing — always
         try:
