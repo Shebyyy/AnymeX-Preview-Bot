@@ -1597,7 +1597,7 @@ async def _simkl_fetch_user(simkl_username: str) -> dict | None:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{SIMKL_API}/search/users",
-                params={"q": simkl_username, "client_id": SIMKL_CLIENT_ID},
+                params={"q": simkl_username, "client_id": SIMKL_CLIENT_ID, "limit": 5},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
@@ -1703,14 +1703,19 @@ async def _simkl_fetch_show(simkl_id: int) -> dict | None:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{SIMKL_API}/shows/{simkl_id}",
+                f"{SIMKL_API}/tv/{simkl_id}",
                 params={"extended": "full", "client_id": SIMKL_CLIENT_ID},
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
+                body = await r.text()
+                print(f"[Simkl fetch show] id={simkl_id} status={r.status} body={body[:300]}")
                 if r.status != 200:
                     return None
-                return await r.json()
-    except Exception:
+                import json
+                return json.loads(body)
+    except Exception as e:
+        print(f"[Simkl fetch show] exception id={simkl_id}: {e}")
         return None
 
 
@@ -1723,12 +1728,17 @@ async def _simkl_fetch_movie(simkl_id: int) -> dict | None:
             async with session.get(
                 f"{SIMKL_API}/movies/{simkl_id}",
                 params={"extended": "full", "client_id": SIMKL_CLIENT_ID},
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
+                body = await r.text()
+                print(f"[Simkl fetch movie] id={simkl_id} status={r.status} body={body[:300]}")
                 if r.status != 200:
                     return None
-                return await r.json()
-    except Exception:
+                import json
+                return json.loads(body)
+    except Exception as e:
+        print(f"[Simkl fetch movie] exception id={simkl_id}: {e}")
         return None
 
 
@@ -5536,7 +5546,7 @@ def _build_simkl_embed(media: dict, media_type: str) -> discord.Embed:
     """Build a rich embed for a single Simkl show or movie."""
     title = media.get("title") or media.get("en_title") or "Unknown"
     ids = media.get("ids", {})
-    simkl_id = ids.get("simkl") or media.get("simkl_id") or media.get("id")
+    simkl_id = ids.get("simkl_id") or ids.get("simkl") or media.get("simkl_id") or media.get("id")
     url = f"https://simkl.com/{media_type}s/{simkl_id}" if simkl_id else ""
     color = 0x9B59B6 if media_type == "show" else 0xE67E22
 
