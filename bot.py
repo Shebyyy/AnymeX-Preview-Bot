@@ -35,10 +35,14 @@ WORKFLOW_FILE = "beta_manual.yml"
 GITHUB_API = "https://api.github.com"
 ANILIST_API = "https://graphql.anilist.co"
 MAL_API = "https://api.myanimelist.net/v2"
+SIMKL_API = "https://api.simkl.com"
+SIMKL_CLIENT_ID = os.environ.get("SIMKL_CLIENT_ID")
 
 # ── GitHub JSON file paths ──────────────────────────────────────────────────────
 FILE_ANIME = "underrated_anime.json"
 FILE_MANGA = "underrated_manga.json"
+FILE_SHOWS = "underrated_shows.json"
+FILE_MOVIES = "underrated_movies.json"
 FILE_USERS = "users.json"
 FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
@@ -865,6 +869,112 @@ async def api_add_manga(request):
     return await _api_add_media(request, "MANGA")
 
 
+async def _api_add_simkl(request, media_type: str):
+    """Shared handler for POST /api/add_show and POST /api/add_movie."""
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    simkl_id = body.get("simkl_id")
+    reason = (body.get("reason") or "").strip()
+    author = (body.get("author") or "").strip() or None
+
+    missing = [k for k, v in [("simkl_id", simkl_id), ("reason", reason)] if not v]
+    if missing:
+        return web.json_response({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    if not isinstance(simkl_id, int):
+        return web.json_response({"error": "simkl_id must be an integer"}, status=400)
+
+    if not SIMKL_CLIENT_ID:
+        return web.json_response({"error": "SIMKL_CLIENT_ID not configured on server"}, status=500)
+
+    # Fetch from Simkl
+    if media_type == "show":
+        media = await _simkl_fetch_show(simkl_id)
+    else:
+        media = await _simkl_fetch_movie(simkl_id)
+
+    if not media:
+        return web.json_response(
+            {"error": f"Could not find {media_type} with simkl_id={simkl_id} on Simkl"},
+            status=404,
+        )
+
+    title = media.get("title") or media.get("en_title") or f"Simkl ID {simkl_id}"
+    poster_url = _simkl_poster(media)
+    score = media.get("ratings", {}).get("simkl", {}).get("rating") or "N/A"
+    genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
+    year = media.get("year") or ""
+    simkl_url = f"https://simkl.com/{media_type}s/{simkl_id}"
+
+    # Try to match a user by simkl_username from request
+    simkl_username = (body.get("simkl_username") or "").strip() or None
+    async with aiohttp.ClientSession() as session:
+        users_data, _ = await github_read_json(session, FILE_USERS)
+
+    matched_profile = None
+    if simkl_username:
+        for _discord_id, p in users_data.items():
+            if p.get("simkl_username", "").lower() == simkl_username.lower():
+                matched_profile = p
+                break
+
+    if matched_profile:
+        user_snapshot = _build_user_snapshot(matched_profile)
+        resolved_author = author or matched_profile.get("author_name") or simkl_username or "Unknown"
+    else:
+        user_snapshot = {"simkl": {"username": simkl_username}}
+        resolved_author = author or simkl_username or "Unknown"
+
+    entry = {
+        "simkl_id": simkl_id,
+        "title": title,
+        "year": year,
+        "author": resolved_author,
+        "reason": reason,
+        "user": user_snapshot,
+        "poster": poster_url or "",
+        "score": score,
+        "genres": genres,
+        "simkl_url": simkl_url,
+    }
+
+    filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        if any(e.get("simkl_id") == simkl_id for e in entries):
+            return web.json_response(
+                {"error": f"{title} is already in the list", "title": title},
+                status=409,
+            )
+        entries.append(entry)
+        ok = await github_write_json(
+            session,
+            filepath,
+            entries,
+            sha,
+            f"feat: add {title} to underrated {media_type}s by {resolved_author} (API)",
+        )
+
+    if ok:
+        return web.json_response({"success": True, "entry": entry}, status=201)
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
+async def api_add_show(request):
+    return await _api_add_simkl(request, "show")
+
+
+async def api_add_movie(request):
+    return await _api_add_simkl(request, "movie")
+
+
 async def start_health_server():
     app = web.Application()
     app.router.add_get("/", health)
@@ -872,11 +982,17 @@ async def start_health_server():
     # ── media add ──────────────────────────────────────────────────────────────
     app.router.add_post("/api/add_anime", api_add_anime)
     app.router.add_post("/api/add_manga", api_add_manga)
+    app.router.add_post("/api/add_show", api_add_show)
+    app.router.add_post("/api/add_movie", api_add_movie)
     # ── voting ─────────────────────────────────────────────────────────────────
     app.router.add_post("/api/vote/anime/{anilist_id}", api_vote_anime)
     app.router.add_post("/api/vote/manga/{anilist_id}", api_vote_manga)
+    app.router.add_post("/api/vote/show/{anilist_id}", api_vote_show)
+    app.router.add_post("/api/vote/movie/{anilist_id}", api_vote_movie)
     app.router.add_get("/api/votes/anime/{anilist_id}", api_get_votes_anime)
     app.router.add_get("/api/votes/manga/{anilist_id}", api_get_votes_manga)
+    app.router.add_get("/api/votes/show/{anilist_id}", api_get_votes_show)
+    app.router.add_get("/api/votes/movie/{anilist_id}", api_get_votes_movie)
     app.router.add_get("/api/votes/leaderboard", api_leaderboard)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -909,7 +1025,7 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tup
                 FILE_SERVER_CFG,
                 FILE_VOTES,
             )
-            list_files = (FILE_ANIME, FILE_MANGA)
+            list_files = (FILE_ANIME, FILE_MANGA, FILE_SHOWS, FILE_MOVIES)
             if filepath in dict_files:
                 default = {}
             elif filepath == FILE_PREFIXES:
@@ -1038,6 +1154,9 @@ def _build_user_snapshot(profile: dict) -> dict:
             "id": profile.get("mal_user_id"),
             "username": profile.get("mal_username"),
             "avatar": profile.get("mal_avatar"),
+        },
+        "simkl": {
+            "username": profile.get("simkl_username"),
         },
     }
 
@@ -1235,6 +1354,87 @@ async def _mal_fetch_full_profile(mal_username: str) -> dict | None:
         return None
 
 
+# ── Simkl helper functions ─────────────────────────────────────────────────────
+
+
+async def _simkl_verify_user(simkl_username: str) -> bool:
+    """Verify a Simkl username exists by hitting their stats endpoint."""
+    if not SIMKL_CLIENT_ID:
+        return False
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/users/{simkl_username}/stats",
+                params={"client_id": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                return r.status == 200
+    except Exception:
+        return False
+
+
+async def _simkl_search(query_str: str, media_type: str) -> list:
+    """Search Simkl for TV shows or movies. media_type: 'tv' or 'movies'."""
+    if not SIMKL_CLIENT_ID:
+        return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/search/{media_type}",
+                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    return []
+                return await r.json()
+    except Exception:
+        return []
+
+
+async def _simkl_fetch_show(simkl_id: int) -> dict | None:
+    """Fetch full TV show details from Simkl."""
+    if not SIMKL_CLIENT_ID:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/shows/{simkl_id}",
+                params={"extended": "full", "client_id": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    return None
+                return await r.json()
+    except Exception:
+        return None
+
+
+async def _simkl_fetch_movie(simkl_id: int) -> dict | None:
+    """Fetch full movie details from Simkl."""
+    if not SIMKL_CLIENT_ID:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/movies/{simkl_id}",
+                params={"extended": "full", "client_id": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    return None
+                return await r.json()
+    except Exception:
+        return None
+
+
+def _simkl_poster(simkl_data: dict) -> str | None:
+    """Extract poster URL from Simkl media data."""
+    poster = simkl_data.get("poster")
+    if poster:
+        return f"https://simkl.in/posters/{poster}_m.jpg"
+    return None
+
+
 # ── Autocomplete functions ─────────────────────────────────────────────────────
 
 
@@ -1280,6 +1480,46 @@ async def anilist_user_autocomplete(
     ][:25]
 
 
+async def show_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if not current or len(current) < 2:
+        return []
+    results = await _simkl_search(current, "tv")
+    choices = []
+    for r in results[:25]:
+        ids = r.get("ids", {})
+        simkl_id = ids.get("simkl")
+        title = r.get("title", "Unknown")
+        year = r.get("year", "")
+        if simkl_id:
+            choices.append(app_commands.Choice(
+                name=f"{title[:90]} ({year})" if year else title[:100],
+                value=str(simkl_id),
+            ))
+    return choices
+
+
+async def movie_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    if not current or len(current) < 2:
+        return []
+    results = await _simkl_search(current, "movies")
+    choices = []
+    for r in results[:25]:
+        ids = r.get("ids", {})
+        simkl_id = ids.get("simkl")
+        title = r.get("title", "Unknown")
+        year = r.get("year", "")
+        if simkl_id:
+            choices.append(app_commands.Choice(
+                name=f"{title[:90]} ({year})" if year else title[:100],
+                value=str(simkl_id),
+            ))
+    return choices
+
+
 # ── on ready ───────────────────────────────────────────────────────────────────
 
 
@@ -1323,6 +1563,8 @@ async def ensure_json_files():
         FILE_TIMEZONES: {},
         FILE_ANIME: [],
         FILE_MANGA: [],
+        FILE_SHOWS: [],
+        FILE_MOVIES: [],
         FILE_PREFIXES: DEFAULT_PREFIXES[:],
         FILE_SERVER_CFG: {},
         FILE_VOTES: {},
@@ -1351,11 +1593,12 @@ async def ensure_json_files():
 
 
 @bot.tree.command(
-    name="setup", description="Link your AniList and/or MAL accounts to your Discord"
+    name="setup", description="Link your AniList, MAL, and/or Simkl accounts to your Discord"
 )
 @app_commands.describe(
     anilist_username="Your AniList username (optional — leave blank if you don't have one)",
     mal_username="Your MyAnimeList username (optional — leave blank if you don't have one)",
+    simkl_username="Your Simkl username (optional — leave blank if you don't have one)",
     author_name="Display name for list entries (defaults to Discord username)",
 )
 @app_commands.autocomplete(anilist_username=anilist_user_autocomplete)
@@ -1363,6 +1606,7 @@ async def setup(
     interaction: discord.Interaction,
     anilist_username: str = "",
     mal_username: str = "",
+    simkl_username: str = "",
     author_name: str = "",
 ):
     await interaction.response.defer(ephemeral=True)
@@ -1370,9 +1614,9 @@ async def setup(
     discord_id = str(interaction.user.id)
     author_display = author_name or interaction.user.display_name
 
-    if not anilist_username and not mal_username:
+    if not anilist_username and not mal_username and not simkl_username:
         await interaction.followup.send(
-            "❌ Please provide at least one of: AniList username or MAL username.",
+            "❌ Please provide at least one of: AniList username, MAL username, or Simkl username.",
             ephemeral=True,
         )
         return
@@ -1417,6 +1661,20 @@ async def setup(
             )
             return
         mal_user_id = mal_profile_data["mal_id"]
+
+    # ── Simkl resolution ──────────────────────────────────────────────────────
+    simkl_valid = False
+    simkl_username_stored = None
+
+    if simkl_username:
+        simkl_username_stored = simkl_username.strip()
+        simkl_valid = await _simkl_verify_user(simkl_username_stored)
+        if not simkl_valid:
+            await interaction.followup.send(
+                f"❌ Simkl user `{simkl_username_stored}` not found. Check your username and try again.",
+                ephemeral=True,
+            )
+            return
 
     # ── Build stored profile ──────────────────────────────────────────────────
     profile_entry = {
@@ -1477,6 +1735,8 @@ async def setup(
             mal_profile_data.get("manga_stats", {}).get("mean_score")
             if mal_profile_data else None
         ),
+        # Simkl — None if user has no Simkl
+        "simkl_username": simkl_username_stored if simkl_valid else None,
     }
 
     async with aiohttp.ClientSession() as session:
@@ -1509,12 +1769,20 @@ async def setup(
             )
         else:
             embed.add_field(name="MAL", value="Not linked", inline=True)
+        if simkl_valid and simkl_username_stored:
+            embed.add_field(
+                name="Simkl",
+                value=f"[{simkl_username_stored}](https://simkl.com/users/{simkl_username_stored})",
+                inline=True,
+            )
+        else:
+            embed.add_field(name="Simkl", value="Not linked", inline=True)
 
         # Set avatar: prefer AniList, fallback to MAL
         avatar = profile_entry.get("anilist_avatar") or profile_entry.get("mal_avatar")
         if avatar:
             embed.set_thumbnail(url=avatar)
-        embed.set_footer(text="You can now use /add_anime, /add_manga!")
+        embed.set_footer(text="You can now use /add_anime, /add_manga, /add_show, /add_movie!")
     else:
         embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -1809,6 +2077,185 @@ async def add_manga(interaction: discord.Interaction, title: str, reason: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Simkl add handler (shows & movies)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+async def handle_simkl_add(
+    interaction: discord.Interaction,
+    simkl_id: int,
+    reason: str,
+    media_type: str,  # "show" or "movie"
+):
+    await interaction.response.defer()
+
+    discord_id = str(interaction.user.id)
+
+    async with aiohttp.ClientSession() as session:
+        users, _ = await github_read_json(session, FILE_USERS)
+
+    profile = users.get(discord_id)
+    if not profile:
+        await interaction.followup.send(
+            "❌ You need to run `/setup` first before adding content.", ephemeral=True
+        )
+        return
+
+    # Fetch media from Simkl
+    if media_type == "show":
+        media = await _simkl_fetch_show(simkl_id)
+    else:
+        media = await _simkl_fetch_movie(simkl_id)
+
+    if not media:
+        await interaction.followup.send(
+            f"❌ Could not fetch {media_type} details from Simkl (ID: {simkl_id}).",
+            ephemeral=True,
+        )
+        return
+
+    title = media.get("title") or media.get("en_title") or f"Simkl ID {simkl_id}"
+    poster_url = _simkl_poster(media)
+    score = media.get("ratings", {}).get("simkl", {}).get("rating") or "N/A"
+    genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
+    year = media.get("year") or ""
+
+    author = profile.get("author_name") or interaction.user.display_name
+    user_snapshot = _build_user_snapshot(profile)
+
+    filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
+    simkl_url = f"https://simkl.com/{media_type}s/{simkl_id}"
+
+    entry = {
+        "simkl_id": simkl_id,
+        "title": title,
+        "year": year,
+        "author": author,
+        "reason": reason,
+        "user": user_snapshot,
+        "poster": poster_url or "",
+        "score": score,
+        "genres": genres,
+        "simkl_url": simkl_url,
+    }
+
+    preview = discord.Embed(
+        title=f"📋 Preview — {title}",
+        description=f"*Confirm to add to the underrated {media_type}s list*",
+        color=0x9B59B6,
+    )
+    preview.add_field(name="Simkl", value=f"[Link]({simkl_url}) (ID: `{simkl_id}`)", inline=True)
+    preview.add_field(name="Year", value=str(year) if year else "N/A", inline=True)
+    preview.add_field(name="Score", value=f"`{score}`", inline=True)
+    preview.add_field(name="Genres", value=genres, inline=True)
+    preview.add_field(name="Author", value=author, inline=True)
+    preview.add_field(name="Reason", value=reason, inline=False)
+    if poster_url:
+        preview.set_thumbnail(url=poster_url)
+    preview.set_footer(text="You have 2 minutes to confirm.")
+
+    view = SimklConfirmView(entry=entry, filepath=filepath, media_type=media_type, poster_url=poster_url)
+    await interaction.followup.send(embed=preview, view=view)
+
+
+class SimklConfirmView(discord.ui.View):
+    def __init__(self, entry: dict, filepath: str, media_type: str, poster_url: str | None):
+        super().__init__(timeout=120)
+        self.entry = entry
+        self.filepath = filepath
+        self.media_type = media_type
+        self.poster_url = poster_url
+
+    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        async with aiohttp.ClientSession() as session:
+            entries, sha = await github_read_json(session, self.filepath)
+
+            if any(e.get("simkl_id") == self.entry["simkl_id"] for e in entries):
+                await interaction.followup.send(
+                    f"⚠️ **{self.entry['title']}** is already in the list!", ephemeral=True
+                )
+                self.stop()
+                return
+
+            entries.append(self.entry)
+            ok = await github_write_json(
+                session,
+                self.filepath,
+                entries,
+                sha,
+                f"feat: add {self.entry['title']} to underrated {self.media_type}s by {self.entry['author']}",
+            )
+
+        if ok:
+            embed = discord.Embed(
+                title=f"✅ Added — {self.entry['title']}",
+                description=self.entry.get("reason"),
+                color=0x2EA043,
+            )
+            if self.poster_url:
+                embed.set_thumbnail(url=self.poster_url)
+        else:
+            embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+        await interaction.followup.send(embed=embed)
+        self.stop()
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+        await interaction.followup.send("❌ Cancelled.", ephemeral=True)
+        self.stop()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /add_show
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@bot.tree.command(name="add_show", description="Add an underrated TV show to the list")
+@app_commands.describe(
+    title="Search for the TV show (type to get suggestions)",
+    reason="Why is it underrated?",
+)
+@app_commands.autocomplete(title=show_autocomplete)
+async def add_show(interaction: discord.Interaction, title: str, reason: str):
+    if not title.isdigit():
+        await interaction.response.send_message(
+            "❌ Please select a TV show from the dropdown suggestions.", ephemeral=True
+        )
+        return
+    await handle_simkl_add(interaction, int(title), reason, "show")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /add_movie
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@bot.tree.command(name="add_movie", description="Add an underrated movie to the list")
+@app_commands.describe(
+    title="Search for the movie (type to get suggestions)",
+    reason="Why is it underrated?",
+)
+@app_commands.autocomplete(title=movie_autocomplete)
+async def add_movie(interaction: discord.Interaction, title: str, reason: str):
+    if not title.isdigit():
+        await interaction.response.send_message(
+            "❌ Please select a movie from the dropdown suggestions.", ephemeral=True
+        )
+        return
+    await handle_simkl_add(interaction, int(title), reason, "movie")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # /list_anime — Restricted
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1886,6 +2333,84 @@ async def list_manga(interaction: discord.Interaction):
         embed.add_field(
             name="Score", value=f"{entry.get('score', 'N/A')}/100", inline=True
         )
+        if entry.get("poster"):
+            embed.set_thumbnail(url=entry["poster"])
+        embed.set_footer(text=f"{i}/{len(entries)}")
+        embeds.append(embed)
+
+    await interaction.followup.send(embeds=embeds[:10])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /list_shows
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@bot.tree.command(name="list_shows", description="View the underrated TV shows list")
+async def list_shows(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_SHOWS)
+
+    if not entries:
+        embed = discord.Embed(
+            title="TV Shows List", description="No shows added yet.", color=0x9B59B6
+        )
+        await interaction.followup.send(embed=embed)
+        return
+
+    embeds = []
+    for i, entry in enumerate(entries, 1):
+        embed = discord.Embed(
+            title=entry.get("title", "Unknown"),
+            description=entry.get("reason", "No reason"),
+            color=0x9B59B6,
+        )
+        embed.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="Year", value=str(entry.get("year", "N/A")), inline=True)
+        embed.add_field(name="Score", value=f"{entry.get('score', 'N/A')}", inline=True)
+        if entry.get("simkl_url"):
+            embed.add_field(name="Simkl", value=f"[Link]({entry['simkl_url']})", inline=True)
+        if entry.get("poster"):
+            embed.set_thumbnail(url=entry["poster"])
+        embed.set_footer(text=f"{i}/{len(entries)}")
+        embeds.append(embed)
+
+    await interaction.followup.send(embeds=embeds[:10])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /list_movies
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@bot.tree.command(name="list_movies", description="View the underrated movies list")
+async def list_movies(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_MOVIES)
+
+    if not entries:
+        embed = discord.Embed(
+            title="Movies List", description="No movies added yet.", color=0xE67E22
+        )
+        await interaction.followup.send(embed=embed)
+        return
+
+    embeds = []
+    for i, entry in enumerate(entries, 1):
+        embed = discord.Embed(
+            title=entry.get("title", "Unknown"),
+            description=entry.get("reason", "No reason"),
+            color=0xE67E22,
+        )
+        embed.add_field(name="Author", value=entry.get("author", "Unknown"), inline=True)
+        embed.add_field(name="Year", value=str(entry.get("year", "N/A")), inline=True)
+        embed.add_field(name="Score", value=f"{entry.get('score', 'N/A')}", inline=True)
+        if entry.get("simkl_url"):
+            embed.add_field(name="Simkl", value=f"[Link]({entry['simkl_url']})", inline=True)
         if entry.get("poster"):
             embed.set_thumbnail(url=entry["poster"])
         embed.set_footer(text=f"{i}/{len(entries)}")
@@ -1991,6 +2516,100 @@ async def remove_manga(interaction: discord.Interaction, search_term: str):
     else:
         embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
 
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /remove_show — Restricted
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@bot.tree.command(name="remove_show", description="Remove a TV show from the list")
+@app_commands.describe(search_term="Title or Simkl ID")
+@has_allowed_role()
+async def remove_show(interaction: discord.Interaction, search_term: str):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, FILE_SHOWS)
+
+    found_index = None
+    for i, entry in enumerate(entries):
+        if search_term.isdigit() and str(entry.get("simkl_id")) == search_term:
+            found_index = i
+            break
+        elif search_term.lower() in entry.get("title", "").lower():
+            found_index = i
+            break
+
+    if found_index is None:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="Not Found",
+                description=f"No show matching `{search_term}`",
+                color=0xDA3633,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    removed = entries.pop(found_index)
+    async with aiohttp.ClientSession() as session:
+        success = await github_write_json(
+            session, FILE_SHOWS, entries, sha, f"Remove show: {removed.get('title')}"
+        )
+
+    if success:
+        embed = discord.Embed(title="Removed", description=removed.get("title"), color=0x2EA043)
+    else:
+        embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /remove_movie — Restricted
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@bot.tree.command(name="remove_movie", description="Remove a movie from the list")
+@app_commands.describe(search_term="Title or Simkl ID")
+@has_allowed_role()
+async def remove_movie(interaction: discord.Interaction, search_term: str):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, FILE_MOVIES)
+
+    found_index = None
+    for i, entry in enumerate(entries):
+        if search_term.isdigit() and str(entry.get("simkl_id")) == search_term:
+            found_index = i
+            break
+        elif search_term.lower() in entry.get("title", "").lower():
+            found_index = i
+            break
+
+    if found_index is None:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="Not Found",
+                description=f"No movie matching `{search_term}`",
+                color=0xDA3633,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    removed = entries.pop(found_index)
+    async with aiohttp.ClientSession() as session:
+        success = await github_write_json(
+            session, FILE_MOVIES, entries, sha, f"Remove movie: {removed.get('title')}"
+        )
+
+    if success:
+        embed = discord.Embed(title="Removed", description=removed.get("title"), color=0x2EA043)
+    else:
+        embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -4675,6 +5294,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         "users_failed": 0,
         "anime_entries_updated": 0,
         "manga_entries_updated": 0,
+        "show_entries_updated": 0,
+        "movie_entries_updated": 0,
         "triggered_by": triggered_by,
     }
 
@@ -4683,6 +5304,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         users, users_sha = await github_read_json(session, FILE_USERS)
         anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
         manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
+        show_entries, show_sha = await github_read_json(session, FILE_SHOWS)
+        movie_entries, movie_sha = await github_read_json(session, FILE_MOVIES)
 
         if not users:
             result["note"] = "No users found in users.json — nothing to repopulate."
@@ -4828,7 +5451,60 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if changed:
                 result["manga_entries_updated"] += 1
 
-        # ── Step 5: Write all three files ─────────────────────────────────────
+        # ── Step 4b: Update show entries (sync user snapshots only) ───────────
+        for entry in show_entries:
+            changed = False
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            simkl_uname = u.get("simkl", {}).get("username")
+
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+            elif simkl_uname:
+                # match by simkl username from the full users dict
+                for p in users.values():
+                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
+                        matched = p
+                        break
+
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                changed = True
+
+            if changed:
+                result["show_entries_updated"] += 1
+
+        # ── Step 4c: Update movie entries (sync user snapshots only) ──────────
+        for entry in movie_entries:
+            changed = False
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            simkl_uname = u.get("simkl", {}).get("username")
+
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+            elif simkl_uname:
+                for p in users.values():
+                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
+                        matched = p
+                        break
+
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                changed = True
+
+            if changed:
+                result["movie_entries_updated"] += 1
+
+        # ── Step 5: Write all files ────────────────────────────────────────────
         await github_write_json(
             session, FILE_USERS, users, users_sha,
             f"chore: repopulate user profiles ({triggered_by})"
@@ -4840,6 +5516,14 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         await github_write_json(
             session, FILE_MANGA, manga_entries, manga_sha,
             f"chore: sync manga entry usernames ({triggered_by})"
+        )
+        await github_write_json(
+            session, FILE_SHOWS, show_entries, show_sha,
+            f"chore: sync show entry usernames ({triggered_by})"
+        )
+        await github_write_json(
+            session, FILE_MOVIES, movie_entries, movie_sha,
+            f"chore: sync movie entry usernames ({triggered_by})"
         )
 
     return result
@@ -4864,6 +5548,16 @@ def _build_repopulator_embed(result: dict, title: str) -> discord.Embed:
     embed.add_field(
         name="📖 Manga Entries",
         value=f"🔄 Synced: **{result['manga_entries_updated']}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="🎬 Show Entries",
+        value=f"🔄 Synced: **{result.get('show_entries_updated', 0)}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="🎥 Movie Entries",
+        value=f"🔄 Synced: **{result.get('movie_entries_updated', 0)}**",
         inline=True,
     )
     if result.get("note"):
@@ -4979,10 +5673,21 @@ async def _cast_vote(
 
     async with aiohttp.ClientSession() as session:
         votes, votes_sha = await github_read_json(session, FILE_VOTES)
-        media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
+        if media_type == "anime":
+            media_file = FILE_ANIME
+        elif media_type == "manga":
+            media_file = FILE_MANGA
+        elif media_type == "show":
+            media_file = FILE_SHOWS
+        else:
+            media_file = FILE_MOVIES
         entries, _ = await github_read_json(session, media_file)
 
-    entry = next((e for e in entries if e.get("anilist_id") == anilist_id), None)
+    # For shows/movies the "anilist_id" param is actually simkl_id
+    if media_type in ("show", "movie"):
+        entry = next((e for e in entries if e.get("simkl_id") == anilist_id), None)
+    else:
+        entry = next((e for e in entries if e.get("anilist_id") == anilist_id), None)
     if not entry:
         return {"success": False, "error": f"No {media_type} with AniList ID {anilist_id} found in the list."}
 
@@ -5092,6 +5797,7 @@ async def _handle_vote_interaction(
 
     al_id = profile.get("anilist_user_id")
     mal_id = profile.get("mal_user_id")
+    simkl_uname = profile.get("simkl_username")
 
     if al_id:
         voter_id = f"al:{al_id}"
@@ -5099,9 +5805,12 @@ async def _handle_vote_interaction(
     elif mal_id:
         voter_id = f"mal:{mal_id}"
         display_name = profile.get("mal_username") or interaction.user.display_name
+    elif simkl_uname:
+        voter_id = f"simkl:{simkl_uname}"
+        display_name = simkl_uname
     else:
         await interaction.followup.send(
-            "❌ Your profile has no linked AniList or MAL account. Run `/setup` to link one.",
+            "❌ Your profile has no linked AniList, MAL, or Simkl account. Run `/setup` to link one.",
             ephemeral=True,
         )
         return
@@ -5166,6 +5875,30 @@ async def _existing_manga_autocomplete(
     ]
 
 
+async def _existing_show_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_SHOWS)
+    filtered = [e for e in entries if current.lower() in e.get("title", "").lower()]
+    return [
+        app_commands.Choice(name=e["title"][:100], value=str(e["simkl_id"]))
+        for e in filtered[:25]
+    ]
+
+
+async def _existing_movie_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, FILE_MOVIES)
+    filtered = [e for e in entries if current.lower() in e.get("title", "").lower()]
+    return [
+        app_commands.Choice(name=e["title"][:100], value=str(e["simkl_id"]))
+        for e in filtered[:25]
+    ]
+
+
 # ── /vote_anime ────────────────────────────────────────────────────────────────
 
 @bot.tree.command(name="vote_anime", description="Upvote or downvote an underrated anime")
@@ -5206,13 +5939,55 @@ async def vote_manga(
     await _handle_vote_interaction(interaction, "manga", title, direction.value)
 
 
+# ── /vote_show ─────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="vote_show", description="Upvote or downvote an underrated TV show")
+@app_commands.describe(
+    title="Search for the show in the list",
+    direction="Upvote or downvote",
+)
+@app_commands.choices(direction=[
+    app_commands.Choice(name="👍 Upvote", value="up"),
+    app_commands.Choice(name="👎 Downvote", value="down"),
+])
+@app_commands.autocomplete(title=_existing_show_autocomplete)
+async def vote_show(
+    interaction: discord.Interaction,
+    title: str,
+    direction: app_commands.Choice[str],
+):
+    await _handle_vote_interaction(interaction, "show", title, direction.value)
+
+
+# ── /vote_movie ────────────────────────────────────────────────────────────────
+
+@bot.tree.command(name="vote_movie", description="Upvote or downvote an underrated movie")
+@app_commands.describe(
+    title="Search for the movie in the list",
+    direction="Upvote or downvote",
+)
+@app_commands.choices(direction=[
+    app_commands.Choice(name="👍 Upvote", value="up"),
+    app_commands.Choice(name="👎 Downvote", value="down"),
+])
+@app_commands.autocomplete(title=_existing_movie_autocomplete)
+async def vote_movie(
+    interaction: discord.Interaction,
+    title: str,
+    direction: app_commands.Choice[str],
+):
+    await _handle_vote_interaction(interaction, "movie", title, direction.value)
+
+
 # ── /vote_stats ────────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="vote_stats", description="See vote leaderboard for anime or manga")
+@bot.tree.command(name="vote_stats", description="See vote leaderboard for anime, manga, shows or movies")
 @app_commands.describe(media_type="Which list to show")
 @app_commands.choices(media_type=[
     app_commands.Choice(name="Anime", value="anime"),
     app_commands.Choice(name="Manga", value="manga"),
+    app_commands.Choice(name="TV Shows", value="show"),
+    app_commands.Choice(name="Movies", value="movie"),
 ])
 async def vote_stats(interaction: discord.Interaction, media_type: app_commands.Choice[str]):
     await interaction.response.defer()
@@ -5237,9 +6012,10 @@ async def vote_stats(interaction: discord.Interaction, media_type: app_commands.
         )
         return
 
-    emoji = "📺" if media_type.value == "anime" else "📖"
+    emoji = {"anime": "📺", "manga": "📖", "show": "🎬", "movie": "🎥"}.get(media_type.value, "📺")
+    label = {"anime": "Anime", "manga": "Manga", "show": "TV Shows", "movie": "Movies"}.get(media_type.value, media_type.name)
     embed = discord.Embed(
-        title=f"{emoji} {media_type.name} Vote Leaderboard",
+        title=f"{emoji} {label} Vote Leaderboard",
         color=0x0078D4,
     )
 
@@ -5303,7 +6079,7 @@ async def my_votes(interaction: discord.Interaction):
     if my_down:
         embed.add_field(name="👎 Downvoted", value="\n".join(my_down[:15]), inline=False)
     if not my_up and not my_down:
-        embed.description = "You haven't voted on anything yet!\nUse `/vote_anime` or `/vote_manga` to get started."
+        embed.description = "You haven't voted on anything yet!\nUse `/vote_anime`, `/vote_manga`, `/vote_show`, or `/vote_movie` to get started."
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -5352,10 +6128,20 @@ async def api_vote_handler(request, media_type: str):
 
     # Resolve anilist_id from the media_id — if id_type is "mal", look up by mal_id
     async with aiohttp.ClientSession() as session:
-        media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
+        if media_type == "anime":
+            media_file = FILE_ANIME
+        elif media_type == "manga":
+            media_file = FILE_MANGA
+        elif media_type == "show":
+            media_file = FILE_SHOWS
+        else:
+            media_file = FILE_MOVIES
         entries, _ = await github_read_json(session, media_file)
 
-    if id_type == "mal":
+    if media_type in ("show", "movie"):
+        # For shows/movies, the URL param is simkl_id
+        entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
+    elif id_type == "mal":
         entry = next((e for e in entries if e.get("mal_id") == media_id), None)
     else:
         entry = next((e for e in entries if e.get("anilist_id") == media_id), None)
@@ -5366,7 +6152,8 @@ async def api_vote_handler(request, media_type: str):
             status=404,
         )
 
-    anilist_id = entry["anilist_id"]
+    # For show/movie entries the canonical ID is simkl_id; reuse the anilist_id param name for the vote key
+    anilist_id = entry.get("simkl_id") if media_type in ("show", "movie") else entry["anilist_id"]
     vote_key = _vote_key(media_type, anilist_id)
     cooldown = _check_vote_rate_limit(voter_id, vote_key)
     if cooldown is not None:
@@ -5400,14 +6187,21 @@ async def api_get_votes(request, media_type: str):
 
     async with aiohttp.ClientSession() as session:
         votes, _ = await github_read_json(session, FILE_VOTES)
-        # Resolve anilist_id if mal id_type provided
-        if id_type == "mal":
+        # Resolve anilist_id if mal id_type provided (anime/manga only)
+        if id_type == "mal" and media_type in ("anime", "manga"):
             media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
             entries, _ = await github_read_json(session, media_file)
             entry = next((e for e in entries if e.get("mal_id") == media_id), None)
             if not entry:
                 return web.json_response({"error": f"No {media_type} with mal_id={media_id} found."}, status=404)
             anilist_id = entry["anilist_id"]
+        elif media_type in ("show", "movie"):
+            media_file = FILE_SHOWS if media_type == "show" else FILE_MOVIES
+            entries, _ = await github_read_json(session, media_file)
+            entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
+            if not entry:
+                return web.json_response({"error": f"No {media_type} with simkl_id={media_id} found."}, status=404)
+            anilist_id = entry["simkl_id"]
         else:
             anilist_id = media_id
 
@@ -5442,8 +6236,8 @@ async def api_leaderboard(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
     media_type = request.rel_url.query.get("type", "anime").lower()
-    if media_type not in ("anime", "manga"):
-        return web.json_response({"error": "type must be 'anime' or 'manga'"}, status=400)
+    if media_type not in ("anime", "manga", "show", "movie"):
+        return web.json_response({"error": "type must be 'anime', 'manga', 'show', or 'movie'"}, status=400)
     try:
         limit = min(int(request.rel_url.query.get("limit", 10)), 50)
     except ValueError:
@@ -5479,8 +6273,12 @@ async def api_leaderboard(request):
 # Route shims
 async def api_vote_anime(request): return await api_vote_handler(request, "anime")
 async def api_vote_manga(request): return await api_vote_handler(request, "manga")
+async def api_vote_show(request): return await api_vote_handler(request, "show")
+async def api_vote_movie(request): return await api_vote_handler(request, "movie")
 async def api_get_votes_anime(request): return await api_get_votes(request, "anime")
 async def api_get_votes_manga(request): return await api_get_votes(request, "manga")
+async def api_get_votes_show(request): return await api_get_votes(request, "show")
+async def api_get_votes_movie(request): return await api_get_votes(request, "movie")
 
 
 @bot.tree.command(
@@ -5501,6 +6299,8 @@ async def fix_discord_info(interaction: discord.Interaction):
         users, users_sha = await github_read_json(session, FILE_USERS)
         anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
         manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
+        show_entries, show_sha = await github_read_json(session, FILE_SHOWS)
+        movie_entries, movie_sha = await github_read_json(session, FILE_MOVIES)
 
         fixed_users = 0
         failed_users = 0
@@ -5561,10 +6361,54 @@ async def fix_discord_info(interaction: discord.Interaction):
                 entry["user"] = _build_user_snapshot(matched)
                 manga_updated += 1
 
-        # Step 4: write all 3 files
+        # Step 3b: update show entries
+        show_updated = 0
+        for entry in show_entries:
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            simkl_uname = u.get("simkl", {}).get("username")
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+            elif simkl_uname:
+                for p in users.values():
+                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
+                        matched = p
+                        break
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                show_updated += 1
+
+        # Step 3c: update movie entries
+        movie_updated = 0
+        for entry in movie_entries:
+            u = entry.get("user", {})
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            simkl_uname = u.get("simkl", {}).get("username")
+            matched = None
+            if al_uid and al_uid in al_id_to_profile:
+                matched = al_id_to_profile[al_uid]
+            elif mal_uid and mal_uid in mal_id_to_profile:
+                matched = mal_id_to_profile[mal_uid]
+            elif simkl_uname:
+                for p in users.values():
+                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
+                        matched = p
+                        break
+            if matched:
+                entry["user"] = _build_user_snapshot(matched)
+                movie_updated += 1
+
+        # Step 4: write all files
         await github_write_json(session, FILE_USERS, users, users_sha, "fix: backfill discord info for all users")
         await github_write_json(session, FILE_ANIME, anime_entries, anime_sha, "fix: sync discord info in anime entries")
         await github_write_json(session, FILE_MANGA, manga_entries, manga_sha, "fix: sync discord info in manga entries")
+        await github_write_json(session, FILE_SHOWS, show_entries, show_sha, "fix: sync discord info in show entries")
+        await github_write_json(session, FILE_MOVIES, movie_entries, movie_sha, "fix: sync discord info in movie entries")
 
     embed = discord.Embed(title="✅ Discord Info Fixed!", color=0x2EA043)
     embed.add_field(
@@ -5574,6 +6418,8 @@ async def fix_discord_info(interaction: discord.Interaction):
     )
     embed.add_field(name="📺 Anime Entries", value=f"🔄 Updated: **{anime_updated}**", inline=True)
     embed.add_field(name="📖 Manga Entries", value=f"🔄 Updated: **{manga_updated}**", inline=True)
+    embed.add_field(name="🎬 Show Entries", value=f"🔄 Updated: **{show_updated}**", inline=True)
+    embed.add_field(name="🎥 Movie Entries", value=f"🔄 Updated: **{movie_updated}**", inline=True)
     await interaction.followup.send(embed=embed)
 
 

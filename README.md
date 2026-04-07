@@ -2,14 +2,14 @@
 
 # 🤖 AnymeX Preview Bot
 
-**A Discord bot for the AnymeX community — anime & manga submissions, AniList integration, GitHub build management, and team timezone coordination.**
+**A Discord bot for the AnymeX community — anime, manga, TV show & movie submissions, AniList/MAL/Simkl integration, GitHub build management, and team timezone coordination.**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.3.2-blue.svg)](https://github.com/Rapptz/discord.py)
 [![Render](https://img.shields.io/badge/Hosted%20on-Render-46E3B7.svg)](https://render.com/)
 [![API](https://img.shields.io/badge/API-Live-brightgreen.svg)](https://anymex-preview-bot.onrender.com)
 
-[Features](#-features) • [Commands](#-commands) • [API](#-rest-api) • [Data](#-data-storage) • [Setup](#-setup)
+[Features](#-features) • [Commands](#-commands) • [API](API.md) • [Data](#-data-storage) • [Setup](#-setup)
 
 </div>
 
@@ -17,12 +17,13 @@
 
 ## Overview
 
-AnymeX Preview Bot is the backbone of the AnymeX community Discord. It lets members submit underrated anime and manga recommendations, links their AniList and MAL profiles, manages GitHub build workflows, and keeps the team in sync across timezones. All data is stored as JSON files directly in your GitHub repository — no database needed.
+AnymeX Preview Bot is the backbone of the AnymeX community Discord. It lets members submit underrated anime, manga, TV shows, and movie recommendations, links their AniList, MAL, and Simkl profiles, manages GitHub build workflows, and keeps the team in sync across timezones. All data is stored as JSON files directly in your GitHub repository — no database needed.
 
 ### Key Highlights
 
-- 🎌 **Underrated Anime & Manga List** — Members submit recommendations linked to their AniList/MAL profiles
-- 👤 **Profile System** — Link AniList and MAL accounts with full stats sync
+- 🎌 **Underrated Anime & Manga** — Members submit recommendations linked to their AniList/MAL profiles
+- 🎬 **TV Shows & Movies** — Submit underrated shows and movies via Simkl integration
+- 👤 **Profile System** — Link AniList, MAL, and Simkl accounts with full stats sync
 - 📺 **AniList Integration** — Search anime, manga, characters, staff, seasonal lists
 - 🔧 **GitHub Integration** — Trigger builds, create/delete tags, monitor workflow runs
 - 🌍 **Timezone System** — Full team timezone coordination with 100+ supported zones
@@ -37,40 +38,27 @@ AnymeX Preview Bot is the backbone of the AnymeX community Discord. It lets memb
 
 ### 👤 Profile System
 
-Members link their AniList and/or MAL accounts once via `/setup`. The bot fetches and stores their full profile — avatar, stats, anime/manga counts, mean score — and uses it to attribute all submissions correctly.
+Members link their AniList, MAL, and/or Simkl accounts once via `/setup`. The bot fetches and stores their full profile — avatar, stats, anime/manga counts, mean score — and uses it to attribute all submissions correctly. Simkl usernames are verified live against the Simkl API (no OAuth required).
 
-The **repopulator** runs on startup and weekly to keep all profile data fresh. It re-fetches every user's AniList and MAL profile and syncs the updated info into all anime and manga entries automatically.
+The **repopulator** runs on startup and weekly to keep all profile data fresh. It re-fetches every user's AniList and MAL profile and syncs the updated info into all anime, manga, show, and movie entries automatically.
 
 ---
 
 ### 🎌 Underrated Anime & Manga
 
-The core feature. Members submit anime and manga they think are underrated, with a reason. Each entry is stored with:
+Members submit anime and manga they think are underrated, with a reason. Each entry is stored with full submitter profile data — AniList/MAL IDs, avatars, and stats. Posters and scores are fetched directly from AniList. Submissions go through a confirmation step before being committed to GitHub.
 
-```json
-{
-  "anilist_id": 74489,
-  "mal_id": 44489,
-  "title": "Houseki no Kuni",
-  "author": "ASheby",
-  "reason": "Beautifully illustrated philosophical story...",
-  "user": {
-    "discord": { "id": "...", "username": "...", "avatar": "..." },
-    "anilist": { "id": 5724017, "username": "ASheby", "avatar": "..." },
-    "mal":     { "id": 13598844, "username": "ASheby", "avatar": "..." }
-  },
-  "poster": "https://s4.anilist.co/...",
-  "score": 89
-}
-```
+---
 
-Posters and scores are fetched directly from AniList. Submissions go through a confirmation step before being committed to GitHub.
+### 🎬 Underrated TV Shows & Movies
+
+Same submission flow as anime/manga, but powered by Simkl. Members search for shows and movies with autocomplete, add a reason, and confirm. Entries include the Simkl ID, poster, score, genres, year, and a direct Simkl link.
 
 ---
 
 ### 🗳️ Voting System
 
-Members can upvote or downvote any entry in the list. Votes are tracked per user (using their AniList or MAL ID) with a 5-minute cooldown per item. Toggling the same direction removes the vote. Switching direction moves the vote automatically.
+Members can upvote or downvote any entry in the list — anime, manga, shows, or movies. Votes are tracked per user with a 5-minute cooldown per item. Toggling the same direction removes the vote. Switching direction moves the vote automatically. `/vote_stats` shows leaderboards for all four media types.
 
 ---
 
@@ -94,15 +82,9 @@ Over 100 timezones supported with autocomplete. Members set their timezone once 
 
 ### 🌐 REST API
 
-A built-in HTTP server exposes endpoints so external apps (like the AnymeX app) can interact with the bot's data directly.
+A built-in HTTP server exposes endpoints so external apps (like the AnymeX app) can interact with the bot's data directly. See [API.md](API.md) for the full reference.
 
 Base URL: `https://anymex-preview-bot.onrender.com`
-
-All write endpoints require:
-```
-Authorization: Bearer YOUR_API_SECRET
-Content-Type: application/json
-```
 
 ---
 
@@ -112,13 +94,13 @@ Content-Type: application/json
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/setup [anilist_username] [mal_username]` | Link your AniList and/or MAL accounts | Everyone |
+| `/setup [anilist_username] [mal_username] [simkl_username]` | Link your AniList, MAL, and/or Simkl accounts | Everyone |
 | `/myprofile` | View your saved profile and stats | Everyone |
 | `/repopulate` | Manually refresh all profiles and sync entries | Admin |
 
 ---
 
-### 🎌 Anime & Manga Submissions
+### 🎌 Anime & Manga
 
 | Command | Description | Permission |
 |---------|-------------|------------|
@@ -131,13 +113,28 @@ Content-Type: application/json
 
 ---
 
+### 🎬 TV Shows & Movies
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/add_show [title] [reason]` | Submit an underrated TV show (Simkl autocomplete) | Everyone |
+| `/add_movie [title] [reason]` | Submit an underrated movie (Simkl autocomplete) | Everyone |
+| `/list_shows` | View the underrated TV shows list | Everyone |
+| `/list_movies` | View the underrated movies list | Everyone |
+| `/remove_show [title or id]` | Remove a show from the list | Mod |
+| `/remove_movie [title or id]` | Remove a movie from the list | Mod |
+
+---
+
 ### 🗳️ Voting
 
 | Command | Description | Permission |
 |---------|-------------|------------|
 | `/vote_anime [title] [👍/👎]` | Upvote or downvote an anime entry | Everyone |
 | `/vote_manga [title] [👍/👎]` | Upvote or downvote a manga entry | Everyone |
-| `/vote_stats [anime/manga]` | View the vote leaderboard | Everyone |
+| `/vote_show [title] [👍/👎]` | Upvote or downvote a TV show entry | Everyone |
+| `/vote_movie [title] [👍/👎]` | Upvote or downvote a movie entry | Everyone |
+| `/vote_stats [anime/manga/show/movie]` | View the vote leaderboard | Everyone |
 | `/my_votes` | See all your personal votes | Everyone |
 
 ---
@@ -216,146 +213,17 @@ All slash commands also have a prefix equivalent using `?` (or your configured p
 
 ---
 
-## 🌐 REST API
-
-Base URL: `https://anymex-preview-bot.onrender.com`
-
-### Authentication
-
-All write endpoints require a Bearer token:
-```
-Authorization: Bearer YOUR_API_SECRET
-```
-
----
-
-### Endpoints
-
-#### `GET /health`
-Health check. Returns `✅ Bot is running!`
-
----
-
-#### `POST /api/add_anime`
-Add an anime to the underrated list.
-
-**Body:**
-```json
-{
-  "anilist_id": 74489,
-  "author": "ASheby",
-  "reason": "Why it's underrated",
-  "anilist_user_id": 5724017,
-  "mal_user_id": 13598844,
-  "mal_id": 44489
-}
-```
-
-**Response `201`:**
-```json
-{
-  "success": true,
-  "entry": { "anilist_id": 74489, "title": "...", "poster": "...", "score": 89, ... }
-}
-```
-
-**Error responses:** `400` missing fields, `404` not found on AniList, `409` already in list, `500` GitHub write failed.
-
----
-
-#### `POST /api/add_manga`
-Same as `/api/add_anime` but for manga.
-
----
-
-#### `POST /api/vote/anime/{anilist_id}`
-Cast a vote on an anime entry.
-
-**Body:**
-```json
-{
-  "anilist_user_id": 5724017,
-  "direction": "up",
-  "display_name": "ASheby"
-}
-```
-
-Use `"mal_user_id"` instead of `"anilist_user_id"` if the user only has MAL.  
-`direction` must be `"up"` or `"down"`. Voting the same direction again removes the vote.
-
-**Response `200`:**
-```json
-{
-  "success": true,
-  "action": "added_up",
-  "title": "Houseki no Kuni",
-  "upvotes": 5,
-  "downvotes": 1,
-  "net": 4
-}
-```
-
-**Error responses:** `400` bad input, `401` unauthorized, `404` not in list, `429` rate limited (5 min cooldown).
-
----
-
-#### `POST /api/vote/manga/{anilist_id}`
-Same as vote anime but for manga.
-
----
-
-#### `GET /api/votes/anime/{anilist_id}`
-Get vote counts for an anime entry.
-
-**Response `200`:**
-```json
-{
-  "media_type": "anime",
-  "anilist_id": 74489,
-  "title": "Houseki no Kuni",
-  "total_upvotes": 5,
-  "total_downvotes": 1,
-  "net": 4,
-  "upvoters": ["al:5724017"],
-  "downvoters": []
-}
-```
-
----
-
-#### `GET /api/votes/manga/{anilist_id}`
-Same as above but for manga.
-
----
-
-#### `GET /api/votes/leaderboard?type=anime&limit=10`
-Get the vote leaderboard.
-
-**Query params:**
-- `type` — `anime` or `manga` (default: `anime`)
-- `limit` — max results, up to 50 (default: `10`)
-
-**Response `200`:**
-```json
-{
-  "media_type": "anime",
-  "leaderboard": [
-    { "rank": 1, "anilist_id": 74489, "title": "...", "total_upvotes": 5, "total_downvotes": 1, "net": 4 }
-  ]
-}
-```
-
----
-
 ## 💾 Data Storage
 
 All data is stored as JSON files in your GitHub repository, auto-created on first startup:
 
 | File | Description |
 |------|-------------|
-| `users.json` | User profiles — AniList/MAL IDs, usernames, avatars, stats |
+| `users.json` | User profiles — AniList/MAL/Simkl IDs, usernames, avatars, stats |
 | `underrated_anime.json` | Community underrated anime submissions |
 | `underrated_manga.json` | Community underrated manga submissions |
+| `underrated_shows.json` | Community underrated TV show submissions |
+| `underrated_movies.json` | Community underrated movie submissions |
 | `votes.json` | Upvote/downvote records per media entry |
 | `timezones.json` | User timezone preferences |
 | `prefixes.json` | Bot command prefix list |
@@ -371,6 +239,7 @@ All data is stored as JSON files in your GitHub repository, auto-created on firs
 | `GITHUB_TOKEN` | ✅ | GitHub PAT with `repo` + `workflow` permissions |
 | `API_SECRET` | ✅ | Bearer token for REST API authentication |
 | `REPOPULATOR_CHANNEL_ID` | ✅ | Discord channel ID for repopulator reports |
+| `SIMKL_CLIENT_ID` | ✅ | Simkl API client ID for show/movie search and user verification |
 | `PORT` | ❌ | HTTP server port (default: `8080`) |
 | `PROXY_HOST` | ❌ | Proxy host (optional) |
 | `PROXY_PORT` | ❌ | Proxy port (optional) |
@@ -386,6 +255,7 @@ All data is stored as JSON files in your GitHub repository, auto-created on firs
 - Python 3.11+
 - Discord bot token with `message_content` and `members` intents enabled
 - GitHub personal access token with `repo` and `workflow` permissions
+- Simkl API client ID (free at [simkl.com/apps](https://simkl.com/apps/))
 
 ### Quick Start
 
@@ -412,7 +282,7 @@ python bot.py
 
 1. Invite the bot with `bot` and `applications.commands` scopes
 2. Run `?sync` as admin to register all slash commands
-3. Run `/setup` to link your AniList/MAL profile
+3. Run `/setup` to link your AniList/MAL/Simkl profile
 4. Run `/config_role action:add role:@YourModRole` to give mods access to restricted commands
 
 ---
@@ -422,6 +292,7 @@ python bot.py
 - [discord.py](https://github.com/Rapptz/discord.py) — Discord API wrapper
 - [AniList GraphQL API](https://anilist.co/graphql) — Anime/manga data and covers
 - [Jikan API](https://jikan.moe/) — MAL profile data
+- [Simkl API](https://simkl.com/api/) — TV show and movie data
 - [GitHub REST API](https://docs.github.com/en/rest) — Repository and workflow management
 
 ---

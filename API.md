@@ -33,10 +33,16 @@ Missing or wrong token returns:
 | `GET` | `/health` | ❌ | Health check |
 | `POST` | `/api/add_anime` | ✅ | Add an anime to the list |
 | `POST` | `/api/add_manga` | ✅ | Add a manga to the list |
+| `POST` | `/api/add_show` | ✅ | Add a TV show to the list |
+| `POST` | `/api/add_movie` | ✅ | Add a movie to the list |
 | `POST` | `/api/vote/anime/{media_id}` | ✅ | Vote on an anime entry |
 | `POST` | `/api/vote/manga/{media_id}` | ✅ | Vote on a manga entry |
+| `POST` | `/api/vote/show/{media_id}` | ✅ | Vote on a TV show entry |
+| `POST` | `/api/vote/movie/{media_id}` | ✅ | Vote on a movie entry |
 | `GET` | `/api/votes/anime/{media_id}` | ✅ | Get vote counts for an anime |
 | `GET` | `/api/votes/manga/{media_id}` | ✅ | Get vote counts for a manga |
+| `GET` | `/api/votes/show/{media_id}` | ✅ | Get vote counts for a TV show |
+| `GET` | `/api/votes/movie/{media_id}` | ✅ | Get vote counts for a movie |
 | `GET` | `/api/votes/leaderboard` | ✅ | Get vote leaderboard |
 
 ---
@@ -66,10 +72,10 @@ Add an anime to the underrated anime list. Title, poster, and score are fetched 
 | `mal_user_id` | `int` | ⚠️ One of these | Submitter's MAL user ID |
 | `author` | `string` | ❌ Optional | Display name — falls back to AniList username → MAL username → `"Unknown"` |
 | `mal_id` | `int` | ❌ Optional | MAL media ID — auto-resolved from AniList if omitted |
-| `anilist_username` | `string` | ❌ Optional | Submitter's AniList username — only used if user is not in `users.json` |
-| `mal_username` | `string` | ❌ Optional | Submitter's MAL username — only used if user is not in `users.json` |
+| `anilist_username` | `string` | ❌ Optional | Only used if user is not in `users.json` |
+| `mal_username` | `string` | ❌ Optional | Only used if user is not in `users.json` |
 
-> If the user exists in `users.json` (registered via `/setup` in Discord), their full profile including avatar and stats is used automatically. If not, a minimal snapshot is built from the request body fields.
+> If the user exists in `users.json` (registered via `/setup` in Discord), their full profile including avatar and stats is used automatically.
 
 **Example Request — minimal**
 ```json
@@ -105,21 +111,10 @@ Add an anime to the underrated anime list. Title, poster, and score are fetched 
     "author": "ASheby",
     "reason": "Beautifully illustrated philosophical story about identity and change",
     "user": {
-      "discord": {
-        "id": 612532963938271232,
-        "username": "asheby",
-        "avatar": "https://cdn.discordapp.com/avatars/612532963938271232/..."
-      },
-      "anilist": {
-        "id": 5724017,
-        "username": "ASheby",
-        "avatar": "https://s4.anilist.co/file/anilistcdn/user/avatar/large/b5724017-..."
-      },
-      "mal": {
-        "id": 13598844,
-        "username": "ASheby",
-        "avatar": "https://cdn.myanimelist.net/s/common/userimages/..."
-      }
+      "discord": { "id": 612532963938271232, "username": "asheby", "avatar": "https://..." },
+      "anilist": { "id": 5724017, "username": "ASheby", "avatar": "https://..." },
+      "mal": { "id": 13598844, "username": "ASheby", "avatar": "https://..." },
+      "simkl": { "username": null }
     },
     "poster": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx74489-...",
     "score": 89
@@ -127,39 +122,7 @@ Add an anime to the underrated anime list. Title, poster, and score are fetched 
 }
 ```
 
-**`400` — Missing or invalid fields**
-```json
-{ "error": "Missing required fields: reason" }
-```
-```json
-{ "error": "Provide at least one of: anilist_user_id, mal_user_id" }
-```
-```json
-{ "error": "anilist_id must be an integer" }
-```
-```json
-{ "error": "Invalid JSON body" }
-```
-
-**`401` — Unauthorized**
-```json
-{ "error": "Unauthorized" }
-```
-
-**`404` — Not found on AniList**
-```json
-{ "error": "Could not find anime with anilist_id=99999 on AniList" }
-```
-
-**`409` — Already in list**
-```json
-{ "error": "Houseki no Kuni is already in the list", "title": "Houseki no Kuni" }
-```
-
-**`500` — GitHub write failed**
-```json
-{ "error": "Failed to write to GitHub" }
-```
+**Error responses:** `400` missing fields, `401` unauthorized, `404` not found on AniList, `409` already in list, `500` GitHub write failed.
 
 ---
 
@@ -167,42 +130,70 @@ Add an anime to the underrated anime list. Title, poster, and score are fetched 
 
 Identical to `/api/add_anime` but adds to the underrated manga list. Same request body, same responses.
 
+---
+
+## `POST /api/add_show`
+
+Add a TV show to the underrated shows list. Title, poster, score, genres, and year are fetched automatically from Simkl using the `simkl_id`.
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `simkl_id` | `int` | ✅ Required | Simkl show ID |
+| `reason` | `string` | ✅ Required | Why this show is underrated |
+| `author` | `string` | ❌ Optional | Display name — falls back to `simkl_username` → `"Unknown"` |
+| `simkl_username` | `string` | ❌ Optional | Submitter's Simkl username — used to match their profile in `users.json` |
+
 **Example Request**
 ```json
 {
-  "anilist_id": 30936,
-  "reason": "A psychological thriller exploring the human psyche through surreal hallucinations",
-  "anilist_user_id": 5724017,
-  "mal_user_id": 13598844
+  "simkl_id": 40028,
+  "reason": "Criminally underwatched psychological thriller",
+  "simkl_username": "ASheby",
+  "author": "ASheby"
 }
 ```
+
+### Responses
 
 **`201` — Success**
 ```json
 {
   "success": true,
   "entry": {
-    "anilist_id": 30936,
-    "mal_id": 936,
-    "title": "Homunculus",
+    "simkl_id": 40028,
+    "title": "Dark",
+    "year": 2017,
     "author": "ASheby",
-    "reason": "A psychological thriller exploring the human psyche through surreal hallucinations",
+    "reason": "Criminally underwatched psychological thriller",
     "user": {
       "discord": { "id": 612532963938271232, "username": "asheby", "avatar": "https://..." },
       "anilist": { "id": 5724017, "username": "ASheby", "avatar": "https://..." },
-      "mal": { "id": 13598844, "username": "ASheby", "avatar": "https://..." }
+      "mal": { "id": 13598844, "username": "ASheby", "avatar": "https://..." },
+      "simkl": { "username": "ASheby" }
     },
-    "poster": "https://s4.anilist.co/file/anilistcdn/media/manga/cover/medium/bx30936-...",
-    "score": 83
+    "poster": "https://simkl.in/posters/40028_m.jpg",
+    "score": 9.2,
+    "genres": "Drama, Mystery, Sci-Fi, Thriller",
+    "simkl_url": "https://simkl.com/shows/40028"
   }
 }
 ```
+
+**Error responses:** `400` missing fields or invalid `simkl_id`, `401` unauthorized, `404` not found on Simkl, `409` already in list, `500` GitHub write failed or `SIMKL_CLIENT_ID` not configured.
+
+---
+
+## `POST /api/add_movie`
+
+Identical to `/api/add_show` but adds to the underrated movies list. Uses `simkl_id` from Simkl's movie catalog. Same request body and responses, with `simkl_url` pointing to `https://simkl.com/movies/{simkl_id}`.
 
 ---
 
 ## `POST /api/vote/anime/{media_id}`
 
-Cast a vote on an anime entry. The `{media_id}` in the URL can be either an AniList ID or MAL ID — specify which using `id_type` in the body.
+Cast a vote on an anime entry. The `{media_id}` in the URL can be either an AniList ID or MAL ID — specify which using `id_type`.
 
 Voting the same direction again **removes** the vote. Switching direction **moves** the vote automatically. **5-minute cooldown** per user per item.
 
@@ -220,23 +211,13 @@ Voting the same direction again **removes** the vote. Switching direction **move
 | `anilist_user_id` | `int` | ⚠️ One of these | Voter's AniList user ID |
 | `mal_user_id` | `int` | ⚠️ One of these | Voter's MAL user ID |
 | `id_type` | `string` | ❌ Optional | `"anilist"` (default) or `"mal"` — how to interpret `{media_id}` |
-| `display_name` | `string` | ❌ Optional | Voter's display name for commit logs (defaults to `"API User"`) |
+| `display_name` | `string` | ❌ Optional | Voter's display name for commit logs |
 
-**Example — vote by AniList ID**
+**Example**
 ```json
 {
   "anilist_user_id": 5724017,
   "direction": "up",
-  "display_name": "ASheby"
-}
-```
-
-**Example — vote by MAL ID**
-```json
-{
-  "mal_user_id": 13598844,
-  "direction": "up",
-  "id_type": "mal",
   "display_name": "ASheby"
 }
 ```
@@ -270,48 +251,69 @@ The `action` field tells you exactly what happened:
 **`400` — Invalid input**
 ```json
 { "error": "Provide at least one of: anilist_user_id, mal_user_id" }
-```
-```json
 { "error": "direction must be 'up' or 'down'" }
-```
-```json
 { "error": "id_type must be 'anilist' or 'mal'" }
-```
-```json
 { "error": "Invalid media_id in URL" }
-```
-```json
 { "error": "Invalid JSON body" }
 ```
 
-**`401` — Unauthorized**
-```json
-{ "error": "Unauthorized" }
-```
+**`401` — Unauthorized** · **`404` — Entry not in list** · **`429` — Rate limited** · **`500` — GitHub write failed**
 
-**`404` — Entry not in list**
-```json
-{ "error": "No anime with anilist_id=74489 found in the list." }
-```
-```json
-{ "error": "No anime with mal_id=44489 found in the list." }
-```
-
-**`429` — Rate limited**
 ```json
 { "error": "Rate limited", "retry_after_seconds": 243.5 }
-```
-
-**`500` — GitHub write failed**
-```json
-{ "error": "Failed to save vote to GitHub." }
 ```
 
 ---
 
 ## `POST /api/vote/manga/{media_id}`
 
-Identical to `/api/vote/anime/{media_id}` but for manga entries. Same request body, same responses.
+Identical to `/api/vote/anime/{media_id}` but for manga entries.
+
+---
+
+## `POST /api/vote/show/{media_id}`
+
+Cast a vote on a TV show entry. The `{media_id}` in the URL is the **Simkl ID**.
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `direction` | `string` | ✅ Required | `"up"` or `"down"` |
+| `anilist_user_id` | `int` | ⚠️ One of these | Voter's AniList user ID |
+| `mal_user_id` | `int` | ⚠️ One of these | Voter's MAL user ID |
+| `display_name` | `string` | ❌ Optional | Voter's display name for commit logs |
+
+> `id_type` is not applicable for shows/movies — the URL always uses the Simkl ID.
+
+**Example**
+```json
+{
+  "anilist_user_id": 5724017,
+  "direction": "up",
+  "display_name": "ASheby"
+}
+```
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "action": "added_up",
+  "title": "Dark",
+  "upvotes": 3,
+  "downvotes": 0,
+  "net": 3
+}
+```
+
+Same error responses as `/api/vote/anime`.
+
+---
+
+## `POST /api/vote/movie/{media_id}`
+
+Identical to `/api/vote/show/{media_id}` but for movie entries.
 
 ---
 
@@ -319,33 +321,13 @@ Identical to `/api/vote/anime/{media_id}` but for manga entries. Same request bo
 
 Get current vote counts for a specific anime entry.
 
-### URL Parameter
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `media_id` | `int` | AniList ID or MAL ID of the anime |
-
 ### Query Parameters
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `id_type` | `string` | ❌ Optional | `anilist` | `"anilist"` or `"mal"` — how to interpret `{media_id}` |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id_type` | `string` | `anilist` | `"anilist"` or `"mal"` — how to interpret `{media_id}` |
 
-**Example — by AniList ID**
-```
-GET /api/votes/anime/74489
-Authorization: Bearer YOUR_API_SECRET
-```
-
-**Example — by MAL ID**
-```
-GET /api/votes/anime/44489?id_type=mal
-Authorization: Bearer YOUR_API_SECRET
-```
-
-### Responses
-
-**`200` — Has votes**
+**Response `200`**
 ```json
 {
   "media_type": "anime",
@@ -359,38 +341,9 @@ Authorization: Bearer YOUR_API_SECRET
 }
 ```
 
-> Voter IDs are prefixed with `al:` for AniList users and `mal:` for MAL-only users.
+> Voter IDs are prefixed with `al:` for AniList users, `mal:` for MAL-only users, and `simkl:` for Simkl-only users.
 
-**`200` — No votes yet**
-```json
-{
-  "media_type": "anime",
-  "anilist_id": 74489,
-  "total_upvotes": 0,
-  "total_downvotes": 0,
-  "net": 0,
-  "upvoters": [],
-  "downvoters": []
-}
-```
-
-**`400` — Invalid input**
-```json
-{ "error": "Invalid media_id in URL" }
-```
-```json
-{ "error": "id_type must be 'anilist' or 'mal'" }
-```
-
-**`401` — Unauthorized**
-```json
-{ "error": "Unauthorized" }
-```
-
-**`404` — Only returned when using `id_type=mal`**
-```json
-{ "error": "No anime with mal_id=99999 found." }
-```
+Returns `total_upvotes: 0` / empty arrays if the entry has no votes yet (never a 404 for anilist id_type).
 
 ---
 
@@ -398,19 +351,31 @@ Authorization: Bearer YOUR_API_SECRET
 
 Identical to `/api/votes/anime/{media_id}` but for manga.
 
-**`200` — Success**
+---
+
+## `GET /api/votes/show/{media_id}`
+
+Get current vote counts for a TV show entry. The `{media_id}` is the **Simkl ID**.
+
+**Response `200`**
 ```json
 {
-  "media_type": "manga",
-  "anilist_id": 30936,
-  "title": "Homunculus",
+  "media_type": "show",
+  "anilist_id": 40028,
+  "title": "Dark",
   "total_upvotes": 3,
   "total_downvotes": 0,
   "net": 3,
-  "upvoters": ["al:5724017", "al:6335658", "al:7460497"],
+  "upvoters": ["al:5724017", "simkl:ASheby"],
   "downvoters": []
 }
 ```
+
+---
+
+## `GET /api/votes/movie/{media_id}`
+
+Identical to `/api/votes/show/{media_id}` but for movies.
 
 ---
 
@@ -420,59 +385,41 @@ Get the vote leaderboard sorted by net score descending.
 
 ### Query Parameters
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `type` | `string` | ❌ Optional | `anime` | `"anime"` or `"manga"` |
-| `limit` | `int` | ❌ Optional | `10` | Max results, capped at `50` |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `type` | `string` | `anime` | `"anime"`, `"manga"`, `"show"`, or `"movie"` |
+| `limit` | `int` | `10` | Max results, capped at `50` |
 
 **Example**
 ```
-GET /api/votes/leaderboard?type=manga&limit=5
+GET /api/votes/leaderboard?type=show&limit=5
 Authorization: Bearer YOUR_API_SECRET
 ```
 
-### Responses
-
-**`200` — Success**
+**Response `200`**
 ```json
 {
-  "media_type": "manga",
+  "media_type": "show",
   "leaderboard": [
     {
       "rank": 1,
-      "anilist_id": 30936,
-      "title": "Homunculus",
+      "anilist_id": 40028,
+      "title": "Dark",
       "total_upvotes": 3,
       "total_downvotes": 0,
       "net": 3
-    },
-    {
-      "rank": 2,
-      "anilist_id": 74489,
-      "title": "Houseki no Kuni",
-      "total_upvotes": 5,
-      "total_downvotes": 3,
-      "net": 2
     }
   ]
 }
 ```
 
-**`400` — Invalid type**
-```json
-{ "error": "type must be 'anime' or 'manga'" }
-```
-
-**`401` — Unauthorized**
-```json
-{ "error": "Unauthorized" }
-```
+**`400`** if `type` is not one of the four valid values.
 
 ---
 
-## Entry Schema
+## Entry Schemas
 
-Every entry in the list follows this exact structure:
+### Anime / Manga Entry
 
 ```json
 {
@@ -480,38 +427,55 @@ Every entry in the list follows this exact structure:
   "mal_id": 44489,
   "title": "Houseki no Kuni",
   "author": "ASheby",
-  "reason": "Beautifully illustrated philosophical story about identity, purpose, and change",
+  "reason": "Beautifully illustrated philosophical story about identity and change",
   "user": {
-    "discord": {
-      "id": 612532963938271232,
-      "username": "asheby",
-      "avatar": "https://cdn.discordapp.com/avatars/612532963938271232/..."
-    },
-    "anilist": {
-      "id": 5724017,
-      "username": "ASheby",
-      "avatar": "https://s4.anilist.co/file/anilistcdn/user/avatar/large/b5724017-..."
-    },
-    "mal": {
-      "id": 13598844,
-      "username": "ASheby",
-      "avatar": "https://cdn.myanimelist.net/s/common/userimages/..."
-    }
+    "discord": { "id": 612532963938271232, "username": "asheby", "avatar": "https://..." },
+    "anilist": { "id": 5724017, "username": "ASheby", "avatar": "https://..." },
+    "mal":     { "id": 13598844, "username": "ASheby", "avatar": "https://..." },
+    "simkl":   { "username": null }
   },
-  "poster": "https://s4.anilist.co/file/anilistcdn/media/manga/cover/medium/bx74489-...",
-  "score": 89
+  "poster": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx74489-...",
+  "score": 89,
+  "nsfw": false
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `anilist_id` | `int` | AniList media ID |
-| `mal_id` | `int \| null` | MAL media ID — null if not resolvable |
-| `title` | `string` | English title, falls back to romaji then native |
-| `author` | `string` | Submitter's display name |
-| `reason` | `string` | Why this is underrated |
-| `user.discord` | `object` | Submitter's Discord info — fields may be null if not synced |
-| `user.anilist` | `object` | Submitter's AniList info — null fields if not linked |
-| `user.mal` | `object` | Submitter's MAL info — null fields if not linked |
-| `poster` | `string \| null` | AniList cover image URL |
-| `score` | `int \| null` | AniList average score out of 100 |
+### TV Show / Movie Entry
+
+```json
+{
+  "simkl_id": 40028,
+  "title": "Dark",
+  "year": 2017,
+  "author": "ASheby",
+  "reason": "Criminally underwatched psychological thriller",
+  "user": {
+    "discord": { "id": 612532963938271232, "username": "asheby", "avatar": "https://..." },
+    "anilist": { "id": 5724017, "username": "ASheby", "avatar": "https://..." },
+    "mal":     { "id": 13598844, "username": "ASheby", "avatar": "https://..." },
+    "simkl":   { "username": "ASheby" }
+  },
+  "poster": "https://simkl.in/posters/40028_m.jpg",
+  "score": 9.2,
+  "genres": "Drama, Mystery, Sci-Fi, Thriller",
+  "simkl_url": "https://simkl.com/shows/40028"
+}
+```
+
+### Field Reference
+
+| Field | Anime/Manga | Show/Movie | Description |
+|-------|-------------|------------|-------------|
+| `anilist_id` | ✅ | ❌ | AniList media ID |
+| `mal_id` | ✅ | ❌ | MAL media ID — null if not resolvable |
+| `simkl_id` | ❌ | ✅ | Simkl media ID |
+| `title` | ✅ | ✅ | Media title |
+| `year` | ❌ | ✅ | Release year |
+| `author` | ✅ | ✅ | Submitter's display name |
+| `reason` | ✅ | ✅ | Why this is underrated |
+| `user` | ✅ | ✅ | Submitter profile snapshot |
+| `poster` | ✅ | ✅ | Cover image URL |
+| `score` | ✅ | ✅ | Average score (AniList /100 for anime/manga, Simkl /10 for shows/movies) |
+| `nsfw` | ✅ | ❌ | Adult content flag from AniList |
+| `genres` | ❌ | ✅ | Comma-separated genre string |
+| `simkl_url` | ❌ | ✅ | Direct Simkl page link |
