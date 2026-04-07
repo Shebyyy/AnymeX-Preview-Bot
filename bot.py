@@ -9,6 +9,7 @@ import base64
 import json
 import re
 import threading
+from cryptography.fernet import Fernet
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,7 @@ ANILIST_API = "https://graphql.anilist.co"
 MAL_API = "https://api.myanimelist.net/v2"
 SIMKL_API = "https://api.simkl.com"
 SIMKL_CLIENT_ID = os.environ.get("SIMKL_CLIENT_ID")
+SIMKL_ENCRYPT_KEY = os.environ.get("SIMKL_ENCRYPT_KEY")  # Fernet key — run: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # ── GitHub JSON file paths ──────────────────────────────────────────────────────
 FILE_ANIME = "underrated_anime.json"
@@ -1356,51 +1358,293 @@ async def _mal_fetch_full_profile(mal_username: str) -> dict | None:
         return None
 
 
+# ── Simkl token encryption ─────────────────────────────────────────────────────
+
+
+def _simkl_encrypt_token(token: str) -> str | None:
+    """Encrypt a Simkl access token for safe storage in GitHub JSON."""
+    if not SIMKL_ENCRYPT_KEY:
+        print("[Simkl encrypt] SIMKL_ENCRYPT_KEY not set — cannot encrypt token")
+        return None
+    try:
+        f = Fernet(SIMKL_ENCRYPT_KEY.encode())
+        return f.encrypt(token.encode()).decode()
+    except Exception as e:
+        print(f"[Simkl encrypt] failed: {e}")
+        return None
+
+
+def _simkl_decrypt_token(encrypted: str) -> str | None:
+    """Decrypt a stored Simkl access token for use in API calls."""
+    if not SIMKL_ENCRYPT_KEY or not encrypted:
+        return None
+    try:
+        f = Fernet(SIMKL_ENCRYPT_KEY.encode())
+        return f.decrypt(encrypted.encode()).decode()
+    except Exception as e:
+        print(f"[Simkl decrypt] failed: {e}")
+        return None
+
+
+# ── Simkl OAuth PIN flow ────────────────────────────────────────────────────────
+
+
+async def _simkl_get_pin() -> dict | None:
+    """Start Simkl PIN auth. Returns user_code, verification_url, expires_in, interval."""
+    if not SIMKL_CLIENT_ID:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/oauth/pin",
+                params={"client_id": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    print(f"[Simkl PIN] failed to get pin: status={r.status}")
+                    return None
+                return await r.json()
+    except Exception as e:
+        print(f"[Simkl PIN] exception getting pin: {e}")
+        return None
+
+
+async def _simkl_poll_pin(user_code: str) -> str | None:
+    """Poll for access token. Returns token string when approved, None if still pending."""
+    if not SIMKL_CLIENT_ID:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/oauth/pin/{user_code}",
+                params={"client_id": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+                if data.get("result") == "OK":
+                    return data.get("access_token")
+                return None
+    except Exception as e:
+        print(f"[Simkl PIN] poll exception: {e}")
+        return None
+
+
+async def _simkl_fetch_user_with_token(access_token: str) -> dict | None:
+    """Fetch authenticated Simkl user profile. Returns username, user_id, avatar_url."""
+    if not SIMKL_CLIENT_ID:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/users/settings",
+                headers={
+                    "simkl-api-key": SIMKL_CLIENT_ID,
+                    "Authorization": f"Bearer {access_token}",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    body = await r.text()
+                    print(f"[Simkl user settings] status={r.status} body={body[:200]}")
+                    return None
+                data = await r.json()
+                print(f"[Simkl user settings] raw={str(data)[:300]}")
+                user = data.get("user", data)
+                user_id = user.get("id")
+                avatar_raw = user.get("avatar")
+                if avatar_raw:
+                    if avatar_raw.startswith("http"):
+                        avatar_url = avatar_raw
+                    else:
+                        avatar_url = f"https://simkl.in/avatars/{avatar_raw}/{avatar_raw}_100.jpg"
+                elif user_id:
+                    avatar_url = f"https://simkl.in/avatars/{user_id}/{user_id}_100.jpg"
+                else:
+                    avatar_url = None
+                return {
+                    "username": user.get("name") or user.get("username"),
+                    "user_id": user_id,
+                    "avatar_url": avatar_url,
+                }
+    except Exception as e:
+        print(f"[Simkl user settings] exception: {e}")
+        return None
+
+
+# ── /link_simkl command ────────────────────────────────────────────────────────
+
+
+@bot.tree.command(name="link_simkl", description="Link your Simkl account via OAuth")
+async def link_simkl(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    if not SIMKL_CLIENT_ID:
+        await interaction.followup.send("❌ Simkl integration is not configured on this bot.", ephemeral=True)
+        return
+
+    if not SIMKL_ENCRYPT_KEY:
+        await interaction.followup.send("❌ Simkl token encryption key is not configured. Contact the bot admin.", ephemeral=True)
+        return
+
+    pin_data = await _simkl_get_pin()
+    if not pin_data:
+        await interaction.followup.send("❌ Failed to start Simkl auth. Try again later.", ephemeral=True)
+        return
+
+    user_code = pin_data.get("user_code")
+    verification_url = pin_data.get("verification_url") or f"https://simkl.com/pin/{user_code}"
+    expires_in = pin_data.get("expires_in", 600)
+    interval = max(pin_data.get("interval", 5), 5)
+    expires_mins = expires_in // 60
+
+    embed = discord.Embed(
+        title="🔗 Link your Simkl Account",
+        description=(
+            f"Click the button below to authorize on Simkl.\n\n"
+            f"Your PIN is already filled in — just click **Authorize** on the page.\n\n"
+            f"⏳ Expires in **{expires_mins} minutes**."
+        ),
+        color=0x1DB954,
+    )
+    embed.set_footer(text="Waiting for you to authorize...")
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="✅ Authorize on Simkl",
+        url=verification_url,
+        style=discord.ButtonStyle.link,
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    discord_id = str(interaction.user.id)
+    deadline = asyncio.get_event_loop().time() + expires_in
+
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(interval)
+        access_token = await _simkl_poll_pin(user_code)
+        if not access_token:
+            continue
+
+        simkl_profile = await _simkl_fetch_user_with_token(access_token)
+        if not simkl_profile:
+            await interaction.followup.send(
+                "✅ Authorized but failed to fetch your Simkl profile. Try again.",
+                ephemeral=True,
+            )
+            return
+
+        encrypted_token = _simkl_encrypt_token(access_token)
+        if not encrypted_token:
+            await interaction.followup.send(
+                "❌ Failed to encrypt your token. Contact the bot admin.",
+                ephemeral=True,
+            )
+            return
+
+        async with aiohttp.ClientSession() as session:
+            users, sha = await github_read_json(session, FILE_USERS)
+            existing = users.get(discord_id, {})
+            existing["simkl_username"] = simkl_profile["username"]
+            existing["simkl_user_id"] = simkl_profile["user_id"]
+            existing["simkl_avatar"] = simkl_profile["avatar_url"]
+            existing["simkl_token"] = encrypted_token
+            existing.setdefault("discord_id", interaction.user.id)
+            existing.setdefault("discord_username", interaction.user.name)
+            existing.setdefault("discord_display_name", interaction.user.display_name)
+            existing.setdefault("discord_avatar", str(interaction.user.display_avatar.url) if interaction.user.display_avatar else None)
+            users[discord_id] = existing
+            ok = await github_write_json(
+                session, FILE_USERS, users, sha,
+                f"link: Simkl OAuth for {interaction.user.display_name}",
+            )
+
+        if ok:
+            embed = discord.Embed(title="✅ Simkl Linked!", color=0x2EA043)
+            embed.add_field(name="Username", value=simkl_profile["username"] or "Unknown", inline=True)
+            embed.add_field(name="Simkl ID", value=f"`{simkl_profile['user_id']}`", inline=True)
+            if simkl_profile["avatar_url"]:
+                embed.set_thumbnail(url=simkl_profile["avatar_url"])
+            embed.set_footer(text="Your token is encrypted and stored securely.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Failed to save your Simkl profile. Try again.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"⏰ Authorization timed out after {expires_mins} minutes. Run `/link_simkl` again.",
+        ephemeral=True,
+    )
+
 # ── Simkl helper functions ─────────────────────────────────────────────────────
 
 
 async def _simkl_fetch_user(simkl_username: str) -> dict | None:
     """
-    Fetch a Simkl user's profile. Returns dict with keys:
-      username, user_id, avatar_url  — or None if not found.
-    Hits /users/settings which requires the username param and returns full profile.
-    Falls back to /users/{username}/stats just for existence check.
+    Fetch a Simkl user's public profile using /search/users (works with client_id only, no OAuth).
+    Avatar URL format per Simkl docs: https://simkl.in/avatars/{hash}/{hash}_100.jpg
     """
     if not SIMKL_CLIENT_ID:
+        print(f"[Simkl fetch user] SIMKL_CLIENT_ID is not set — cannot fetch user {simkl_username!r}")
         return None
     try:
         async with aiohttp.ClientSession() as session:
-            # /users/settings?client_id=...&username=... returns full profile
             async with session.get(
-                f"{SIMKL_API}/users/settings",
-                params={"client_id": SIMKL_CLIENT_ID, "username": simkl_username},
+                f"{SIMKL_API}/search/users",
+                params={"q": simkl_username, "client_id": SIMKL_CLIENT_ID},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    user = data.get("user", data)  # some responses nest under "user"
-                    avatar = user.get("avatar")
-                    if avatar and not avatar.startswith("http"):
-                        avatar = f"https://simkl.in/avatars/{avatar}_m.jpg"
-                    return {
-                        "username": user.get("username") or simkl_username,
-                        "user_id": user.get("id"),
-                        "avatar_url": avatar,
-                    }
-            # Fallback: just verify existence via stats endpoint
-            async with session.get(
-                f"{SIMKL_API}/users/{simkl_username}/stats",
-                params={"client_id": SIMKL_CLIENT_ID},
-                headers={"simkl-api-key": SIMKL_CLIENT_ID},
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as r:
-                if r.status == 200:
-                    return {"username": simkl_username, "user_id": None, "avatar_url": None}
-                return None
+                if r.status != 200:
+                    body = await r.text()
+                    print(f"[Simkl fetch user] status={r.status} for {simkl_username!r} — body: {body[:200]}")
+                    return None
+                data = await r.json()
+                print(f"[Simkl fetch user] raw response for {simkl_username!r}: {str(data)[:300]}")
+
+                # /search/users returns a list — find exact username match (case-insensitive)
+                users = data if isinstance(data, list) else data.get("users", [])
+                user = None
+                for u in users:
+                    if (u.get("name") or u.get("username") or "").lower() == simkl_username.lower():
+                        user = u
+                        break
+                # fallback to first result if no exact match
+                if not user and users:
+                    user = users[0]
+
+                if not user:
+                    print(f"[Simkl fetch user] no results found for {simkl_username!r}")
+                    return None
+
+                user_id = user.get("id")
+                avatar_raw = user.get("avatar")
+
+                if avatar_raw:
+                    if avatar_raw.startswith("http"):
+                        avatar_url = avatar_raw
+                    else:
+                        avatar_url = f"https://simkl.in/avatars/{avatar_raw}/{avatar_raw}_100.jpg"
+                elif user_id:
+                    avatar_url = f"https://simkl.in/avatars/{user_id}/{user_id}_100.jpg"
+                else:
+                    avatar_url = None
+
+                result = {
+                    "username": user.get("name") or user.get("username") or simkl_username,
+                    "user_id": user_id,
+                    "avatar_url": avatar_url,
+                }
+                print(f"[Simkl fetch user] parsed → {result}")
+                return result
     except Exception as e:
-        print(f"[Simkl fetch user] exception: {e}")
+        print(f"[Simkl fetch user] exception for {simkl_username!r}: {e}")
         return None
+
+
+# Keep old name as alias
+_simkl_verify_user = _simkl_fetch_user
 
 
 async def _simkl_search_tv(query_str: str) -> list:
@@ -1646,12 +1890,11 @@ async def ensure_json_files():
 
 
 @bot.tree.command(
-    name="setup", description="Link your AniList, MAL, and/or Simkl accounts to your Discord"
+    name="setup", description="Link your AniList and/or MAL accounts to your Discord"
 )
 @app_commands.describe(
     anilist_username="Your AniList username (optional — leave blank if you don't have one)",
     mal_username="Your MyAnimeList username (optional — leave blank if you don't have one)",
-    simkl_username="Your Simkl username (optional — leave blank if you don't have one)",
     author_name="Display name for list entries (defaults to Discord username)",
 )
 @app_commands.autocomplete(anilist_username=anilist_user_autocomplete)
@@ -1659,7 +1902,6 @@ async def setup(
     interaction: discord.Interaction,
     anilist_username: str = "",
     mal_username: str = "",
-    simkl_username: str = "",
     author_name: str = "",
 ):
     await interaction.response.defer(ephemeral=True)
@@ -1667,9 +1909,9 @@ async def setup(
     discord_id = str(interaction.user.id)
     author_display = author_name or interaction.user.display_name
 
-    if not anilist_username and not mal_username and not simkl_username:
+    if not anilist_username and not mal_username:
         await interaction.followup.send(
-            "❌ Please provide at least one of: AniList username, MAL username, or Simkl username.",
+            "❌ Please provide at least one of: AniList username or MAL username. To link Simkl, use /link_simkl instead.",
             ephemeral=True,
         )
         return
@@ -1714,22 +1956,6 @@ async def setup(
             )
             return
         mal_user_id = mal_profile_data["mal_id"]
-
-    # ── Simkl resolution ──────────────────────────────────────────────────────
-    simkl_profile_data = None
-    simkl_username_stored = None
-
-    if simkl_username:
-        simkl_username_stored = simkl_username.strip()
-        simkl_profile_data = await _simkl_fetch_user(simkl_username_stored)
-        if not simkl_profile_data:
-            await interaction.followup.send(
-                f"❌ Simkl user `{simkl_username_stored}` not found. Check your username and try again.",
-                ephemeral=True,
-            )
-            return
-        # Use the canonical username returned by Simkl
-        simkl_username_stored = simkl_profile_data["username"]
 
     # ── Build stored profile ──────────────────────────────────────────────────
     profile_entry = {
@@ -1790,10 +2016,6 @@ async def setup(
             mal_profile_data.get("manga_stats", {}).get("mean_score")
             if mal_profile_data else None
         ),
-        # Simkl — None if user has no Simkl
-        "simkl_username": simkl_username_stored,
-        "simkl_user_id": simkl_profile_data["user_id"] if simkl_profile_data else None,
-        "simkl_avatar": simkl_profile_data["avatar_url"] if simkl_profile_data else None,
     }
 
     async with aiohttp.ClientSession() as session:
@@ -1841,12 +2063,6 @@ async def setup(
                 "mal_manga_mean_score": profile_entry["mal_manga_mean_score"],
             })
 
-        # Only overwrite Simkl if a Simkl username was provided this time
-        if simkl_username:
-            merged["simkl_username"] = profile_entry["simkl_username"]
-            merged["simkl_user_id"] = profile_entry["simkl_user_id"]
-            merged["simkl_avatar"] = profile_entry["simkl_avatar"]
-
         users[discord_id] = merged
         profile_entry = merged  # use merged for embed display below
 
@@ -1891,14 +2107,13 @@ async def setup(
 
         merged_simkl = profile_entry.get("simkl_username")
         if merged_simkl:
-            tag = " *(updated)*" if simkl_username else " *(existing)*"
             embed.add_field(
-                name=f"Simkl{tag}",
+                name="Simkl *(existing)*",
                 value=f"[{merged_simkl}](https://simkl.com/users/{merged_simkl})",
                 inline=True,
             )
         else:
-            embed.add_field(name="Simkl", value="Not linked", inline=True)
+            embed.add_field(name="Simkl", value="Not linked — use `/link_simkl`", inline=True)
 
         # Set avatar: prefer AniList, fallback to MAL, then Simkl
         avatar = profile_entry.get("anilist_avatar") or profile_entry.get("mal_avatar") or profile_entry.get("simkl_avatar")
@@ -5613,18 +5828,35 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                         mal_id_to_profile[mal_id] = profile
 
             # -- Simkl refresh --
+            simkl_token_enc = profile.get("simkl_token")
             simkl_uname = profile.get("simkl_username")
-            if simkl_uname:
+            if simkl_token_enc:
                 try:
-                    simkl_data = await _simkl_fetch_user(simkl_uname)
-                    if simkl_data:
-                        profile["simkl_username"] = simkl_data["username"]
-                        profile["simkl_user_id"] = simkl_data["user_id"]
-                        profile["simkl_avatar"] = simkl_data["avatar_url"]
-                        refreshed = True
-                    simkl_uname_to_profile[simkl_uname.lower()] = profile
-                except Exception:
-                    simkl_uname_to_profile[simkl_uname.lower()] = profile
+                    access_token = _simkl_decrypt_token(simkl_token_enc)
+                    if access_token:
+                        simkl_data = await _simkl_fetch_user_with_token(access_token)
+                        if simkl_data:
+                            profile["simkl_username"] = simkl_data["username"]
+                            profile["simkl_user_id"] = simkl_data["user_id"]
+                            profile["simkl_avatar"] = simkl_data["avatar_url"]
+                            refreshed = True
+                            if simkl_data["username"]:
+                                simkl_uname_to_profile[simkl_data["username"].lower()] = profile
+                        else:
+                            print(f"[Repopulator] Simkl token fetch failed for discord_id={discord_id}")
+                            if simkl_uname:
+                                simkl_uname_to_profile[simkl_uname.lower()] = profile
+                    else:
+                        print(f"[Repopulator] Simkl token decrypt failed for discord_id={discord_id}")
+                        if simkl_uname:
+                            simkl_uname_to_profile[simkl_uname.lower()] = profile
+                except Exception as e:
+                    print(f"[Repopulator] Simkl exception for discord_id={discord_id}: {e}")
+                    if simkl_uname:
+                        simkl_uname_to_profile[simkl_uname.lower()] = profile
+            elif simkl_uname:
+                # No token yet (old profile before OAuth) — still register for entry matching
+                simkl_uname_to_profile[simkl_uname.lower()] = profile
 
             if refreshed:
                 result["users_updated"] += 1
