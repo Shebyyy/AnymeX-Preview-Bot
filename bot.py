@@ -2389,7 +2389,11 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
         "season_year": season_year,
         "description": description,
         "studios": studios,
-    }    # Build preview embed — show profile links for the submitter
+    }
+
+    filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
+
+    # Build preview embed — show profile links for the submitter
     al_uid = user_snapshot["anilist"]["id"]
     al_uname = user_snapshot["anilist"]["username"]
     mal_uid = user_snapshot["mal"]["id"]
