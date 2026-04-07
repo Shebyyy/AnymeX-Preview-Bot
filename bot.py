@@ -1361,50 +1361,46 @@ async def _mal_fetch_full_profile(mal_username: str) -> dict | None:
 
 async def _simkl_fetch_user(simkl_username: str) -> dict | None:
     """
-    Fetch a Simkl user's public profile using /users/{username}/stats.
-    Avatar URL format per Simkl docs: https://simkl.in/avatars/{id}/{id}_100.jpg
+    Fetch a Simkl user's profile. Returns dict with keys:
+      username, user_id, avatar_url  — or None if not found.
+    Hits /users/settings which requires the username param and returns full profile.
+    Falls back to /users/{username}/stats just for existence check.
     """
     if not SIMKL_CLIENT_ID:
         return None
     try:
         async with aiohttp.ClientSession() as session:
+            # /users/settings?client_id=...&username=... returns full profile
+            async with session.get(
+                f"{SIMKL_API}/users/settings",
+                params={"client_id": SIMKL_CLIENT_ID, "username": simkl_username},
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    user = data.get("user", data)  # some responses nest under "user"
+                    avatar = user.get("avatar")
+                    if avatar and not avatar.startswith("http"):
+                        avatar = f"https://simkl.in/avatars/{avatar}_m.jpg"
+                    return {
+                        "username": user.get("username") or simkl_username,
+                        "user_id": user.get("id"),
+                        "avatar_url": avatar,
+                    }
+            # Fallback: just verify existence via stats endpoint
             async with session.get(
                 f"{SIMKL_API}/users/{simkl_username}/stats",
                 params={"client_id": SIMKL_CLIENT_ID},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
-                if r.status != 200:
-                    print(f"[Simkl fetch user] status={r.status} for {simkl_username!r}")
-                    return None
-                data = await r.json()
-                user = data.get("user", data)
-                user_id = user.get("id")
-                avatar_raw = user.get("avatar")
-                # Simkl avatar URL: https://simkl.in/avatars/{id}/{id}_100.jpg
-                # The avatar field may be the raw id or a hash string
-                if user_id and not avatar_raw:
-                    avatar_url = f"https://simkl.in/avatars/{user_id}/{user_id}_100.jpg"
-                elif avatar_raw:
-                    if avatar_raw.startswith("http"):
-                        avatar_url = avatar_raw
-                    else:
-                        # avatar_raw is a hash like "xonviig" or numeric id
-                        avatar_url = f"https://simkl.in/avatars/{avatar_raw}/{avatar_raw}_100.jpg"
-                else:
-                    avatar_url = None
-                return {
-                    "username": user.get("name") or user.get("username") or simkl_username,
-                    "user_id": user_id,
-                    "avatar_url": avatar_url,
-                }
+                if r.status == 200:
+                    return {"username": simkl_username, "user_id": None, "avatar_url": None}
+                return None
     except Exception as e:
         print(f"[Simkl fetch user] exception: {e}")
         return None
-
-
-# Keep old name as alias
-_simkl_verify_user = _simkl_fetch_user
 
 
 async def _simkl_search_tv(query_str: str) -> list:
@@ -5626,9 +5622,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                         profile["simkl_user_id"] = simkl_data["user_id"]
                         profile["simkl_avatar"] = simkl_data["avatar_url"]
                         refreshed = True
-                        simkl_uname_to_profile[simkl_uname.lower()] = profile
-                    else:
-                        simkl_uname_to_profile[simkl_uname.lower()] = profile
+                    simkl_uname_to_profile[simkl_uname.lower()] = profile
                 except Exception:
                     simkl_uname_to_profile[simkl_uname.lower()] = profile
 
