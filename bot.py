@@ -1451,8 +1451,10 @@ async def _simkl_fetch_user_with_token(access_token: str) -> dict | None:
                     return None
                 data = await r.json()
                 print(f"[Simkl user settings] raw={str(data)[:300]}")
-                user = data.get("user", data)
-                user_id = user.get("id")
+                # /users/settings returns a flat object — no nested "user" key.
+                # The ID field is "user_id", not "id".
+                user = data.get("user") or data
+                user_id = user.get("user_id") or user.get("id")
                 avatar_raw = user.get("avatar")
                 if avatar_raw:
                     if avatar_raw.startswith("http"):
@@ -1503,8 +1505,7 @@ async def link_simkl(interaction: discord.Interaction):
         title="🔗 Link your Simkl Account",
         description=(
             f"**1.** Click the button below to open Simkl\n"
-            f"**2.** Enter this PIN code on the page:\n\n"
-            f"# `{user_code}`\n\n"
+            f"**2.** Copy and enter the PIN shown above on the page\n\n"
             f"⏳ Expires in **{expires_mins} minutes**."
         ),
         color=0x1DB954,
@@ -1517,7 +1518,13 @@ async def link_simkl(interaction: discord.Interaction):
         url=verification_url,
         style=discord.ButtonStyle.link,
     ))
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    # Send PIN as plain content (outside embed) so users can long-press to copy on mobile
+    await interaction.followup.send(
+        content=f"📋 **Your PIN** (tap & hold to copy):\n```\n{user_code}\n```",
+        embed=embed,
+        view=view,
+        ephemeral=True,
+    )
 
     discord_id = str(interaction.user.id)
     deadline = asyncio.get_event_loop().time() + expires_in
