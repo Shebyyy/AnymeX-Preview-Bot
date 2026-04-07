@@ -970,6 +970,34 @@ async def fetch_anilist(session: aiohttp.ClientSession, media_id: int, media_typ
         return result.get("data", {}).get("Media")
 
 
+async def fetch_anilist_batch(session: aiohttp.ClientSession, ids: list[int], media_type: str) -> dict[int, dict]:
+    """Fetch up to 50 media items in one AniList request. Returns {id: media_dict}."""
+    if not ids:
+        return {}
+    query = """
+    query ($ids: [Int], $type: MediaType) {
+      Page(perPage: 50) {
+        media(id_in: $ids, type: $type) {
+          id coverImage { large } averageScore
+        }
+      }
+    }
+    """
+    try:
+        async with session.post(
+            ANILIST_API,
+            json={"query": query, "variables": {"ids": ids, "type": media_type}},
+            headers={"Content-Type": "application/json"},
+        ) as r:
+            if r.status != 200:
+                return {}
+            data = await r.json()
+        results = data.get("data", {}).get("Page", {}).get("media", [])
+        return {m["id"]: m for m in results}
+    except Exception:
+        return {}
+
+
 # ── ID extractors ──────────────────────────────────────────────────────────────
 
 
@@ -1254,127 +1282,10 @@ async def anilist_user_autocomplete(
 
 
 @bot.event
-async def migrate_entries_to_new_format():
-    """
-    One-time safe migration: converts old flat entry shape into the new shape.
-
-    Old shape (what's currently in the JSON on GitHub):
-      { "anilist_id", "mal_id", "title", "score", "reason",
-        "anilist_user_id", "author", ... }
-
-    New shape:
-      { "title", "poster", "score", "anilist_id", "mal_id", "reason",
-        "user": { "anilist": {"id", "username", "avatar"},
-                  "mal":     {"id", "username", "avatar"} } }
-
-    Entries already in the new shape (have a "user" key) are left untouched.
-    Returns counts of migrated entries per file.
-    """
-    migrated = {"anime": 0, "manga": 0}
-
-    async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
-
-        for filepath, label in [(FILE_ANIME, "anime"), (FILE_MANGA, "manga")]:
-            entries, sha = await github_read_json(session, filepath)
-            if not entries:
-                continue
-
-            changed = False
-            for entry in entries:
-                # Already migrated — skip
-                if "user" in entry:
-                    continue
-
-                # Pull flat fields from old format
-                al_uid = entry.pop("anilist_user_id", None)
-                mal_uid = entry.pop("mal_user_id", None)
-
-                # Try to find matching user profile for richer data
-                matched = None
-                for profile in users.values():
-                    if al_uid and profile.get("anilist_user_id") == al_uid:
-                        matched = profile
-                        break
-                    if mal_uid and profile.get("mal_user_id") == mal_uid:
-                        matched = profile
-                        break
-
-                if matched:
-                    entry["user"] = _build_user_snapshot(matched)
-                else:
-                    # Fallback: build minimal user block from whatever we have
-                    al_username = entry.pop("anilist_username", None) or entry.pop("author", None)
-                    mal_username = entry.pop("mal_username", None)
-                    entry.pop("author", None)  # remove stale flat field
-                    entry["user"] = {
-                        "anilist": {
-                            "id": al_uid,
-                            "username": al_username,
-                            "avatar": entry.pop("anilist_avatar", None),
-                        },
-                        "mal": {
-                            "id": mal_uid,
-                            "username": mal_username,
-                            "avatar": entry.pop("mal_avatar", None),
-                        },
-                    }
-
-                # Fetch poster + score from AniList if missing or null
-                media_type_str = "ANIME" if label == "anime" else "MANGA"
-                if not entry.get("poster") or not entry.get("score"):
-                    try:
-                        media = await fetch_anilist(session, entry["anilist_id"], media_type_str)
-                        if media:
-                            if not entry.get("poster"):
-                                entry["poster"] = media.get("coverImage", {}).get("large")
-                            if not entry.get("score"):
-                                entry["score"] = media.get("averageScore")
-                    except Exception:
-                        pass
-                # Also rename legacy coverImage field just in case
-                if "poster" not in entry:
-                    entry["poster"] = entry.pop("cover_url", entry.pop("coverImage", None))
-
-                # Strip any other leftover flat profile fields
-                for stale in [
-                    "author",
-                    "discord_username", "discord_display_name",
-                    "anilist_url", "anilist_banner", "anilist_about",
-                    "anilist_anime_count", "anilist_manga_count",
-                    "anilist_mean_score", "anilist_minutes_watched", "anilist_chapters_read",
-                    "mal_url", "mal_about", "mal_anime_completed",
-                    "mal_anime_mean_score", "mal_manga_completed", "mal_manga_mean_score",
-                ]:
-                    entry.pop(stale, None)
-
-                changed = True
-                migrated[label] += 1
-
-            if changed:
-                await github_write_json(
-                    session, filepath, entries, sha,
-                    f"chore: migrate {label} entries to new user shape"
-                )
-                print(f"✅ Migrated {migrated[label]} {label} entries to new format")
-            else:
-                print(f"✅ {filepath} already in new format — no migration needed")
-
-    return migrated
-
-
-@bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
 
-    # ── Migrate old JSON entries to new format (safe, skips already-migrated) ──
-    print("🔄 Checking for entries that need migration...")
-    try:
-        migrated = await migrate_entries_to_new_format()
-        print(f"✅ Migration complete: {migrated}")
-    except Exception as e:
-        print(f"⚠️ Migration failed: {e}")
 
     # Sync slash commands once to avoid Cloudflare rate limiting on every restart
     if not getattr(bot, "_synced", False):
@@ -4854,6 +4765,9 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             users[discord_id] = profile
 
         # ── Step 3: Update anime entries ──────────────────────────────────────
+        anime_ids = [e["anilist_id"] for e in anime_entries]
+        anime_media_map = await fetch_anilist_batch(session, anime_ids, "ANIME")
+
         for entry in anime_entries:
             changed = False
             u = entry.get("user", {})
@@ -4870,23 +4784,21 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
 
-            # Refresh poster + score from AniList
-            try:
-                await asyncio.sleep(0.8)
-                media = await fetch_anilist(session, entry["anilist_id"], "ANIME")
-                if media:
-                    entry["poster"] = media.get("coverImage", {}).get("large")
-                    entry["score"] = media.get("averageScore")
-                    changed = True
-                else:
-                    print(f"⚠️ AniList returned no data for anime {entry['anilist_id']} ({entry.get('title')})")
-            except Exception as e:
-                print(f"⚠️ Failed to fetch AniList for anime {entry['anilist_id']} ({entry.get('title')}): {e}")
+            media = anime_media_map.get(entry["anilist_id"])
+            if media:
+                entry["poster"] = media.get("coverImage", {}).get("large")
+                entry["score"] = media.get("averageScore")
+                changed = True
+            else:
+                print(f"⚠️ AniList returned no data for anime {entry['anilist_id']} ({entry.get('title')})")
 
             if changed:
                 result["anime_entries_updated"] += 1
 
         # ── Step 4: Update manga entries ──────────────────────────────────────
+        manga_ids = [e["anilist_id"] for e in manga_entries]
+        manga_media_map = await fetch_anilist_batch(session, manga_ids, "MANGA")
+
         for entry in manga_entries:
             changed = False
             u = entry.get("user", {})
@@ -4903,18 +4815,13 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
 
-            # Refresh poster + score from AniList
-            try:
-                await asyncio.sleep(0.8)
-                media = await fetch_anilist(session, entry["anilist_id"], "MANGA")
-                if media:
-                    entry["poster"] = media.get("coverImage", {}).get("large")
-                    entry["score"] = media.get("averageScore")
-                    changed = True
-                else:
-                    print(f"⚠️ AniList returned no data for manga {entry['anilist_id']} ({entry.get('title')})")
-            except Exception as e:
-                print(f"⚠️ Failed to fetch AniList for manga {entry['anilist_id']} ({entry.get('title')}): {e}")
+            media = manga_media_map.get(entry["anilist_id"])
+            if media:
+                entry["poster"] = media.get("coverImage", {}).get("large")
+                entry["score"] = media.get("averageScore")
+                changed = True
+            else:
+                print(f"⚠️ AniList returned no data for manga {entry['anilist_id']} ({entry.get('title')})")
 
             if changed:
                 result["manga_entries_updated"] += 1
@@ -5666,14 +5573,6 @@ async def fix_discord_info(interaction: discord.Interaction):
     embed.add_field(name="📺 Anime Entries", value=f"🔄 Updated: **{anime_updated}**", inline=True)
     embed.add_field(name="📖 Manga Entries", value=f"🔄 Updated: **{manga_updated}**", inline=True)
     await interaction.followup.send(embed=embed)
-
-
-
-async def force_sync(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return
-    await bot.tree.sync()
-    await ctx.send("✅ Slash commands synced!")
 
 
 
