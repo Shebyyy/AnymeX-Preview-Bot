@@ -1657,8 +1657,8 @@ async def _simkl_search_tv(query_str: str) -> list:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{SIMKL_API}/search/tv",
-                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
+                f"{SIMKL_API}/search/series",
+                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25, "extended": "full"},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
@@ -1680,7 +1680,7 @@ async def _simkl_search_movies(query_str: str) -> list:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{SIMKL_API}/search/movies",
-                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
+                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25, "extended": "full"},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
