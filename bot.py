@@ -1510,7 +1510,7 @@ async def link_simkl(interaction: discord.Interaction):
         ),
         color=0x1DB954,
     )
-    embed.add_field(name="📋 PIN Code (tap & hold to copy)", value=f"```\n{user_code}\n```", inline=False)
+    embed.add_field(name="📋 PIN Code (tap & hold to copy)", value=user_code, inline=False)
     embed.set_footer(text="Waiting for you to authorize on Simkl...")
 
     view = discord.ui.View()
