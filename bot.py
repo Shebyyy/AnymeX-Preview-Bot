@@ -5626,7 +5626,9 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                         profile["simkl_user_id"] = simkl_data["user_id"]
                         profile["simkl_avatar"] = simkl_data["avatar_url"]
                         refreshed = True
-                    simkl_uname_to_profile[simkl_uname.lower()] = profile
+                        simkl_uname_to_profile[simkl_uname.lower()] = profile
+                    else:
+                        simkl_uname_to_profile[simkl_uname.lower()] = profile
                 except Exception:
                     simkl_uname_to_profile[simkl_uname.lower()] = profile
 
