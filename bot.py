@@ -1502,17 +1502,18 @@ async def link_simkl(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🔗 Link your Simkl Account",
         description=(
-            f"Click the button below to authorize on Simkl.\n\n"
-            f"Your PIN is already filled in — just click **Authorize** on the page.\n\n"
+            f"**1.** Click the button below to open Simkl\n"
+            f"**2.** Enter this PIN code on the page:\n\n"
+            f"# `{user_code}`\n\n"
             f"⏳ Expires in **{expires_mins} minutes**."
         ),
         color=0x1DB954,
     )
-    embed.set_footer(text="Waiting for you to authorize...")
+    embed.set_footer(text="Waiting for you to authorize on Simkl...")
 
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
-        label="✅ Authorize on Simkl",
+        label="🔗 Open Simkl PIN Page",
         url=verification_url,
         style=discord.ButtonStyle.link,
     ))
