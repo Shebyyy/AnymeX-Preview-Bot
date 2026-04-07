@@ -1450,11 +1450,13 @@ async def _simkl_fetch_user_with_token(access_token: str) -> dict | None:
                     print(f"[Simkl user settings] status={r.status} body={body[:200]}")
                     return None
                 data = await r.json()
-                print(f"[Simkl user settings] raw={str(data)[:300]}")
-                # /users/settings returns a flat object — no nested "user" key.
-                # The ID field is "user_id", not "id".
+                print(f"[Simkl user settings] raw={str(data)[:500]}")
+                # /users/settings response shape:
+                # {"account": {"id": 123, ...}, "user": {"name": "...", "avatar": "..."}}
+                account = data.get("account") or {}
                 user = data.get("user") or data
-                user_id = user.get("user_id") or user.get("id")
+                # ID is under account.id
+                user_id = account.get("id") or user.get("user_id") or user.get("id")
                 avatar_raw = user.get("avatar")
                 if avatar_raw:
                     if avatar_raw.startswith("http"):
