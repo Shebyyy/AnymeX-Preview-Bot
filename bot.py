@@ -837,7 +837,7 @@ async def _api_add_media(request, media_type: str):
             "user": user_snapshot,
             "poster": media.get("coverImage", {}).get("large", ""),
             "score": score,
-            "nsfw": media.get("isAdult", False),
+            "nsfw": bool(media.get("isAdult") or False),
         }
 
         filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
@@ -912,6 +912,9 @@ async def _api_add_simkl(request, media_type: str):
     score = media.get("ratings", {}).get("simkl", {}).get("rating") or "N/A"
     genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
     year = media.get("year") or ""
+    _adult_certs = {"NC-17", "X", "TV-MA", "R18", "18+", "AO"}
+    certification = (media.get("certification") or "").upper().strip()
+    nsfw = certification in _adult_certs
     simkl_url = f"https://simkl.com/{media_type}s/{simkl_id}"
 
     # Try to match a user by simkl_username from request
@@ -944,6 +947,7 @@ async def _api_add_simkl(request, media_type: str):
         "score": score,
         "genres": genres,
         "simkl_url": simkl_url,
+        "nsfw": nsfw,
     }
 
     filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
@@ -1073,9 +1077,20 @@ async def fetch_anilist(session: aiohttp.ClientSession, media_id: int, media_typ
         id idMal
         title { romaji english native }
         coverImage { large }
+        bannerImage
         averageScore
         genres
         isAdult
+        status
+        format
+        episodes
+        duration
+        chapters
+        volumes
+        season
+        seasonYear
+        description(asHtml: false)
+        studios(isMain: true) { nodes { name } }
       }
     }
     """
@@ -2342,6 +2357,17 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
 
     user_snapshot = _build_user_snapshot(profile)
 
+    episodes = media.get("episodes")
+    duration = media.get("duration")
+    chapters = media.get("chapters")
+    volumes = media.get("volumes")
+    status = media.get("status")
+    fmt = media.get("format")
+    season = media.get("season")
+    season_year = media.get("seasonYear")
+    description = (media.get("description") or "")[:500]
+    studios = [s["name"] for s in (media.get("studios", {}).get("nodes") or [])]
+
     entry = {
         "anilist_id": anilist_id,
         "mal_id": mal_id,
@@ -2351,7 +2377,18 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
         "user": user_snapshot,
         "poster": cover_url,
         "score": score,
-        "nsfw": media.get("isAdult", False),
+        "genres": media.get("genres", []),
+        "nsfw": bool(media.get("isAdult") or False),
+        "status": status,
+        "format": fmt,
+        "episodes": episodes,
+        "duration": duration,
+        "chapters": chapters,
+        "volumes": volumes,
+        "season": season,
+        "season_year": season_year,
+        "description": description,
+        "studios": studios,
     }    # Build preview embed — show profile links for the submitter
     al_uid = user_snapshot["anilist"]["id"]
     al_uname = user_snapshot["anilist"]["username"]
@@ -2376,6 +2413,20 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     preview.add_field(name="MAL", value=f"[Link]({mal_url}) (ID: `{mal_id or '?'}`)", inline=True)
     preview.add_field(name="Score", value=f"`{score}`", inline=True)
     preview.add_field(name="Genres", value=genres, inline=True)
+    if fmt:
+        preview.add_field(name="Format", value=fmt, inline=True)
+    if status:
+        preview.add_field(name="Status", value=status.replace("_", " ").title(), inline=True)
+    if episodes:
+        preview.add_field(name="Episodes", value=str(episodes), inline=True)
+    if duration:
+        preview.add_field(name="Ep. Duration", value=f"{duration} min", inline=True)
+    if chapters:
+        preview.add_field(name="Chapters", value=str(chapters), inline=True)
+    if season and season_year:
+        preview.add_field(name="Season", value=f"{season.title()} {season_year}", inline=True)
+    if studios:
+        preview.add_field(name="Studio", value=", ".join(studios[:2]), inline=True)
     preview.add_field(name="Author", value=author, inline=True)
     preview.add_field(name="AniList Profile", value=al_profile_link, inline=True)
     preview.add_field(name="MAL Profile", value=mal_profile_link, inline=True)
@@ -2472,6 +2523,11 @@ async def handle_simkl_add(
     genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
     year = media.get("year") or ""
 
+    # Simkl has no isAdult flag — derive nsfw from certification rating
+    _adult_certs = {"NC-17", "X", "TV-MA", "R18", "18+", "AO"}
+    certification = (media.get("certification") or "").upper().strip()
+    nsfw = certification in _adult_certs
+
     author = profile.get("author_name") or interaction.user.display_name
     user_snapshot = _build_user_snapshot(profile)
 
@@ -2489,6 +2545,7 @@ async def handle_simkl_add(
         "score": score,
         "genres": genres,
         "simkl_url": simkl_url,
+        "nsfw": nsfw,
     }
 
     preview = discord.Embed(
@@ -4508,7 +4565,7 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
         "user": user_snapshot,
         "poster": cover_url,
         "score": score,
-        "nsfw": media.get("isAdult", False),
+        "nsfw": bool(media.get("isAdult") or False),
     }
     filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
 
@@ -5944,7 +6001,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if changed:
                 result["manga_entries_updated"] += 1
 
-        # ── Step 4b: Update show entries (sync user snapshots only) ───────────
+        # ── Step 4b: Update show entries ──────────────────────────────────────
+        _adult_certs = {"NC-17", "X", "TV-MA", "R18", "18+", "AO"}
         for entry in show_entries:
             changed = False
             u = entry.get("user", {})
@@ -5964,10 +6022,22 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
 
+            simkl_id = entry.get("simkl_id")
+            if simkl_id:
+                media = await _simkl_fetch_show(simkl_id)
+                if media:
+                    certification = (media.get("certification") or "").upper().strip()
+                    entry["nsfw"] = certification in _adult_certs
+                    entry["poster"] = _simkl_poster(media) or entry.get("poster", "")
+                    entry["score"] = media.get("ratings", {}).get("simkl", {}).get("rating") or entry.get("score", "N/A")
+                    changed = True
+                else:
+                    print(f"⚠️ Simkl returned no data for show {simkl_id} ({entry.get('title')})")
+
             if changed:
                 result["show_entries_updated"] += 1
 
-        # ── Step 4c: Update movie entries (sync user snapshots only) ──────────
+        # ── Step 4c: Update movie entries ─────────────────────────────────────
         for entry in movie_entries:
             changed = False
             u = entry.get("user", {})
@@ -5986,6 +6056,18 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
+
+            simkl_id = entry.get("simkl_id")
+            if simkl_id:
+                media = await _simkl_fetch_movie(simkl_id)
+                if media:
+                    certification = (media.get("certification") or "").upper().strip()
+                    entry["nsfw"] = certification in _adult_certs
+                    entry["poster"] = _simkl_poster(media) or entry.get("poster", "")
+                    entry["score"] = media.get("ratings", {}).get("simkl", {}).get("rating") or entry.get("score", "N/A")
+                    changed = True
+                else:
+                    print(f"⚠️ Simkl returned no data for movie {simkl_id} ({entry.get('title')})")
 
             if changed:
                 result["movie_entries_updated"] += 1
