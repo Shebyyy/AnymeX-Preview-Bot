@@ -831,6 +831,7 @@ async def _api_add_media(request, media_type: str):
             "user": user_snapshot,
             "poster": media.get("coverImage", {}).get("large", ""),
             "score": score,
+            "nsfw": media.get("isAdult", False),
         }
 
         filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
@@ -956,6 +957,7 @@ async def fetch_anilist(session: aiohttp.ClientSession, media_id: int, media_typ
         coverImage { large }
         averageScore
         genres
+        isAdult
       }
     }
     """
@@ -978,7 +980,7 @@ async def fetch_anilist_batch(session: aiohttp.ClientSession, ids: list[int], me
     query ($ids: [Int], $type: MediaType) {
       Page(perPage: 50) {
         media(id_in: $ids, type: $type) {
-          id coverImage { large } averageScore
+          id coverImage { large } averageScore isAdult
         }
       }
     }
@@ -1729,11 +1731,8 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
         "user": user_snapshot,
         "poster": cover_url,
         "score": score,
-    }
-
-    filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
-
-    # Build preview embed — show profile links for the submitter
+        "nsfw": media.get("isAdult", False),
+    }    # Build preview embed — show profile links for the submitter
     al_uid = user_snapshot["anilist"]["id"]
     al_uname = user_snapshot["anilist"]["username"]
     mal_uid = user_snapshot["mal"]["id"]
@@ -3538,6 +3537,7 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
         "user": user_snapshot,
         "poster": cover_url,
         "score": score,
+        "nsfw": media.get("isAdult", False),
     }
     filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
 
@@ -4788,6 +4788,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if media:
                 entry["poster"] = media.get("coverImage", {}).get("large")
                 entry["score"] = media.get("averageScore")
+                entry["nsfw"] = media.get("isAdult", False)
                 changed = True
             else:
                 print(f"⚠️ AniList returned no data for anime {entry['anilist_id']} ({entry.get('title')})")
@@ -4819,6 +4820,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if media:
                 entry["poster"] = media.get("coverImage", {}).get("large")
                 entry["score"] = media.get("averageScore")
+                entry["nsfw"] = media.get("isAdult", False)
                 changed = True
             else:
                 print(f"⚠️ AniList returned no data for manga {entry['anilist_id']} ({entry.get('title')})")
