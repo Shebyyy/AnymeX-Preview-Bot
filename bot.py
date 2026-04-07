@@ -1659,8 +1659,8 @@ async def _simkl_search_tv(query_str: str) -> list:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{SIMKL_API}/search/series",
-                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25, "extended": "full"},
+                f"{SIMKL_API}/search/tv",
+                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
@@ -1681,8 +1681,8 @@ async def _simkl_search_movies(query_str: str) -> list:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{SIMKL_API}/search/movies",
-                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25, "extended": "full"},
+                f"{SIMKL_API}/search/movie",
+                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
                 headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
@@ -1795,7 +1795,7 @@ async def show_autocomplete(
     for r in results[:25]:
         # Simkl may return ids nested under "ids" dict or directly as "simkl_id"
         ids = r.get("ids", {})
-        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
+        simkl_id = ids.get("simkl_id") or ids.get("simkl") or r.get("simkl_id") or r.get("id")
         title = r.get("title", "Unknown")
         year = r.get("year", "")
         if simkl_id:
@@ -1813,7 +1813,7 @@ async def movie_autocomplete(
     choices = []
     for r in results[:25]:
         ids = r.get("ids", {})
-        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
+        simkl_id = ids.get("simkl_id") or ids.get("simkl") or r.get("simkl_id") or r.get("id")
         title = r.get("title", "Unknown")
         year = r.get("year", "")
         if simkl_id:
@@ -5484,7 +5484,7 @@ async def show_search(interaction: discord.Interaction, title: str):
     embed = discord.Embed(title=f"🔍 Simkl TV Show Results: {title}", color=0x9B59B6)
     for r in results[:8]:
         ids = r.get("ids", {})
-        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
+        simkl_id = ids.get("simkl_id") or ids.get("simkl") or r.get("simkl_id") or r.get("id")
         show_title = r.get("title", "Unknown")
         year = r.get("year", "")
         url = f"https://simkl.com/tv/{simkl_id}" if simkl_id else ""
@@ -5519,7 +5519,7 @@ async def movie_search(interaction: discord.Interaction, title: str):
     embed = discord.Embed(title=f"🔍 Simkl Movie Results: {title}", color=0xE67E22)
     for r in results[:8]:
         ids = r.get("ids", {})
-        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
+        simkl_id = ids.get("simkl_id") or ids.get("simkl") or r.get("simkl_id") or r.get("id")
         movie_title = r.get("title", "Unknown")
         year = r.get("year", "")
         url = f"https://simkl.com/movies/{simkl_id}" if simkl_id else ""
