@@ -1505,11 +1505,12 @@ async def link_simkl(interaction: discord.Interaction):
         title="🔗 Link your Simkl Account",
         description=(
             f"**1.** Click the button below to open Simkl\n"
-            f"**2.** Copy and enter the PIN shown above on the page\n\n"
+            f"**2.** Enter the PIN code below on the page\n\n"
             f"⏳ Expires in **{expires_mins} minutes**."
         ),
         color=0x1DB954,
     )
+    embed.add_field(name="📋 PIN Code (tap & hold to copy)", value=f"```\n{user_code}\n```", inline=False)
     embed.set_footer(text="Waiting for you to authorize on Simkl...")
 
     view = discord.ui.View()
@@ -1518,13 +1519,7 @@ async def link_simkl(interaction: discord.Interaction):
         url=verification_url,
         style=discord.ButtonStyle.link,
     ))
-    # Send PIN as plain content (outside embed) so users can long-press to copy on mobile
-    await interaction.followup.send(
-        content=f"📋 **Your PIN** (tap & hold to copy):\n```\n{user_code}\n```",
-        embed=embed,
-        view=view,
-        ephemeral=True,
-    )
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     discord_id = str(interaction.user.id)
     deadline = asyncio.get_event_loop().time() + expires_in
