@@ -1157,6 +1157,8 @@ def _build_user_snapshot(profile: dict) -> dict:
         },
         "simkl": {
             "username": profile.get("simkl_username"),
+            "id": profile.get("simkl_user_id"),
+            "avatar": profile.get("simkl_avatar"),
         },
     }
 
@@ -1357,37 +1359,91 @@ async def _mal_fetch_full_profile(mal_username: str) -> dict | None:
 # ── Simkl helper functions ─────────────────────────────────────────────────────
 
 
-async def _simkl_verify_user(simkl_username: str) -> bool:
-    """Verify a Simkl username exists by hitting their stats endpoint."""
+async def _simkl_fetch_user(simkl_username: str) -> dict | None:
+    """
+    Fetch a Simkl user's profile. Returns dict with keys:
+      username, user_id, avatar_url  — or None if not found.
+    Hits /users/settings which requires the username param and returns full profile.
+    Falls back to /users/{username}/stats just for existence check.
+    """
     if not SIMKL_CLIENT_ID:
-        return False
+        return None
     try:
         async with aiohttp.ClientSession() as session:
+            # /users/settings?client_id=...&username=... returns full profile
+            async with session.get(
+                f"{SIMKL_API}/users/settings",
+                params={"client_id": SIMKL_CLIENT_ID, "username": simkl_username},
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    user = data.get("user", data)  # some responses nest under "user"
+                    avatar = user.get("avatar")
+                    if avatar and not avatar.startswith("http"):
+                        avatar = f"https://simkl.in/avatars/{avatar}_m.jpg"
+                    return {
+                        "username": user.get("username") or simkl_username,
+                        "user_id": user.get("id"),
+                        "avatar_url": avatar,
+                    }
+            # Fallback: just verify existence via stats endpoint
             async with session.get(
                 f"{SIMKL_API}/users/{simkl_username}/stats",
                 params={"client_id": SIMKL_CLIENT_ID},
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
-                return r.status == 200
-    except Exception:
-        return False
+                if r.status == 200:
+                    return {"username": simkl_username, "user_id": None, "avatar_url": None}
+                return None
+    except Exception as e:
+        print(f"[Simkl fetch user] exception: {e}")
+        return None
 
 
-async def _simkl_search(query_str: str, media_type: str) -> list:
-    """Search Simkl for TV shows or movies. media_type: 'tv' or 'movies'."""
+async def _simkl_search_tv(query_str: str) -> list:
+    """Search Simkl TV shows via /search/tv."""
     if not SIMKL_CLIENT_ID:
         return []
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{SIMKL_API}/search/{media_type}",
+                f"{SIMKL_API}/search/tv",
                 params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
-                timeout=aiohttp.ClientTimeout(total=8),
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 if r.status != 200:
+                    print(f"[Simkl /search/tv] status={r.status} query={query_str!r}")
                     return []
-                return await r.json()
-    except Exception:
+                data = await r.json()
+                return data if isinstance(data, list) else data.get("results", [])
+    except Exception as e:
+        print(f"[Simkl /search/tv] exception: {e}")
+        return []
+
+
+async def _simkl_search_movies(query_str: str) -> list:
+    """Search Simkl movies via /search/movies."""
+    if not SIMKL_CLIENT_ID:
+        return []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/search/movies",
+                params={"q": query_str, "client_id": SIMKL_CLIENT_ID, "limit": 25},
+                headers={"simkl-api-key": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    print(f"[Simkl /search/movies] status={r.status} query={query_str!r}")
+                    return []
+                data = await r.json()
+                return data if isinstance(data, list) else data.get("results", [])
+    except Exception as e:
+        print(f"[Simkl /search/movies] exception: {e}")
         return []
 
 
@@ -1485,18 +1541,17 @@ async def show_autocomplete(
 ) -> list[app_commands.Choice[str]]:
     if not current or len(current) < 2:
         return []
-    results = await _simkl_search(current, "tv")
+    results = await _simkl_search_tv(current)
     choices = []
     for r in results[:25]:
+        # Simkl may return ids nested under "ids" dict or directly as "simkl_id"
         ids = r.get("ids", {})
-        simkl_id = ids.get("simkl")
+        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
         title = r.get("title", "Unknown")
         year = r.get("year", "")
         if simkl_id:
-            choices.append(app_commands.Choice(
-                name=f"{title[:90]} ({year})" if year else title[:100],
-                value=str(simkl_id),
-            ))
+            label = f"{title[:90]} ({year})" if year else title[:100]
+            choices.append(app_commands.Choice(name=label, value=str(simkl_id)))
     return choices
 
 
@@ -1505,18 +1560,16 @@ async def movie_autocomplete(
 ) -> list[app_commands.Choice[str]]:
     if not current or len(current) < 2:
         return []
-    results = await _simkl_search(current, "movies")
+    results = await _simkl_search_movies(current)
     choices = []
     for r in results[:25]:
         ids = r.get("ids", {})
-        simkl_id = ids.get("simkl")
+        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
         title = r.get("title", "Unknown")
         year = r.get("year", "")
         if simkl_id:
-            choices.append(app_commands.Choice(
-                name=f"{title[:90]} ({year})" if year else title[:100],
-                value=str(simkl_id),
-            ))
+            label = f"{title[:90]} ({year})" if year else title[:100]
+            choices.append(app_commands.Choice(name=label, value=str(simkl_id)))
     return choices
 
 
@@ -1663,18 +1716,20 @@ async def setup(
         mal_user_id = mal_profile_data["mal_id"]
 
     # ── Simkl resolution ──────────────────────────────────────────────────────
-    simkl_valid = False
+    simkl_profile_data = None
     simkl_username_stored = None
 
     if simkl_username:
         simkl_username_stored = simkl_username.strip()
-        simkl_valid = await _simkl_verify_user(simkl_username_stored)
-        if not simkl_valid:
+        simkl_profile_data = await _simkl_fetch_user(simkl_username_stored)
+        if not simkl_profile_data:
             await interaction.followup.send(
                 f"❌ Simkl user `{simkl_username_stored}` not found. Check your username and try again.",
                 ephemeral=True,
             )
             return
+        # Use the canonical username returned by Simkl
+        simkl_username_stored = simkl_profile_data["username"]
 
     # ── Build stored profile ──────────────────────────────────────────────────
     profile_entry = {
@@ -1736,12 +1791,65 @@ async def setup(
             if mal_profile_data else None
         ),
         # Simkl — None if user has no Simkl
-        "simkl_username": simkl_username_stored if simkl_valid else None,
+        "simkl_username": simkl_username_stored,
+        "simkl_user_id": simkl_profile_data["user_id"] if simkl_profile_data else None,
+        "simkl_avatar": simkl_profile_data["avatar_url"] if simkl_profile_data else None,
     }
 
     async with aiohttp.ClientSession() as session:
         users, sha = await github_read_json(session, FILE_USERS)
-        users[discord_id] = profile_entry
+
+        # Merge into existing profile so previously linked accounts aren't wiped.
+        # Only overwrite keys that are being actively set in this /setup call.
+        existing = users.get(discord_id, {})
+
+        # Always update Discord identity fields
+        merged = {**existing}
+        merged["author_name"] = author_display
+        merged["discord_id"] = interaction.user.id
+        merged["discord_username"] = interaction.user.name
+        merged["discord_display_name"] = interaction.user.display_name
+        merged["discord_avatar"] = str(interaction.user.display_avatar.url) if interaction.user.display_avatar else None
+
+        # Only overwrite AniList fields if an AniList username was provided this time
+        if anilist_username:
+            merged.update({
+                "anilist_user_id": profile_entry["anilist_user_id"],
+                "anilist_username": profile_entry["anilist_username"],
+                "anilist_url": profile_entry["anilist_url"],
+                "anilist_avatar": profile_entry["anilist_avatar"],
+                "anilist_banner": profile_entry["anilist_banner"],
+                "anilist_about": profile_entry["anilist_about"],
+                "anilist_anime_count": profile_entry["anilist_anime_count"],
+                "anilist_manga_count": profile_entry["anilist_manga_count"],
+                "anilist_mean_score": profile_entry["anilist_mean_score"],
+                "anilist_minutes_watched": profile_entry["anilist_minutes_watched"],
+                "anilist_chapters_read": profile_entry["anilist_chapters_read"],
+            })
+
+        # Only overwrite MAL fields if a MAL username was provided this time
+        if mal_username:
+            merged.update({
+                "mal_user_id": profile_entry["mal_user_id"],
+                "mal_username": profile_entry["mal_username"],
+                "mal_url": profile_entry["mal_url"],
+                "mal_avatar": profile_entry["mal_avatar"],
+                "mal_about": profile_entry["mal_about"],
+                "mal_anime_completed": profile_entry["mal_anime_completed"],
+                "mal_anime_mean_score": profile_entry["mal_anime_mean_score"],
+                "mal_manga_completed": profile_entry["mal_manga_completed"],
+                "mal_manga_mean_score": profile_entry["mal_manga_mean_score"],
+            })
+
+        # Only overwrite Simkl if a Simkl username was provided this time
+        if simkl_username:
+            merged["simkl_username"] = profile_entry["simkl_username"]
+            merged["simkl_user_id"] = profile_entry["simkl_user_id"]
+            merged["simkl_avatar"] = profile_entry["simkl_avatar"]
+
+        users[discord_id] = merged
+        profile_entry = merged  # use merged for embed display below
+
         ok = await github_write_json(
             session,
             FILE_USERS,
@@ -1753,33 +1861,47 @@ async def setup(
     if ok:
         embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
         embed.add_field(name="Author Name", value=author_display, inline=False)
-        if anilist_user_id:
+
+        # Show full merged state (previously linked accounts are preserved)
+        merged_al_id = profile_entry.get("anilist_user_id")
+        merged_al_name = profile_entry.get("anilist_username")
+        merged_al_url = profile_entry.get("anilist_url")
+        if merged_al_id:
+            tag = " *(updated)*" if anilist_username else " *(existing)*"
             embed.add_field(
-                name="AniList",
-                value=f"[{anilist_username_display}]({profile_entry['anilist_url']}) (ID: `{anilist_user_id}`)",
+                name=f"AniList{tag}",
+                value=f"[{merged_al_name}]({merged_al_url}) (ID: `{merged_al_id}`)",
                 inline=True,
             )
         else:
             embed.add_field(name="AniList", value="Not linked", inline=True)
-        if mal_user_id:
+
+        merged_mal_id = profile_entry.get("mal_user_id")
+        merged_mal_name = profile_entry.get("mal_username")
+        merged_mal_url = profile_entry.get("mal_url")
+        if merged_mal_id:
+            tag = " *(updated)*" if mal_username else " *(existing)*"
             embed.add_field(
-                name="MAL",
-                value=f"[{mal_profile_data['username']}]({mal_profile_data['url']}) (ID: `{mal_user_id}`)",
+                name=f"MAL{tag}",
+                value=f"[{merged_mal_name}]({merged_mal_url}) (ID: `{merged_mal_id}`)",
                 inline=True,
             )
         else:
             embed.add_field(name="MAL", value="Not linked", inline=True)
-        if simkl_valid and simkl_username_stored:
+
+        merged_simkl = profile_entry.get("simkl_username")
+        if merged_simkl:
+            tag = " *(updated)*" if simkl_username else " *(existing)*"
             embed.add_field(
-                name="Simkl",
-                value=f"[{simkl_username_stored}](https://simkl.com/users/{simkl_username_stored})",
+                name=f"Simkl{tag}",
+                value=f"[{merged_simkl}](https://simkl.com/users/{merged_simkl})",
                 inline=True,
             )
         else:
             embed.add_field(name="Simkl", value="Not linked", inline=True)
 
-        # Set avatar: prefer AniList, fallback to MAL
-        avatar = profile_entry.get("anilist_avatar") or profile_entry.get("mal_avatar")
+        # Set avatar: prefer AniList, fallback to MAL, then Simkl
+        avatar = profile_entry.get("anilist_avatar") or profile_entry.get("mal_avatar") or profile_entry.get("simkl_avatar")
         if avatar:
             embed.set_thumbnail(url=avatar)
         embed.set_footer(text="You can now use /add_anime, /add_manga, /add_show, /add_movie!")
@@ -5120,7 +5242,116 @@ async def manga_search(interaction: discord.Interaction, title: str):
     await interaction.followup.send(embed=embed)
 
 
-@bot.tree.command(name="anilist_profile", description="View an AniList user profile")
+@bot.tree.command(name="show_search", description="Search for a TV show on Simkl")
+@app_commands.describe(title="TV show title to search")
+@app_commands.autocomplete(title=show_autocomplete)
+async def show_search(interaction: discord.Interaction, title: str):
+    await interaction.response.defer()
+    # If selected from autocomplete, title is the simkl_id — fetch details directly
+    if title.isdigit():
+        media = await _simkl_fetch_show(int(title))
+        if not media:
+            await interaction.followup.send("❌ Could not fetch show details from Simkl.", ephemeral=True)
+            return
+        embed = _build_simkl_embed(media, "show")
+        await interaction.followup.send(embed=embed)
+        return
+    # Free-text search — return top results as a list
+    results = await _simkl_search_tv(title)
+    if not results:
+        await interaction.followup.send("❌ No TV shows found on Simkl.", ephemeral=True)
+        return
+    embed = discord.Embed(title=f"🔍 Simkl TV Show Results: {title}", color=0x9B59B6)
+    for r in results[:8]:
+        ids = r.get("ids", {})
+        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
+        show_title = r.get("title", "Unknown")
+        year = r.get("year", "")
+        url = f"https://simkl.com/tv/{simkl_id}" if simkl_id else ""
+        score = r.get("ratings", {}).get("simkl", {}).get("rating", "N/A")
+        genres = ", ".join(r.get("genres", [])[:3]) or "—"
+        val = f"Year: {year} | Score: {score} | {genres}"
+        if url:
+            val += f"\n[Simkl]({url})"
+        embed.add_field(name=show_title, value=val, inline=False)
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="movie_search", description="Search for a movie on Simkl")
+@app_commands.describe(title="Movie title to search")
+@app_commands.autocomplete(title=movie_autocomplete)
+async def movie_search(interaction: discord.Interaction, title: str):
+    await interaction.response.defer()
+    # If selected from autocomplete, title is the simkl_id — fetch details directly
+    if title.isdigit():
+        media = await _simkl_fetch_movie(int(title))
+        if not media:
+            await interaction.followup.send("❌ Could not fetch movie details from Simkl.", ephemeral=True)
+            return
+        embed = _build_simkl_embed(media, "movie")
+        await interaction.followup.send(embed=embed)
+        return
+    # Free-text search — return top results as a list
+    results = await _simkl_search_movies(title)
+    if not results:
+        await interaction.followup.send("❌ No movies found on Simkl.", ephemeral=True)
+        return
+    embed = discord.Embed(title=f"🔍 Simkl Movie Results: {title}", color=0xE67E22)
+    for r in results[:8]:
+        ids = r.get("ids", {})
+        simkl_id = ids.get("simkl") or r.get("simkl_id") or r.get("id")
+        movie_title = r.get("title", "Unknown")
+        year = r.get("year", "")
+        url = f"https://simkl.com/movies/{simkl_id}" if simkl_id else ""
+        score = r.get("ratings", {}).get("simkl", {}).get("rating", "N/A")
+        genres = ", ".join(r.get("genres", [])[:3]) or "—"
+        val = f"Year: {year} | Score: {score} | {genres}"
+        if url:
+            val += f"\n[Simkl]({url})"
+        embed.add_field(name=movie_title, value=val, inline=False)
+    await interaction.followup.send(embed=embed)
+
+
+def _build_simkl_embed(media: dict, media_type: str) -> discord.Embed:
+    """Build a rich embed for a single Simkl show or movie."""
+    title = media.get("title") or media.get("en_title") or "Unknown"
+    ids = media.get("ids", {})
+    simkl_id = ids.get("simkl") or media.get("simkl_id") or media.get("id")
+    url = f"https://simkl.com/{media_type}s/{simkl_id}" if simkl_id else ""
+    color = 0x9B59B6 if media_type == "show" else 0xE67E22
+
+    embed = discord.Embed(title=title, url=url, color=color)
+    year = media.get("year", "")
+    if year:
+        embed.add_field(name="Year", value=str(year), inline=True)
+    score = media.get("ratings", {}).get("simkl", {}).get("rating", "N/A")
+    embed.add_field(name="Score", value=str(score), inline=True)
+    status = media.get("status", "")
+    if status:
+        embed.add_field(name="Status", value=status.replace("_", " ").title(), inline=True)
+    if media_type == "show":
+        ep_count = media.get("total_episodes") or media.get("ep_count", "")
+        if ep_count:
+            embed.add_field(name="Episodes", value=str(ep_count), inline=True)
+        runtime = media.get("runtime", "")
+        if runtime:
+            embed.add_field(name="Runtime", value=f"{runtime} min/ep", inline=True)
+    else:
+        runtime = media.get("runtime", "")
+        if runtime:
+            embed.add_field(name="Runtime", value=f"{runtime} min", inline=True)
+    genres = ", ".join(media.get("genres", [])[:5]) or "—"
+    embed.add_field(name="Genres", value=genres, inline=False)
+    overview = (media.get("overview") or media.get("description") or "")[:512]
+    if overview:
+        embed.add_field(name="Overview", value=overview, inline=False)
+    poster = _simkl_poster(media)
+    if poster:
+        embed.set_thumbnail(url=poster)
+    return embed
+
+
+
 @app_commands.describe(username="AniList username")
 async def anilist_profile(interaction: discord.Interaction, username: str):
     await interaction.response.defer()
@@ -5316,6 +5547,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         # and:            mal_user_id     → refreshed profile data
         al_id_to_profile: dict[int, dict] = {}
         mal_id_to_profile: dict[int, dict] = {}
+        simkl_uname_to_profile: dict[str, dict] = {}
 
         for discord_id, profile in users.items():
             al_id = profile.get("anilist_user_id")
@@ -5379,6 +5611,20 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 except Exception:
                     if mal_id:
                         mal_id_to_profile[mal_id] = profile
+
+            # -- Simkl refresh --
+            simkl_uname = profile.get("simkl_username")
+            if simkl_uname:
+                try:
+                    simkl_data = await _simkl_fetch_user(simkl_uname)
+                    if simkl_data:
+                        profile["simkl_username"] = simkl_data["username"]
+                        profile["simkl_user_id"] = simkl_data["user_id"]
+                        profile["simkl_avatar"] = simkl_data["avatar_url"]
+                        refreshed = True
+                    simkl_uname_to_profile[simkl_uname.lower()] = profile
+                except Exception:
+                    simkl_uname_to_profile[simkl_uname.lower()] = profile
 
             if refreshed:
                 result["users_updated"] += 1
@@ -5464,12 +5710,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 matched = al_id_to_profile[al_uid]
             elif mal_uid and mal_uid in mal_id_to_profile:
                 matched = mal_id_to_profile[mal_uid]
-            elif simkl_uname:
-                # match by simkl username from the full users dict
-                for p in users.values():
-                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
-                        matched = p
-                        break
+            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                matched = simkl_uname_to_profile[simkl_uname.lower()]
 
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
@@ -5491,11 +5733,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 matched = al_id_to_profile[al_uid]
             elif mal_uid and mal_uid in mal_id_to_profile:
                 matched = mal_id_to_profile[mal_uid]
-            elif simkl_uname:
-                for p in users.values():
-                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
-                        matched = p
-                        break
+            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                matched = simkl_uname_to_profile[simkl_uname.lower()]
 
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
@@ -6320,16 +6559,20 @@ async def fix_discord_info(interaction: discord.Interaction):
                 print(f"⚠️ Failed to fetch Discord user {discord_id}: {e}")
             await asyncio.sleep(0.5)
 
-        # Build lookups: anilist_user_id -> profile, mal_user_id -> profile
+        # Build lookups: anilist_user_id -> profile, mal_user_id -> profile, simkl_username -> profile
         al_id_to_profile = {}
         mal_id_to_profile = {}
+        simkl_uname_to_profile = {}
         for profile in users.values():
             al_id = profile.get("anilist_user_id")
             mal_id = profile.get("mal_user_id")
+            simkl_uname = profile.get("simkl_username")
             if al_id:
                 al_id_to_profile[al_id] = profile
             if mal_id:
                 mal_id_to_profile[mal_id] = profile
+            if simkl_uname:
+                simkl_uname_to_profile[simkl_uname.lower()] = profile
 
         # Step 2: update anime entries
         anime_updated = 0
@@ -6373,11 +6616,8 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = al_id_to_profile[al_uid]
             elif mal_uid and mal_uid in mal_id_to_profile:
                 matched = mal_id_to_profile[mal_uid]
-            elif simkl_uname:
-                for p in users.values():
-                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
-                        matched = p
-                        break
+            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                matched = simkl_uname_to_profile[simkl_uname.lower()]
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 show_updated += 1
@@ -6394,11 +6634,8 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = al_id_to_profile[al_uid]
             elif mal_uid and mal_uid in mal_id_to_profile:
                 matched = mal_id_to_profile[mal_uid]
-            elif simkl_uname:
-                for p in users.values():
-                    if p.get("simkl_username", "").lower() == simkl_uname.lower():
-                        matched = p
-                        break
+            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                matched = simkl_uname_to_profile[simkl_uname.lower()]
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 movie_updated += 1
