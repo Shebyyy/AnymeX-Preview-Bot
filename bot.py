@@ -6752,7 +6752,7 @@ async def api_vote_handler(request, media_type: str):
 
 
 async def api_get_votes(request, media_type: str):
-    """GET /api/votes/{media_type}/{media_id}?id_type=anilist|mal"""
+    """GET /api/votes/{media_type}/{media_id}?id_type=anilist|mal|simkl&anilist_user_id=X&mal_user_id=X&simkl_user_id=X"""
     if not _check_auth(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
@@ -6762,12 +6762,24 @@ async def api_get_votes(request, media_type: str):
         return web.json_response({"error": "Invalid media_id in URL"}, status=400)
 
     id_type = request.rel_url.query.get("id_type", "anilist").lower()
-    if id_type not in ("anilist", "mal"):
-        return web.json_response({"error": "id_type must be 'anilist' or 'mal'"}, status=400)
+    if id_type not in ("anilist", "mal", "simkl"):
+        return web.json_response({"error": "id_type must be 'anilist', 'mal', or 'simkl'"}, status=400)
+
+    # Resolve voter_id from optional query params to determine user_vote
+    al_uid = request.rel_url.query.get("anilist_user_id")
+    mal_uid = request.rel_url.query.get("mal_user_id")
+    simkl_uid = request.rel_url.query.get("simkl_user_id")
+    voter_id = None
+    if al_uid:
+        voter_id = f"al:{al_uid}"
+    elif mal_uid:
+        voter_id = f"mal:{mal_uid}"
+    elif simkl_uid:
+        voter_id = f"simkl:{simkl_uid}"
 
     async with aiohttp.ClientSession() as session:
         votes, _ = await github_read_json(session, FILE_VOTES)
-        # Resolve anilist_id if mal id_type provided (anime/manga only)
+        # Resolve anilist_id if mal/simkl id_type provided
         if id_type == "mal" and media_type in ("anime", "manga"):
             media_file = FILE_ANIME if media_type == "anime" else FILE_MANGA
             entries, _ = await github_read_json(session, media_file)
@@ -6775,6 +6787,13 @@ async def api_get_votes(request, media_type: str):
             if not entry:
                 return web.json_response({"error": f"No {media_type} with mal_id={media_id} found."}, status=404)
             anilist_id = entry["anilist_id"]
+        elif id_type == "simkl":
+            media_file = FILE_SHOWS if media_type == "show" else FILE_MOVIES
+            entries, _ = await github_read_json(session, media_file)
+            entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
+            if not entry:
+                return web.json_response({"error": f"No {media_type} with simkl_id={media_id} found."}, status=404)
+            anilist_id = entry["simkl_id"]
         elif media_type in ("show", "movie"):
             media_file = FILE_SHOWS if media_type == "show" else FILE_MOVIES
             entries, _ = await github_read_json(session, media_file)
@@ -6794,9 +6813,18 @@ async def api_get_votes(request, media_type: str):
             "total_upvotes": 0,
             "total_downvotes": 0,
             "net": 0,
-            "upvoters": [],
-            "downvoters": [],
+            "user_vote": None,
         })
+
+    # Determine user_vote from voter_id
+    user_vote = None
+    if voter_id:
+        upvoters = record.get("upvotes", [])
+        downvoters = record.get("downvotes", [])
+        if voter_id in upvoters:
+            user_vote = "up"
+        elif voter_id in downvoters:
+            user_vote = "down"
 
     return web.json_response({
         "media_type": media_type,
@@ -6805,8 +6833,7 @@ async def api_get_votes(request, media_type: str):
         "total_upvotes": record.get("total_upvotes", 0),
         "total_downvotes": record.get("total_downvotes", 0),
         "net": record.get("total_upvotes", 0) - record.get("total_downvotes", 0),
-        "upvoters": record.get("upvotes", []),
-        "downvoters": record.get("downvotes", []),
+        "user_vote": user_vote,
     })
 
 
