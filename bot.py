@@ -6685,18 +6685,24 @@ async def api_vote_handler(request, media_type: str):
 
     al_uid = body.get("anilist_user_id")
     mal_uid = body.get("mal_user_id")
+    simkl_uid = body.get("simkl_user_id")
     display_name = str(body.get("display_name", "API User")).strip()
     direction = str(body.get("direction", "")).strip().lower()
-    id_type = str(body.get("id_type", "anilist")).strip().lower()  # "anilist" or "mal"
+    id_type = str(body.get("id_type", "anilist")).strip().lower()  # "anilist", "mal", or "simkl"
 
-    if not al_uid and not mal_uid:
-        return web.json_response({"error": "Provide at least one of: anilist_user_id, mal_user_id"}, status=400)
+    if not al_uid and not mal_uid and not simkl_uid:
+        return web.json_response({"error": "Provide at least one of: anilist_user_id, mal_user_id, simkl_user_id"}, status=400)
     if direction not in ("up", "down"):
         return web.json_response({"error": "direction must be 'up' or 'down'"}, status=400)
-    if id_type not in ("anilist", "mal"):
-        return web.json_response({"error": "id_type must be 'anilist' or 'mal'"}, status=400)
+    if id_type not in ("anilist", "mal", "simkl"):
+        return web.json_response({"error": "id_type must be 'anilist', 'mal', or 'simkl'"}, status=400)
 
-    voter_id = f"al:{al_uid}" if al_uid else f"mal:{mal_uid}"
+    if al_uid:
+        voter_id = f"al:{al_uid}"
+    elif mal_uid:
+        voter_id = f"mal:{mal_uid}"
+    else:
+        voter_id = f"simkl:{simkl_uid}"
 
     # Resolve anilist_id from the media_id — if id_type is "mal", look up by mal_id
     async with aiohttp.ClientSession() as session:
@@ -6715,6 +6721,8 @@ async def api_vote_handler(request, media_type: str):
         entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
     elif id_type == "mal":
         entry = next((e for e in entries if e.get("mal_id") == media_id), None)
+    elif id_type == "simkl":
+        entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
     else:
         entry = next((e for e in entries if e.get("anilist_id") == media_id), None)
 
