@@ -6199,7 +6199,11 @@ import time
 # In-memory rate limit store: { "discord_id:vote_key" -> timestamp_of_last_vote }
 # Resets on bot restart — intentional, lightweight, no DB needed
 _vote_rate_limit: dict[str, float] = {}
-VOTE_COOLDOWN_SECONDS = 300  # 5 minutes per user per item
+# Action counter: { "discord_id:vote_key" -> int }
+# First 2 actions (vote + 1 undo) are free, then cooldown kicks in
+_vote_action_count: dict[str, int] = {}
+VOTE_COOLDOWN_SECONDS = 300  # 5 minutes per user per item (after free undo is used)
+VOTE_FREE_ACTIONS = 2  # vote + 1 undo before cooldown applies
 
 
 def _vote_key(media_type: str, anilist_id: int) -> str:
@@ -6210,21 +6214,44 @@ def _vote_key(media_type: str, anilist_id: int) -> str:
 def _check_vote_rate_limit(discord_id: str, vote_key: str) -> float | None:
     """
     Returns None if allowed, or seconds remaining on cooldown if blocked.
+
+    Logic:
+      - First 2 actions (vote + undo/switch) are always free.
+      - After that, a cooldown of VOTE_COOLDOWN_SECONDS is enforced.
+      - Once the cooldown expires, the counter resets for another free pair.
     Also cleans up expired entries to keep memory tidy.
     """
     rl_key = f"{discord_id}:{vote_key}"
     now = time.monotonic()
+
+    # Clean up old entries
+    if rl_key in _vote_rate_limit and rl_key not in _vote_action_count:
+        del _vote_rate_limit[rl_key]
+
+    action_count = _vote_action_count.get(rl_key, 0)
+
+    # First N actions are always free
+    if action_count < VOTE_FREE_ACTIONS:
+        return None
+
+    # After free actions, enforce cooldown
     last = _vote_rate_limit.get(rl_key)
     if last is not None:
         elapsed = now - last
         if elapsed < VOTE_COOLDOWN_SECONDS:
             return VOTE_COOLDOWN_SECONDS - elapsed
+        # Cooldown expired → reset counter for another free pair
+        _vote_action_count[rl_key] = 0
+        return None
+
     return None
 
 
 def _stamp_vote_rate_limit(discord_id: str, vote_key: str):
     """Record that this user just voted on this item."""
-    _vote_rate_limit[f"{discord_id}:{vote_key}"] = time.monotonic()
+    rl_key = f"{discord_id}:{vote_key}"
+    _vote_rate_limit[rl_key] = time.monotonic()
+    _vote_action_count[rl_key] = _vote_action_count.get(rl_key, 0) + 1
 
 
 async def _cast_vote(
@@ -6395,7 +6422,7 @@ async def _handle_vote_interaction(
         mins = int(cooldown // 60)
         secs = int(cooldown % 60)
         await interaction.followup.send(
-            f"⏳ You already voted on this recently. Try again in **{mins}m {secs}s**.",
+            f"⏳ You've used your free undo. Try again in **{mins}m {secs}s**.",
             ephemeral=True,
         )
         return
