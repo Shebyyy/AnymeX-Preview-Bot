@@ -63,6 +63,7 @@ ANILIST_API = "https://graphql.anilist.co"
 MAL_API = "https://api.myanimelist.net/v2"
 SIMKL_API = "https://api.simkl.com"
 SIMKL_CLIENT_ID = os.environ.get("SIMKL_CLIENT_ID")
+SIMKL_CLIENT_SECRET = os.environ.get("SIMKL_CLIENT_SECRET", "")
 SIMKL_ENCRYPT_KEY = os.environ.get("SIMKL_ENCRYPT_KEY")  # Fernet key — run: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # ── OAuth Config ──────────────────────────────────────────────────────────────────
@@ -71,6 +72,7 @@ SIMKL_ENCRYPT_KEY = os.environ.get("SIMKL_ENCRYPT_KEY")  # Fernet key — run: p
 #   MAL:     https://myanimelist.net/apiconfig
 #   Simkl:   https://simkl.com/apps
 ANILIST_CLIENT_ID = os.environ.get("ANILIST_CLIENT_ID", "")
+ANILIST_CLIENT_SECRET = os.environ.get("ANILIST_CLIENT_SECRET", "")
 MAL_CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "")
 MAL_CLIENT_SECRET = os.environ.get("MAL_CLIENT_SECRET", "")
 
@@ -119,9 +121,10 @@ def _oauth_decrypt_token(encrypted: str) -> str | None:
 # ── PKCE helpers for MAL ─────────────────────────────────────────────────────────
 
 def _generate_pkce() -> tuple[str, str]:
-    """Generate PKCE code_verifier and code_challenge. Returns (verifier, challenge)."""
+    """Generate PKCE code_verifier and code_challenge for MAL (plain method only).
+    MAL does NOT support S256 — challenge must equal verifier directly."""
     verifier = secrets.token_urlsafe(64)[:128]
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    challenge = verifier  # plain method: challenge = verifier (no hashing)
     return verifier, challenge
 
 
@@ -285,94 +288,6 @@ def _oauth_failure_html(service: str, reason: str = "Authorization failed or was
 </body>
 </html>"""
 
-
-def _oauth_waiting_html(state: str) -> str:
-    """Return a 'please wait while we process' HTML page. Used for AniList where token is in fragment."""
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Linking your account...</title>
-<style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    body {{
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
-        color: #c9d1d9; display: flex; align-items: center; justify-content: center;
-        min-height: 100vh; padding: 20px;
-    }}
-    .card {{
-        background: #21262d; border: 1px solid #30363d; border-radius: 16px;
-        padding: 40px; text-align: center; max-width: 400px; width: 100%;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-    }}
-    .spinner {{
-        width: 48px; height: 48px; border: 4px solid #30363d;
-        border-top-color: #58a6ff; border-radius: 50%;
-        animation: spin 0.8s linear infinite; margin: 0 auto 20px;
-    }}
-    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
-    h2 {{ color: #f0f6fc; margin-bottom: 8px; font-size: 20px; }}
-    .sub {{ color: #8b949e; font-size: 14px; }}
-</style>
-</head>
-<body>
-<div class="card">
-    <div class="spinner"></div>
-    <h2>Linking your account...</h2>
-    <div class="sub" id="status">Sending token to server...</div>
-</div>
-<script>
-const hash = window.location.hash.substring(1);
-const params = new URLSearchParams(hash);
-const accessToken = params.get('access_token');
-
-if (!accessToken) {{
-    document.getElementById('status').textContent = 'No access token found. You may have denied authorization.';
-}} else {{
-    fetch('/api/oauth/anilist/complete', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{
-            access_token: accessToken,
-            state: '{state}'
-        }})
-    }})
-    .then(r => r.json())
-    .then(data => {{
-        if (data.success) {{
-            document.getElementById('status').textContent = 'Done! You can close this tab.';
-            // Replace card content with success after a brief delay
-            setTimeout(() => {{
-                document.querySelector('.card').innerHTML = `
-                    <div style="font-size:48px;margin-bottom:16px;">✅</div>
-                    <h2 style="color:#2EA043;margin-bottom:8px;">Account Linked!</h2>
-                    <div style="color:#58a6ff;font-size:18px;font-weight:600;margin-bottom:8px;">${{data.username || ''}}</div>
-                    <div style="display:inline-block;background:#1f2937;border:1px solid #374151;padding:6px 14px;border-radius:8px;font-size:13px;color:#9ca3af;">🎌 AniList</div>
-                    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #30363d;color:#484f58;font-size:13px;">
-                        You can close this tab and return to Discord.
-                    </div>
-                `;
-            }}, 800);
-        }} else {{
-            document.querySelector('.card').innerHTML = `
-                <div style="font-size:48px;margin-bottom:16px;">❌</div>
-                <h2 style="color:#f85149;margin-bottom:8px;">Failed</h2>
-                <div style="color:#8b949e;font-size:14px;">${{data.error || 'Something went wrong.'}}</div>
-                <div style="margin-top:20px;padding-top:16px;border-top:1px solid #30363d;color:#484f58;font-size:13px;">
-                    Close this tab and try again in Discord.
-                </div>
-            `;
-        }}
-    }})
-    .catch(err => {{
-        document.getElementById('status').textContent = 'Network error: ' + err.message;
-    }});
-}}
-</script>
-</body>
-</html>"""
 
 # ── GitHub JSON file paths ──────────────────────────────────────────────────────
 FILE_ANIME = "underrated_anime.json"
@@ -1345,34 +1260,76 @@ async def _oauth_save_profile(discord_id: str, service: str, profile_data: dict,
         return ok
 
 
-# ── AniList OAuth ───────────────────────────────────────────────────────────────
+# ── AniList OAuth (authorization code flow) ─────────────────────────────────────
+
+async def _anilist_exchange_code(code: str) -> dict | None:
+    """Exchange AniList authorization code for access token."""
+    if not ANILIST_CLIENT_ID:
+        print("[AniList OAuth] ANILIST_CLIENT_ID not configured")
+        return None
+
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": ANILIST_CLIENT_ID,
+        "redirect_uri": f"{OAUTH_BASE_URL}/oauth/anilist/callback",
+        "code": code,
+    }
+    if ANILIST_CLIENT_SECRET:
+        payload["client_secret"] = ANILIST_CLIENT_SECRET
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://anilist.co/api/v2/oauth/token",
+                data=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                if r.status != 200:
+                    body = await r.text()
+                    print(f"[AniList OAuth] token exchange failed: status={r.status} body={body[:300]}")
+                    return None
+                return await r.json()
+    except Exception as e:
+        print(f"[AniList OAuth] token exchange exception: {e}")
+        return None
+
 
 async def anilist_callback(request):
-    """Serves the JS page that extracts the token from the URL fragment."""
-    # State is passed as query param so the JS can include it in the POST
-    state = request.query.get("state", "")
-    html = _oauth_waiting_html(state)
-    return web.Response(content_type="text/html", text=html)
+    """AniList redirects here with ?code=xxx."""
+    code = request.query.get("code")
+    state = request.query.get("state")
+    error = request.query.get("error")
 
+    if error:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("anilist", f"Authorization denied: {error}"),
+        )
 
-async def anilist_complete(request):
-    """Receives the AniList token via POST from the JS callback page."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
-
-    access_token = body.get("access_token")
-    state = body.get("state")
-
-    if not access_token or not state:
-        return web.json_response({"success": False, "error": "Missing access_token or state"}, status=400)
+    if not code or not state:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("anilist", "Missing authorization code. Try again."),
+        )
 
     pending = _consume_oauth_state(state)
     if not pending:
-        return web.json_response({"success": False, "error": "Invalid or expired state. Try /link_anilist again."}, status=400)
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("anilist", "Invalid or expired session. Run /link_anilist in Discord again."),
+        )
 
     discord_id = pending["discord_id"]
+
+    # Exchange code for token
+    token_data = await _anilist_exchange_code(code)
+    if not token_data:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("anilist", "Failed to exchange authorization code for token."),
+        )
+
+    access_token = token_data["access_token"]
 
     # Fetch the authenticated user profile using the token
     query = """
@@ -1395,13 +1352,22 @@ async def anilist_complete(request):
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
             ) as r:
                 if r.status != 200:
-                    return web.json_response({"success": False, "error": f"AniList API returned {r.status}"}, status=502)
+                    return web.Response(
+                        content_type="text/html",
+                        text=_oauth_failure_html("anilist", f"AniList API returned {r.status}"),
+                    )
                 data = await r.json()
             viewer = data.get("data", {}).get("Viewer")
             if not viewer:
-                return web.json_response({"success": False, "error": "Could not fetch AniList profile"}, status=502)
+                return web.Response(
+                    content_type="text/html",
+                    text=_oauth_failure_html("anilist", "Could not fetch your AniList profile after authorization."),
+                )
     except Exception as e:
-        return web.json_response({"success": False, "error": f"AniList request failed: {e}"}, status=500)
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("anilist", f"AniList request failed: {e}"),
+        )
 
     stats = viewer.get("statistics", {})
     anime_stats = stats.get("anime", {})
@@ -1423,7 +1389,10 @@ async def anilist_complete(request):
 
     ok = await _oauth_save_profile(discord_id, "anilist", profile_data, access_token)
     if not ok:
-        return web.json_response({"success": False, "error": "Failed to save profile to GitHub"}, status=500)
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("anilist", "Failed to save profile. Try again."),
+        )
 
     # Store result for Discord followup
     _oauth_results[state] = {
@@ -1438,11 +1407,10 @@ async def anilist_complete(request):
         "mean_score": anime_stats.get("meanScore"),
     }
 
-    return web.json_response({
-        "success": True,
-        "username": viewer["name"],
-        "user_id": viewer["id"],
-    })
+    return web.Response(
+        content_type="text/html",
+        text=_oauth_success_html("anilist", viewer["name"], viewer.get("avatar", {}).get("large")),
+    )
 
 
 # ── MAL OAuth ───────────────────────────────────────────────────────────────────
@@ -1636,31 +1604,34 @@ async def simkl_callback(request):
 
     discord_id = pending["discord_id"]
 
-    # Exchange code for token via Simkl API
-    if not SIMKL_CLIENT_ID:
+    # Exchange code for token via Simkl OAuth token endpoint (POST, JSON body)
+    if not SIMKL_CLIENT_ID or not SIMKL_CLIENT_SECRET:
         return web.Response(
             content_type="text/html",
-            text=_oauth_failure_html("simkl", "Simkl integration is not configured."),
+            text=_oauth_failure_html("simkl", "Simkl integration is not fully configured (missing client_id or client_secret)."),
         )
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{SIMKL_API}/oauth/pin/{code}",
-                params={"client_id": SIMKL_CLIENT_ID},
+            async with session.post(
+                "https://api.simkl.com/oauth/token",
+                json={
+                    "code": code,
+                    "client_id": SIMKL_CLIENT_ID,
+                    "client_secret": SIMKL_CLIENT_SECRET,
+                    "redirect_uri": f"{OAUTH_BASE_URL}/oauth/simkl/callback",
+                    "grant_type": "authorization_code",
+                },
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 if r.status != 200:
+                    body = await r.text()
+                    print(f"[Simkl OAuth] token exchange failed: status={r.status} body={body[:300]}")
                     return web.Response(
                         content_type="text/html",
                         text=_oauth_failure_html("simkl", f"Token exchange failed (status {r.status})."),
                     )
                 data = await r.json()
-                if data.get("result") != "OK":
-                    return web.Response(
-                        content_type="text/html",
-                        text=_oauth_failure_html("simkl", "Token exchange returned an error."),
-                    )
                 access_token = data.get("access_token")
                 if not access_token:
                     return web.Response(
@@ -1742,7 +1713,6 @@ async def start_health_server():
     app.router.add_get("/health", health)
     # ── OAuth callbacks ──────────────────────────────────────────────────────────
     app.router.add_get("/oauth/anilist/callback", anilist_callback)
-    app.router.add_post("/api/oauth/anilist/complete", anilist_complete)
     app.router.add_get("/oauth/mal/callback", mal_callback)
     app.router.add_get("/oauth/simkl/callback", simkl_callback)
     app.router.add_get("/api/oauth/status", oauth_status)
@@ -2180,49 +2150,7 @@ def _simkl_decrypt_token(encrypted: str) -> str | None:
         return None
 
 
-# ── Simkl OAuth PIN flow ────────────────────────────────────────────────────────
-
-
-async def _simkl_get_pin() -> dict | None:
-    """Start Simkl PIN auth. Returns user_code, verification_url, expires_in, interval."""
-    if not SIMKL_CLIENT_ID:
-        return None
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{SIMKL_API}/oauth/pin",
-                params={"client_id": SIMKL_CLIENT_ID},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                if r.status != 200:
-                    print(f"[Simkl PIN] failed to get pin: status={r.status}")
-                    return None
-                return await r.json()
-    except Exception as e:
-        print(f"[Simkl PIN] exception getting pin: {e}")
-        return None
-
-
-async def _simkl_poll_pin(user_code: str) -> str | None:
-    """Poll for access token. Returns token string when approved, None if still pending."""
-    if not SIMKL_CLIENT_ID:
-        return None
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{SIMKL_API}/oauth/pin/{user_code}",
-                params={"client_id": SIMKL_CLIENT_ID},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                if r.status != 200:
-                    return None
-                data = await r.json()
-                if data.get("result") == "OK":
-                    return data.get("access_token")
-                return None
-    except Exception as e:
-        print(f"[Simkl PIN] poll exception: {e}")
-        return None
+# ── Simkl helpers ───────────────────────────────────────────────────────────────
 
 
 async def _simkl_fetch_user_with_token(access_token: str) -> dict | None:
@@ -2297,8 +2225,9 @@ async def link_anilist(interaction: discord.Interaction):
     auth_url = (
         f"https://anilist.co/api/v2/oauth/authorize"
         f"?client_id={ANILIST_CLIENT_ID}"
-        f"&response_type=token"
+        f"&response_type=code"
         f"&redirect_uri={OAUTH_BASE_URL}/oauth/anilist/callback"
+        f"&state={state}"
     )
 
     embed = discord.Embed(
@@ -2388,6 +2317,7 @@ async def link_mal(interaction: discord.Interaction):
         f"?response_type=code"
         f"&client_id={MAL_CLIENT_ID}"
         f"&code_challenge={challenge}"
+        f"&code_challenge_method=plain"
         f"&redirect_uri={OAUTH_BASE_URL}/oauth/mal/callback"
         f"&state={state}"
     )
@@ -2454,8 +2384,8 @@ async def link_mal(interaction: discord.Interaction):
 async def link_simkl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    if not SIMKL_CLIENT_ID:
-        await interaction.followup.send("❌ Simkl integration is not configured on this bot.", ephemeral=True)
+    if not SIMKL_CLIENT_ID or not SIMKL_CLIENT_SECRET:
+        await interaction.followup.send("❌ Simkl OAuth is not configured. Set `SIMKL_CLIENT_ID` and `SIMKL_CLIENT_SECRET` env vars.", ephemeral=True)
         return
 
     if not OAUTH_ENCRYPT_KEY:
