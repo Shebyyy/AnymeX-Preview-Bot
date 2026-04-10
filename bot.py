@@ -1281,7 +1281,8 @@ async def _anilist_exchange_code(code: str) -> dict | None:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 "https://anilist.co/api/v2/oauth/token",
-                data=payload,
+                json=payload,
+                headers={"Accept": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as r:
                 if r.status != 200:
@@ -1543,35 +1544,35 @@ async def _mal_exchange_code(code: str, code_verifier: str | None) -> dict | Non
 
 
 async def _mal_fetch_authenticated_user(access_token: str) -> dict | None:
-    """Fetch MAL user profile using OAuth token."""
+    """Fetch MAL user profile using OAuth token. Returns user dict or None with error details logged."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{MAL_API}/users/me",
+                f"{MAL_API}/users/@me",
                 headers={"Authorization": f"Bearer {access_token}"},
                 params={"fields": "anime_statistics,manga_statistics"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 if r.status != 200:
                     body = await r.text()
-                    print(f"[MAL OAuth] fetch user failed: status={r.status} body={body[:200]}")
+                    print(f"[MAL OAuth] fetch user failed: status={r.status} body={body[:300]}")
                     return None
                 data = await r.json()
     except Exception as e:
         print(f"[MAL OAuth] fetch user exception: {e}")
         return None
 
-    anime_stats = data.get("anime_statistics", {})
-    manga_stats = data.get("manga_statistics", {})
+    anime_stats = data.get("anime_statistics") or {}
+    manga_stats = data.get("manga_statistics") or {}
     return {
         "id": data.get("id"),
         "username": data.get("name"),
-        "url": data.get("url"),
+        "url": f"https://myanimelist.net/profile/{data.get('name', '')}",
         "avatar": data.get("picture"),
-        "anime_completed": anime_stats.get("completed"),
+        "anime_completed": anime_stats.get("num_items_completed"),
         "anime_mean_score": anime_stats.get("mean_score"),
-        "manga_completed": manga_stats.get("completed"),
-        "manga_mean_score": manga_stats.get("mean_score"),
+        "manga_completed": manga_stats.get("num_items_completed") if manga_stats else None,
+        "manga_mean_score": manga_stats.get("mean_score") if manga_stats else None,
     }
 
 
