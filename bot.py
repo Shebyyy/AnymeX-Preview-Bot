@@ -22,14 +22,17 @@ _SUPPORT_CHANNEL_RAW = os.environ.get("SUPPORT_CHANNEL_ID", "")
 SUPPORT_CHANNEL_ID = int(_SUPPORT_CHANNEL_RAW) if _SUPPORT_CHANNEL_RAW.strip().isdigit() else None
 
 # ── Load FAQ data ───────────────────────────────────────────────────────────────
-_FAQ_PATH = os.path.join(os.path.dirname(__file__), "faq.json")
-try:
-    with open(_FAQ_PATH, "r", encoding="utf-8") as _f:
-        _FAQ_LIST: list[dict] = json.load(_f)
-    FAQ_MAP: dict[int, dict] = {entry["id"]: entry for entry in _FAQ_LIST}
-except Exception as _e:
-    print(f"⚠️ Could not load faq.json: {_e}")
-    FAQ_MAP = {}
+FAQ_MAP: dict[int, dict] = {}  # populated in on_ready
+
+async def load_faq_from_github():
+    global FAQ_MAP
+    try:
+        async with aiohttp.ClientSession() as session:
+            data, _ = await github_read_json(session, FILE_FAQ)
+            FAQ_MAP = {entry["id"]: entry for entry in data}
+            print(f"✅ Loaded {len(FAQ_MAP)} FAQ entries from GitHub")
+    except Exception as e:
+        print(f"⚠️ Could not load faq.json: {e}")
 
 # ── Proxy Config ───────────────────────────────────────────────────────────────
 _PROXY_HOST = os.environ.get("PROXY_HOST")
@@ -64,6 +67,7 @@ FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
+FILE_FAQ = "faq.json"
 
 
 DEFAULT_PREFIXES = ["?"]
@@ -1868,6 +1872,7 @@ async def movie_autocomplete(
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
+    await load_faq_from_github()
 
 
     # Sync slash commands once to avoid Cloudflare rate limiting on every restart
@@ -7072,22 +7077,22 @@ async def fix_discord_info(interaction: discord.Interaction):
 
 @bot.event
 async def on_message(message: discord.Message):
-    # ── FAQ reply handler ───────────────────────────────────────────────────────
-    # In the support channel, if someone replies to a message with "faq #N"
-    # (case-insensitive, e.g. "faq #3" or "FAQ #12"), the bot replies to the
-    # original message with the matching FAQ embed.
+    # ── FAQ handler ─────────────────────────────────────────────────────────────
+    # In the support channel, "faq #N" (anywhere in the message) triggers the bot.
+    # • Reply mode:   reply to a message with "faq #N"  → bot replies & pings the original author
+    # • Mention mode: "@user faq #N" (no reply)         → bot sends embed mentioning that user
     if (
         not message.author.bot
         and SUPPORT_CHANNEL_ID
         and message.channel.id == SUPPORT_CHANNEL_ID
-        and message.reference is not None  # must be a reply
+        and (message.reference is not None or len(message.mentions) > 0)
     ):
-        faq_match = re.search(r"\bfaq\s*#(\d+)\b", message.content, re.IGNORECASE)
+        faq_match = re.search(r"\bfaq\s*#?(\d+)\b", message.content, re.IGNORECASE)
         if faq_match:
             faq_num = int(faq_match.group(1))
             faq = FAQ_MAP.get(faq_num)
 
-            # Delete the triggering "faq #N" message to keep the channel clean
+            # Delete the triggering message to keep the channel clean
             try:
                 await message.delete()
             except discord.HTTPException:
@@ -7100,20 +7105,24 @@ async def on_message(message: discord.Message):
                     color=0x6A5ACD,
                 )
                 embed.set_footer(text="AnymeX • Frequently Asked Questions")
-                # Reply to the original message that was being replied to
-                try:
-                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                    await ref_msg.reply(embed=embed, mention_author=True)
-                except discord.HTTPException:
-                    await message.channel.send(embed=embed)
+
+                if message.reference is not None:
+                    # Reply mode — ping the author of the original message
+                    try:
+                        ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                        await ref_msg.reply(embed=embed, mention_author=True)
+                    except discord.HTTPException:
+                        await message.channel.send(embed=embed)
+                else:
+                    # Mention mode — ping all mentioned users
+                    mentions = " ".join(u.mention for u in message.mentions)
+                    await message.channel.send(content=mentions, embed=embed)
             else:
                 await message.channel.send(
                     f"⚠️ FAQ **#{faq_num}** not found. Valid range: 1–{max(FAQ_MAP.keys(), default=0)}.",
                     delete_after=8,
                 )
             return  # skip process_commands for this message
-
-    await bot.process_commands(message)
 
 
 async def main():
