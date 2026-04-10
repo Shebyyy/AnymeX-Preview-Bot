@@ -7095,7 +7095,7 @@ async def on_message(message: discord.Message):
 
             if faq:
                 embed = discord.Embed(
-                    title=f"❓ FAQ #{faq_num} — {faq["title"]}",
+                    title=f"❓ FAQ #{faq_num} — {faq['title']}",
                     description=faq["description"],
                     color=0x6A5ACD,
                 )
