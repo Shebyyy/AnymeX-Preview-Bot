@@ -6,6 +6,9 @@ from aiohttp import web
 import asyncio
 import os
 import base64
+import hashlib
+import secrets
+import time
 import json
 import re
 import threading
@@ -50,12 +53,326 @@ GITHUB_REPO = "AnymeX-Preview"
 GITHUB_BRANCH = "beta"
 WORKFLOW_FILE = "beta_manual.yml"
 
+# ── Private userdata repo (tokens + user profiles) ────────────────────────────────
+# users.json is stored in a separate private repo for security (contains encrypted tokens)
+USERDATA_REPO = "clients-userdata"
+USERDATA_BRANCH = "main"
+
 GITHUB_API = "https://api.github.com"
 ANILIST_API = "https://graphql.anilist.co"
 MAL_API = "https://api.myanimelist.net/v2"
 SIMKL_API = "https://api.simkl.com"
 SIMKL_CLIENT_ID = os.environ.get("SIMKL_CLIENT_ID")
 SIMKL_ENCRYPT_KEY = os.environ.get("SIMKL_ENCRYPT_KEY")  # Fernet key — run: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# ── OAuth Config ──────────────────────────────────────────────────────────────────
+# Register apps at:
+#   AniList: https://anilist.co/settings/developer
+#   MAL:     https://myanimelist.net/apiconfig
+#   Simkl:   https://simkl.com/apps
+ANILIST_CLIENT_ID = os.environ.get("ANILIST_CLIENT_ID", "")
+MAL_CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "")
+MAL_CLIENT_SECRET = os.environ.get("MAL_CLIENT_SECRET", "")
+
+# Base URL for OAuth callbacks (your bot's public URL, e.g. https://anymex-preview-bot.onrender.com)
+OAUTH_BASE_URL = os.environ.get("OAUTH_BASE_URL", f"http://localhost:{PORT}")
+
+# In-memory store for pending OAuth states: {state_string: {"discord_id": str, "service": str, "created": float}}
+_oauth_pending: dict[str, dict] = {}
+
+# In-memory store for completed OAuth results: {state_string: {"success": bool, "service": str, "username": str, ...}}
+_oauth_results: dict[str, dict] = {}
+
+# Max time (seconds) a user has to complete OAuth after clicking the link
+OAUTH_EXPIRY = 600  # 10 minutes
+
+# ── Shared token encryption (works for any service) ──────────────────────────────
+# Falls back to SIMKL_ENCRYPT_KEY for backward compat, or uses a dedicated key
+OAUTH_ENCRYPT_KEY = os.environ.get("OAUTH_ENCRYPT_KEY") or SIMKL_ENCRYPT_KEY
+
+
+def _oauth_encrypt_token(token: str) -> str | None:
+    """Encrypt an OAuth access token for safe storage in GitHub JSON."""
+    if not OAUTH_ENCRYPT_KEY:
+        print("[OAuth encrypt] No encryption key configured — cannot encrypt token")
+        return None
+    try:
+        f = Fernet(OAUTH_ENCRYPT_KEY.encode())
+        return f.encrypt(token.encode()).decode()
+    except Exception as e:
+        print(f"[OAuth encrypt] failed: {e}")
+        return None
+
+
+def _oauth_decrypt_token(encrypted: str) -> str | None:
+    """Decrypt a stored OAuth access token."""
+    if not OAUTH_ENCRYPT_KEY or not encrypted:
+        return None
+    try:
+        f = Fernet(OAUTH_ENCRYPT_KEY.encode())
+        return f.decrypt(encrypted.encode()).decode()
+    except Exception as e:
+        print(f"[OAuth decrypt] failed: {e}")
+        return None
+
+
+# ── PKCE helpers for MAL ─────────────────────────────────────────────────────────
+
+def _generate_pkce() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge. Returns (verifier, challenge)."""
+    verifier = secrets.token_urlsafe(64)[:128]
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+# ── State management ──────────────────────────────────────────────────────────────
+
+def _create_oauth_state(discord_id: int, service: str) -> str:
+    """Create a unique OAuth state, store it, and return it."""
+    state = secrets.token_urlsafe(32)
+    _oauth_pending[state] = {
+        "discord_id": str(discord_id),
+        "service": service,
+        "created": time.time(),
+    }
+    return state
+
+
+def _consume_oauth_state(state: str) -> dict | None:
+    """Pop and return a pending OAuth state. Returns None if invalid/expired."""
+    data = _oauth_pending.pop(state, None)
+    if not data:
+        return None
+    if time.time() - data["created"] > OAUTH_EXPIRY:
+        return None
+    return data
+
+
+# ── HTML callback pages ──────────────────────────────────────────────────────────
+
+def _oauth_success_html(service: str, username: str, avatar_url: str | None = None) -> str:
+    """Return a nice 'Auth Completed' HTML page."""
+    service_icons = {
+        "anilist": "🎌",
+        "mal": "🦊",
+        "simkl": "🎬",
+    }
+    icon = service_icons.get(service, "✅")
+    service_label = {
+        "anilist": "AniList",
+        "mal": "MyAnimeList",
+        "simkl": "Simkl",
+    }.get(service, service)
+
+    avatar_html = ""
+    if avatar_url:
+        avatar_html = f'<img src="{avatar_url}" alt="Avatar" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #2EA043;margin-bottom:16px;">'
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Authorization Successful</title>
+<style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+        color: #c9d1d9;
+        display: flex; align-items: center; justify-content: center;
+        min-height: 100vh; padding: 20px;
+    }}
+    .card {{
+        background: #21262d; border: 1px solid #30363d; border-radius: 16px;
+        padding: 40px; text-align: center; max-width: 400px; width: 100%;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }}
+    .icon {{ font-size: 64px; margin-bottom: 16px; }}
+    .badge {{
+        display: inline-block; background: #2EA043; color: white;
+        padding: 4px 16px; border-radius: 20px; font-size: 14px; font-weight: 600;
+        margin-bottom: 12px;
+    }}
+    h2 {{ color: #f0f6fc; margin-bottom: 8px; font-size: 24px; }}
+    .username {{ color: #58a6ff; font-size: 20px; font-weight: 600; margin-bottom: 16px; }}
+    .service-tag {{
+        display: inline-block; background: #1f2937; border: 1px solid #374151;
+        padding: 6px 14px; border-radius: 8px; font-size: 13px; color: #9ca3af;
+    }}
+    .footer {{
+        margin-top: 24px; padding-top: 16px; border-top: 1px solid #30363d;
+        color: #484f58; font-size: 13px;
+    }}
+    .checkmark {{
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 48px; height: 48px; border-radius: 50%; background: #2EA043;
+        margin-bottom: 16px;
+    }}
+    .checkmark svg {{ width: 28px; height: 28px; }}
+</style>
+</head>
+<body>
+<div class="card">
+    {avatar_html}
+    <div class="checkmark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+    </div>
+    <div class="badge">Authorization Complete</div>
+    <h2>✅ Linked!</h2>
+    <div class="username">{username}</div>
+    <div class="service-tag">{icon} {service_label}</div>
+    <div class="footer">
+        You can close this tab and return to Discord.<br>
+        Your account has been linked successfully.
+    </div>
+</div>
+</body>
+</html>"""
+
+
+def _oauth_failure_html(service: str, reason: str = "Authorization failed or was cancelled.") -> str:
+    """Return a failure HTML page."""
+    service_label = {
+        "anilist": "AniList",
+        "mal": "MyAnimeList",
+        "simkl": "Simkl",
+    }.get(service, service)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Authorization Failed</title>
+<style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+        color: #c9d1d9; display: flex; align-items: center; justify-content: center;
+        min-height: 100vh; padding: 20px;
+    }}
+    .card {{
+        background: #21262d; border: 1px solid #30363d; border-radius: 16px;
+        padding: 40px; text-align: center; max-width: 400px; width: 100%;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }}
+    .icon {{ font-size: 48px; margin-bottom: 16px; }}
+    h2 {{ color: #f85149; margin-bottom: 12px; font-size: 22px; }}
+    .reason {{ color: #8b949e; font-size: 15px; margin-bottom: 20px; line-height: 1.5; }}
+    .service-tag {{
+        display: inline-block; background: #1f2937; border: 1px solid #374151;
+        padding: 6px 14px; border-radius: 8px; font-size: 13px; color: #9ca3af;
+    }}
+    .footer {{
+        margin-top: 20px; padding-top: 16px; border-top: 1px solid #30363d;
+        color: #484f58; font-size: 13px;
+    }}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="icon">❌</div>
+    <h2>Authorization Failed</h2>
+    <div class="reason">{reason}</div>
+    <div class="service-tag">{service_label}</div>
+    <div class="footer">
+        You can close this tab and try again in Discord.
+    </div>
+</div>
+</body>
+</html>"""
+
+
+def _oauth_waiting_html(state: str) -> str:
+    """Return a 'please wait while we process' HTML page. Used for AniList where token is in fragment."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linking your account...</title>
+<style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+        color: #c9d1d9; display: flex; align-items: center; justify-content: center;
+        min-height: 100vh; padding: 20px;
+    }}
+    .card {{
+        background: #21262d; border: 1px solid #30363d; border-radius: 16px;
+        padding: 40px; text-align: center; max-width: 400px; width: 100%;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }}
+    .spinner {{
+        width: 48px; height: 48px; border: 4px solid #30363d;
+        border-top-color: #58a6ff; border-radius: 50%;
+        animation: spin 0.8s linear infinite; margin: 0 auto 20px;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    h2 {{ color: #f0f6fc; margin-bottom: 8px; font-size: 20px; }}
+    .sub {{ color: #8b949e; font-size: 14px; }}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="spinner"></div>
+    <h2>Linking your account...</h2>
+    <div class="sub" id="status">Sending token to server...</div>
+</div>
+<script>
+const hash = window.location.hash.substring(1);
+const params = new URLSearchParams(hash);
+const accessToken = params.get('access_token');
+
+if (!accessToken) {{
+    document.getElementById('status').textContent = 'No access token found. You may have denied authorization.';
+}} else {{
+    fetch('/api/oauth/anilist/complete', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{
+            access_token: accessToken,
+            state: '{state}'
+        }})
+    }})
+    .then(r => r.json())
+    .then(data => {{
+        if (data.success) {{
+            document.getElementById('status').textContent = 'Done! You can close this tab.';
+            // Replace card content with success after a brief delay
+            setTimeout(() => {{
+                document.querySelector('.card').innerHTML = `
+                    <div style="font-size:48px;margin-bottom:16px;">✅</div>
+                    <h2 style="color:#2EA043;margin-bottom:8px;">Account Linked!</h2>
+                    <div style="color:#58a6ff;font-size:18px;font-weight:600;margin-bottom:8px;">${{data.username || ''}}</div>
+                    <div style="display:inline-block;background:#1f2937;border:1px solid #374151;padding:6px 14px;border-radius:8px;font-size:13px;color:#9ca3af;">🎌 AniList</div>
+                    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #30363d;color:#484f58;font-size:13px;">
+                        You can close this tab and return to Discord.
+                    </div>
+                `;
+            }}, 800);
+        }} else {{
+            document.querySelector('.card').innerHTML = `
+                <div style="font-size:48px;margin-bottom:16px;">❌</div>
+                <h2 style="color:#f85149;margin-bottom:8px;">Failed</h2>
+                <div style="color:#8b949e;font-size:14px;">${{data.error || 'Something went wrong.'}}</div>
+                <div style="margin-top:20px;padding-top:16px;border-top:1px solid #30363d;color:#484f58;font-size:13px;">
+                    Close this tab and try again in Discord.
+                </div>
+            `;
+        }}
+    }})
+    .catch(err => {{
+        document.getElementById('status').textContent = 'Network error: ' + err.message;
+    }});
+}}
+</script>
+</body>
+</html>"""
 
 # ── GitHub JSON file paths ──────────────────────────────────────────────────────
 FILE_ANIME = "underrated_anime.json"
@@ -811,7 +1128,7 @@ async def _api_add_media(request, media_type: str):
         mal_url = f"https://myanimelist.net/{type_path}/{resolved_mal_id}" if resolved_mal_id else "N/A"
 
         # Try to find this user's full profile from users.json for the snapshot
-        users_data, _ = await github_read_json(session, FILE_USERS)
+        users_data, _ = await read_users(session)
         matched_profile = None
         for _discord_id, p in users_data.items():
             if anilist_user_id and p.get("anilist_user_id") == anilist_user_id:
@@ -938,7 +1255,7 @@ async def _api_add_simkl(request, media_type: str):
     # Try to match a user by simkl_username from request
     simkl_username = (body.get("simkl_username") or "").strip() or None
     async with aiohttp.ClientSession() as session:
-        users_data, _ = await github_read_json(session, FILE_USERS)
+        users_data, _ = await read_users(session)
 
     matched_profile = None
     if simkl_username:
@@ -999,10 +1316,436 @@ async def api_add_movie(request):
     return await _api_add_simkl(request, "movie")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# OAuth Callback Handlers
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _oauth_save_profile(discord_id: str, service: str, profile_data: dict, access_token: str, extra_fields: dict | None = None) -> bool:
+    """Save/update a user's OAuth-linked profile in users.json. Returns True on success."""
+    encrypted = _oauth_encrypt_token(access_token)
+    if not encrypted:
+        print(f"[OAuth save] Failed to encrypt {service} token for {discord_id}")
+        return False
+
+    async with aiohttp.ClientSession() as session:
+        users, sha = await read_users(session)
+        existing = users.get(discord_id, {})
+
+        # Merge new fields into existing
+        merged = {**existing}
+        merged.update(extra_fields or {})
+        merged[f"{service}_token"] = encrypted
+        merged.update(profile_data)
+
+        users[discord_id] = merged
+        ok = await write_users(
+            session, users, sha,
+            f"link: {service} OAuth for discord:{discord_id}",
+        )
+        return ok
+
+
+# ── AniList OAuth ───────────────────────────────────────────────────────────────
+
+async def anilist_callback(request):
+    """Serves the JS page that extracts the token from the URL fragment."""
+    # State is passed as query param so the JS can include it in the POST
+    state = request.query.get("state", "")
+    html = _oauth_waiting_html(state)
+    return web.Response(content_type="text/html", text=html)
+
+
+async def anilist_complete(request):
+    """Receives the AniList token via POST from the JS callback page."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+
+    access_token = body.get("access_token")
+    state = body.get("state")
+
+    if not access_token or not state:
+        return web.json_response({"success": False, "error": "Missing access_token or state"}, status=400)
+
+    pending = _consume_oauth_state(state)
+    if not pending:
+        return web.json_response({"success": False, "error": "Invalid or expired state. Try /link_anilist again."}, status=400)
+
+    discord_id = pending["discord_id"]
+
+    # Fetch the authenticated user profile using the token
+    query = """
+    query {
+        Viewer {
+            id name avatar { large }
+            bannerImage siteUrl about
+            statistics {
+                anime { count meanScore minutesWatched episodesWatched }
+                manga { count chaptersRead volumesRead }
+            }
+        }
+    }
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                ANILIST_API,
+                json={"query": query},
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            ) as r:
+                if r.status != 200:
+                    return web.json_response({"success": False, "error": f"AniList API returned {r.status}"}, status=502)
+                data = await r.json()
+            viewer = data.get("data", {}).get("Viewer")
+            if not viewer:
+                return web.json_response({"success": False, "error": "Could not fetch AniList profile"}, status=502)
+    except Exception as e:
+        return web.json_response({"success": False, "error": f"AniList request failed: {e}"}, status=500)
+
+    stats = viewer.get("statistics", {})
+    anime_stats = stats.get("anime", {})
+    manga_stats = stats.get("manga", {})
+
+    profile_data = {
+        "anilist_user_id": viewer["id"],
+        "anilist_username": viewer["name"],
+        "anilist_url": viewer.get("siteUrl"),
+        "anilist_avatar": viewer.get("avatar", {}).get("large"),
+        "anilist_banner": viewer.get("bannerImage"),
+        "anilist_about": (viewer.get("about") or "")[:300],
+        "anilist_anime_count": anime_stats.get("count"),
+        "anilist_manga_count": manga_stats.get("count"),
+        "anilist_mean_score": anime_stats.get("meanScore"),
+        "anilist_minutes_watched": anime_stats.get("minutesWatched"),
+        "anilist_chapters_read": manga_stats.get("chaptersRead"),
+    }
+
+    ok = await _oauth_save_profile(discord_id, "anilist", profile_data, access_token)
+    if not ok:
+        return web.json_response({"success": False, "error": "Failed to save profile to GitHub"}, status=500)
+
+    # Store result for Discord followup
+    _oauth_results[state] = {
+        "success": True,
+        "service": "anilist",
+        "discord_id": discord_id,
+        "username": viewer["name"],
+        "user_id": viewer["id"],
+        "avatar": viewer.get("avatar", {}).get("large"),
+        "anime_count": anime_stats.get("count"),
+        "manga_count": manga_stats.get("count"),
+        "mean_score": anime_stats.get("meanScore"),
+    }
+
+    return web.json_response({
+        "success": True,
+        "username": viewer["name"],
+        "user_id": viewer["id"],
+    })
+
+
+# ── MAL OAuth ───────────────────────────────────────────────────────────────────
+
+# Store PKCE verifiers temporarily: {state: code_verifier}
+_mal_pkce_store: dict[str, str] = {}
+
+
+async def mal_callback(request):
+    """MAL redirects here with ?code=xxx&state=xxx."""
+    code = request.query.get("code")
+    state = request.query.get("state")
+    error = request.query.get("error")
+
+    if error:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("mal", f"Authorization denied: {error}"),
+        )
+
+    if not code or not state:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("mal", "Missing authorization code. Try again."),
+        )
+
+    pending = _consume_oauth_state(state)
+    if not pending:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("mal", "Invalid or expired session. Run /link_mal in Discord again."),
+        )
+
+    discord_id = pending["discord_id"]
+    verifier = _mal_pkce_store.pop(state, None)
+
+    # Exchange code for token
+    token_data = await _mal_exchange_code(code, verifier)
+    if not token_data:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("mal", "Failed to exchange authorization code for token."),
+        )
+
+    access_token = token_data["access_token"]
+    refresh_token = token_data.get("refresh_token")
+
+    # Fetch user profile
+    profile = await _mal_fetch_authenticated_user(access_token)
+    if not profile:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("mal", "Failed to fetch your MAL profile after authorization."),
+        )
+
+    encrypted_token = _oauth_encrypt_token(access_token)
+    encrypted_refresh = _oauth_encrypt_token(refresh_token) if refresh_token else None
+
+    profile_data = {
+        "mal_user_id": profile["id"],
+        "mal_username": profile["username"],
+        "mal_url": profile["url"],
+        "mal_avatar": profile["avatar"],
+        "mal_anime_completed": profile.get("anime_completed"),
+        "mal_anime_mean_score": profile.get("anime_mean_score"),
+        "mal_manga_completed": profile.get("manga_completed"),
+        "mal_manga_mean_score": profile.get("manga_mean_score"),
+    }
+    if encrypted_token:
+        profile_data["mal_token"] = encrypted_token
+    if encrypted_refresh:
+        profile_data["mal_refresh_token"] = encrypted_refresh
+
+    ok = await _oauth_save_profile(discord_id, "mal", profile_data, access_token)
+    if not ok:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("mal", "Failed to save profile. Try again."),
+        )
+
+    # Store result for Discord followup
+    _oauth_results[state] = {
+        "success": True,
+        "service": "mal",
+        "discord_id": discord_id,
+        "username": profile["username"],
+        "user_id": profile["id"],
+        "avatar": profile["avatar"],
+        "anime_completed": profile.get("anime_completed"),
+        "manga_completed": profile.get("manga_completed"),
+    }
+
+    return web.Response(
+        content_type="text/html",
+        text=_oauth_success_html("mal", profile["username"], profile["avatar"]),
+    )
+
+
+async def _mal_exchange_code(code: str, code_verifier: str | None) -> dict | None:
+    """Exchange MAL authorization code for access token."""
+    if not MAL_CLIENT_ID or not MAL_CLIENT_SECRET:
+        print("[MAL OAuth] MAL_CLIENT_ID or MAL_CLIENT_SECRET not configured")
+        return None
+
+    payload = {
+        "client_id": MAL_CLIENT_ID,
+        "client_secret": MAL_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": f"{OAUTH_BASE_URL}/oauth/mal/callback",
+    }
+    if code_verifier:
+        payload["code_verifier"] = code_verifier
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://myanimelist.net/v1/oauth2/token",
+                data=payload,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                if r.status != 200:
+                    body = await r.text()
+                    print(f"[MAL OAuth] token exchange failed: status={r.status} body={body[:300]}")
+                    return None
+                return await r.json()
+    except Exception as e:
+        print(f"[MAL OAuth] token exchange exception: {e}")
+        return None
+
+
+async def _mal_fetch_authenticated_user(access_token: str) -> dict | None:
+    """Fetch MAL user profile using OAuth token."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{MAL_API}/users/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"fields": "anime_statistics,manga_statistics"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    body = await r.text()
+                    print(f"[MAL OAuth] fetch user failed: status={r.status} body={body[:200]}")
+                    return None
+                data = await r.json()
+    except Exception as e:
+        print(f"[MAL OAuth] fetch user exception: {e}")
+        return None
+
+    anime_stats = data.get("anime_statistics", {})
+    manga_stats = data.get("manga_statistics", {})
+    return {
+        "id": data.get("id"),
+        "username": data.get("name"),
+        "url": data.get("url"),
+        "avatar": data.get("picture"),
+        "anime_completed": anime_stats.get("completed"),
+        "anime_mean_score": anime_stats.get("mean_score"),
+        "manga_completed": manga_stats.get("completed"),
+        "manga_mean_score": manga_stats.get("mean_score"),
+    }
+
+
+# ── Simkl OAuth (redirect flow) ─────────────────────────────────────────────────
+
+async def simkl_callback(request):
+    """Simkl redirects here with ?code=xxx&state=xxx."""
+    code = request.query.get("code")
+    state = request.query.get("state")
+    error = request.query.get("error")
+
+    if error:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", f"Authorization denied: {error}"),
+        )
+
+    if not code or not state:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", "Missing authorization code. Try again."),
+        )
+
+    pending = _consume_oauth_state(state)
+    if not pending:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", "Invalid or expired session. Run /link_simkl in Discord again."),
+        )
+
+    discord_id = pending["discord_id"]
+
+    # Exchange code for token via Simkl API
+    if not SIMKL_CLIENT_ID:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", "Simkl integration is not configured."),
+        )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIMKL_API}/oauth/pin/{code}",
+                params={"client_id": SIMKL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    return web.Response(
+                        content_type="text/html",
+                        text=_oauth_failure_html("simkl", f"Token exchange failed (status {r.status})."),
+                    )
+                data = await r.json()
+                if data.get("result") != "OK":
+                    return web.Response(
+                        content_type="text/html",
+                        text=_oauth_failure_html("simkl", "Token exchange returned an error."),
+                    )
+                access_token = data.get("access_token")
+                if not access_token:
+                    return web.Response(
+                        content_type="text/html",
+                        text=_oauth_failure_html("simkl", "No access token received."),
+                    )
+
+        # Fetch Simkl user profile
+        simkl_profile = await _simkl_fetch_user_with_token(access_token)
+        if not simkl_profile:
+            return web.Response(
+                content_type="text/html",
+                text=_oauth_failure_html("simkl", "Authorized but failed to fetch your Simkl profile."),
+            )
+    except Exception as e:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", f"Request failed: {e}"),
+        )
+
+    encrypted = _simkl_encrypt_token(access_token) if SIMKL_ENCRYPT_KEY else _oauth_encrypt_token(access_token)
+    if not encrypted:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", "Failed to encrypt your token. Contact admin."),
+        )
+
+    # Save to users.json
+    async with aiohttp.ClientSession() as session:
+        users, sha = await read_users(session)
+        existing = users.get(discord_id, {})
+        existing["simkl_username"] = simkl_profile["username"]
+        existing["simkl_user_id"] = simkl_profile["user_id"]
+        existing["simkl_avatar"] = simkl_profile["avatar_url"]
+        existing["simkl_token"] = encrypted
+        users[discord_id] = existing
+        ok = await write_users(
+            session, users, sha,
+            f"link: Simkl OAuth redirect for discord:{discord_id}",
+        )
+
+    if not ok:
+        return web.Response(
+            content_type="text/html",
+            text=_oauth_failure_html("simkl", "Failed to save profile. Try again."),
+        )
+
+    _oauth_results[state] = {
+        "success": True,
+        "service": "simkl",
+        "discord_id": discord_id,
+        "username": simkl_profile["username"],
+        "user_id": simkl_profile["user_id"],
+        "avatar": simkl_profile["avatar_url"],
+    }
+
+    return web.Response(
+        content_type="text/html",
+        text=_oauth_success_html("simkl", simkl_profile["username"], simkl_profile["avatar_url"]),
+    )
+
+
+# ── OAuth status check (for Discord bot to poll) ────────────────────────────────
+
+async def oauth_status(request):
+    """GET /api/oauth/status?state=xxx — Discord bot polls this to check if OAuth completed."""
+    state = request.query.get("state")
+    if not state:
+        return web.json_response({"status": "pending"}, status=400)
+    result = _oauth_results.pop(state, None)
+    if result:
+        return web.json_response(result)
+    return web.json_response({"status": "pending"})
+
+
 async def start_health_server():
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    # ── OAuth callbacks ──────────────────────────────────────────────────────────
+    app.router.add_get("/oauth/anilist/callback", anilist_callback)
+    app.router.add_post("/api/oauth/anilist/complete", anilist_complete)
+    app.router.add_get("/oauth/mal/callback", mal_callback)
+    app.router.add_get("/oauth/simkl/callback", simkl_callback)
+    app.router.add_get("/api/oauth/status", oauth_status)
     # ── media add ──────────────────────────────────────────────────────────────
     app.router.add_post("/api/add_anime", api_add_anime)
     app.router.add_post("/api/add_manga", api_add_manga)
@@ -1036,10 +1779,12 @@ def gh_headers():
     }
 
 
-async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tuple:
+async def github_read_json(session: aiohttp.ClientSession, filepath: str, *, repo: str | None = None, branch: str | None = None) -> tuple:
     """Read a JSON file from GitHub. Returns (parsed_data, sha)."""
+    _repo = repo or GITHUB_REPO
+    _branch = branch or GITHUB_BRANCH
     async with session.get(
-        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{filepath}?ref={GITHUB_BRANCH}",
+        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{_repo}/contents/{filepath}?ref={_branch}",
         headers=gh_headers(),
     ) as r:
         if r.status == 404:
@@ -1065,24 +1810,40 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str) -> tup
 
 
 async def github_write_json(
-    session: aiohttp.ClientSession, filepath: str, data, sha, commit_msg: str
+    session: aiohttp.ClientSession, filepath: str, data, sha, commit_msg: str, *, repo: str | None = None, branch: str | None = None
 ) -> bool:
     """Write/update a JSON file on GitHub. Returns True on success."""
+    _repo = repo or GITHUB_REPO
+    _branch = branch or GITHUB_BRANCH
     payload = {
         "message": commit_msg,
         "content": base64.b64encode(
             json.dumps(data, indent=2, ensure_ascii=False).encode()
         ).decode(),
-        "branch": GITHUB_BRANCH,
+        "branch": _branch,
     }
     if sha:
         payload["sha"] = sha
     async with session.put(
-        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{filepath}",
+        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{_repo}/contents/{filepath}",
         headers=gh_headers(),
         json=payload,
     ) as r:
         return r.status in (200, 201)
+
+
+# ── Userdata convenience wrappers (private repo) ─────────────────────────────────
+# All user data (users.json) is stored in the private repo for token security.
+
+
+async def read_users(session: aiohttp.ClientSession) -> tuple:
+    """Read users.json from the private userdata repo. Returns (data, sha)."""
+    return await github_read_json(session, FILE_USERS, repo=USERDATA_REPO, branch=USERDATA_BRANCH)
+
+
+async def write_users(session: aiohttp.ClientSession, users: dict, sha, commit_msg: str) -> bool:
+    """Write users.json to the private userdata repo. Returns True on success."""
+    return await github_write_json(session, FILE_USERS, users, sha, commit_msg, repo=USERDATA_REPO, branch=USERDATA_BRANCH)
 
 
 # ── AniList helper ─────────────────────────────────────────────────────────────
@@ -1169,7 +1930,7 @@ def extract_mal_id(url: str):
 
 async def get_profile(discord_id: str):
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
     return users.get(discord_id)
 
 
@@ -1510,8 +2271,184 @@ async def _simkl_fetch_user_with_token(access_token: str) -> dict | None:
         return None
 
 
-# ── /link_simkl command ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# /link_anilist — OAuth redirect flow
+# ══════════════════════════════════════════════════════════════════════════════
 
+@bot.tree.command(name="link_anilist", description="Link your AniList account via OAuth (supports private profiles)")
+async def link_anilist(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    if not ANILIST_CLIENT_ID:
+        await interaction.followup.send(
+            "❌ AniList OAuth is not configured on this bot. Set `ANILIST_CLIENT_ID` env var.",
+            ephemeral=True,
+        )
+        return
+
+    if not OAUTH_ENCRYPT_KEY:
+        await interaction.followup.send(
+            "❌ Token encryption key is not configured. Contact the bot admin.",
+            ephemeral=True,
+        )
+        return
+
+    state = _create_oauth_state(interaction.user.id, "anilist")
+    auth_url = (
+        f"https://anilist.co/api/v2/oauth/authorize"
+        f"?client_id={ANILIST_CLIENT_ID}"
+        f"&response_type=token"
+        f"&redirect_uri={OAUTH_BASE_URL}/oauth/anilist/callback"
+    )
+
+    embed = discord.Embed(
+        title="🎌 Link your AniList Account",
+        description=(
+            "**1.** Click the button below to open AniList\n"
+            "**2.** Authorize the app on AniList\n"
+            "**3.** You'll be redirected back — just wait for confirmation\n\n"
+            f"⏳ Link expires in **{OAUTH_EXPIRY // 60} minutes**.\n"
+            "✅ Works with **private** profiles too!"
+        ),
+        color=0x2E51A2,
+    )
+    embed.set_footer(text="Waiting for you to authorize on AniList...")
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="🔗 Open AniList Auth",
+        url=auth_url,
+        style=discord.ButtonStyle.link,
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # Poll for result
+    deadline = time.time() + OAUTH_EXPIRY
+    while time.time() < deadline:
+        await asyncio.sleep(5)
+        # Check our in-memory results
+        result = _oauth_results.pop(state, None)
+        if result:
+            if result.get("success"):
+                embed = discord.Embed(title="✅ AniList Linked!", color=0x2EA043)
+                embed.add_field(name="Username", value=result["username"] or "Unknown", inline=True)
+                embed.add_field(name="AniList ID", value=f"`{result.get('user_id')}`", inline=True)
+                if result.get("anime_count") is not None:
+                    embed.add_field(name="Anime", value=f"{result['anime_count']} watched", inline=True)
+                if result.get("manga_count") is not None:
+                    embed.add_field(name="Manga", value=f"{result['manga_count']} read", inline=True)
+                if result.get("mean_score") is not None:
+                    embed.add_field(name="Mean Score", value=f"{result['mean_score']}/100", inline=True)
+                if result.get("avatar"):
+                    embed.set_thumbnail(url=result["avatar"])
+                embed.set_footer(text="Token encrypted and stored. Works with private profiles!")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(
+                    f"❌ AniList linking failed: {result.get('error', 'Unknown error')}",
+                    ephemeral=True,
+                )
+            return
+
+    _oauth_pending.pop(state, None)
+    await interaction.followup.send(
+        f"⏰ Authorization timed out after {OAUTH_EXPIRY // 60} minutes. Run `/link_anilist` again.",
+        ephemeral=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /link_mal — OAuth redirect flow with PKCE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="link_mal", description="Link your MyAnimeList account via OAuth (supports private profiles)")
+async def link_mal(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    if not MAL_CLIENT_ID or not MAL_CLIENT_SECRET:
+        await interaction.followup.send(
+            "❌ MAL OAuth is not configured on this bot. Set `MAL_CLIENT_ID` and `MAL_CLIENT_SECRET` env vars.",
+            ephemeral=True,
+        )
+        return
+
+    if not OAUTH_ENCRYPT_KEY:
+        await interaction.followup.send(
+            "❌ Token encryption key is not configured. Contact the bot admin.",
+            ephemeral=True,
+        )
+        return
+
+    state = _create_oauth_state(interaction.user.id, "mal")
+    verifier, challenge = _generate_pkce()
+    _mal_pkce_store[state] = verifier
+
+    auth_url = (
+        f"https://myanimelist.net/v1/oauth2/authorize"
+        f"?response_type=code"
+        f"&client_id={MAL_CLIENT_ID}"
+        f"&code_challenge={challenge}"
+        f"&redirect_uri={OAUTH_BASE_URL}/oauth/mal/callback"
+        f"&state={state}"
+    )
+
+    embed = discord.Embed(
+        title="🦊 Link your MyAnimeList Account",
+        description=(
+            "**1.** Click the button below to open MAL\n"
+            "**2.** Authorize the app on MyAnimeList\n"
+            "**3.** You'll be redirected — done!\n\n"
+            f"⏳ Link expires in **{OAUTH_EXPIRY // 60} minutes**.\n"
+            "✅ Works with **private** profiles too!"
+        ),
+        color=0x2E51A2,
+    )
+    embed.set_footer(text="Waiting for you to authorize on MAL...")
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="🔗 Open MAL Auth",
+        url=auth_url,
+        style=discord.ButtonStyle.link,
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # Poll for result
+    deadline = time.time() + OAUTH_EXPIRY
+    while time.time() < deadline:
+        await asyncio.sleep(5)
+        result = _oauth_results.pop(state, None)
+        if result:
+            if result.get("success"):
+                embed = discord.Embed(title="✅ MAL Linked!", color=0x2EA043)
+                embed.add_field(name="Username", value=result["username"] or "Unknown", inline=True)
+                embed.add_field(name="MAL ID", value=f"`{result.get('user_id')}`", inline=True)
+                if result.get("anime_completed") is not None:
+                    embed.add_field(name="Anime Completed", value=str(result["anime_completed"]), inline=True)
+                if result.get("manga_completed") is not None:
+                    embed.add_field(name="Manga Completed", value=str(result["manga_completed"]), inline=True)
+                if result.get("avatar"):
+                    embed.set_thumbnail(url=result["avatar"])
+                embed.set_footer(text="Token encrypted and stored. Works with private profiles!")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(
+                    f"❌ MAL linking failed: {result.get('error', 'Unknown error')}",
+                    ephemeral=True,
+                )
+            return
+
+    _oauth_pending.pop(state, None)
+    _mal_pkce_store.pop(state, None)
+    await interaction.followup.send(
+        f"⏰ Authorization timed out after {OAUTH_EXPIRY // 60} minutes. Run `/link_mal` again.",
+        ephemeral=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /link_simkl — OAuth redirect flow (replaces old PIN flow)
+# ══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="link_simkl", description="Link your Simkl account via OAuth")
 async def link_simkl(interaction: discord.Interaction):
@@ -1521,97 +2458,63 @@ async def link_simkl(interaction: discord.Interaction):
         await interaction.followup.send("❌ Simkl integration is not configured on this bot.", ephemeral=True)
         return
 
-    if not SIMKL_ENCRYPT_KEY:
-        await interaction.followup.send("❌ Simkl token encryption key is not configured. Contact the bot admin.", ephemeral=True)
+    if not OAUTH_ENCRYPT_KEY:
+        await interaction.followup.send("❌ Token encryption key is not configured. Contact the bot admin.", ephemeral=True)
         return
 
-    pin_data = await _simkl_get_pin()
-    if not pin_data:
-        await interaction.followup.send("❌ Failed to start Simkl auth. Try again later.", ephemeral=True)
-        return
-
-    user_code = pin_data.get("user_code")
-    verification_url = pin_data.get("verification_url") or f"https://simkl.com/pin/{user_code}"
-    expires_in = pin_data.get("expires_in", 600)
-    interval = max(pin_data.get("interval", 5), 5)
-    expires_mins = expires_in // 60
+    state = _create_oauth_state(interaction.user.id, "simkl")
+    auth_url = (
+        f"https://simkl.com/oauth/authorize"
+        f"?client_id={SIMKL_CLIENT_ID}"
+        f"&response_type=code"
+        f"&redirect_uri={OAUTH_BASE_URL}/oauth/simkl/callback"
+        f"&state={state}"
+    )
 
     embed = discord.Embed(
-        title="🔗 Link your Simkl Account",
+        title="🎬 Link your Simkl Account",
         description=(
-            f"**1.** Click the button below to open Simkl\n"
-            f"**2.** Enter the PIN code below on the page\n\n"
-            f"⏳ Expires in **{expires_mins} minutes**."
+            "**1.** Click the button below to open Simkl\n"
+            "**2.** Authorize the app on Simkl\n"
+            "**3.** You'll be redirected — done!\n\n"
+            f"⏳ Link expires in **{OAUTH_EXPIRY // 60} minutes**."
         ),
         color=0x1DB954,
     )
-    embed.add_field(name="📋 PIN Code (tap & hold to copy)", value=user_code, inline=False)
     embed.set_footer(text="Waiting for you to authorize on Simkl...")
 
     view = discord.ui.View()
     view.add_item(discord.ui.Button(
-        label="🔗 Open Simkl PIN Page",
-        url=verification_url,
+        label="🔗 Open Simkl Auth",
+        url=auth_url,
         style=discord.ButtonStyle.link,
     ))
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    discord_id = str(interaction.user.id)
-    deadline = asyncio.get_event_loop().time() + expires_in
-
-    while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(interval)
-        access_token = await _simkl_poll_pin(user_code)
-        if not access_token:
-            continue
-
-        simkl_profile = await _simkl_fetch_user_with_token(access_token)
-        if not simkl_profile:
-            await interaction.followup.send(
-                "✅ Authorized but failed to fetch your Simkl profile. Try again.",
-                ephemeral=True,
-            )
+    # Poll for result
+    deadline = time.time() + OAUTH_EXPIRY
+    while time.time() < deadline:
+        await asyncio.sleep(5)
+        result = _oauth_results.pop(state, None)
+        if result:
+            if result.get("success"):
+                embed = discord.Embed(title="✅ Simkl Linked!", color=0x2EA043)
+                embed.add_field(name="Username", value=result["username"] or "Unknown", inline=True)
+                embed.add_field(name="Simkl ID", value=f"`{result.get('user_id')}`", inline=True)
+                if result.get("avatar"):
+                    embed.set_thumbnail(url=result["avatar"])
+                embed.set_footer(text="Your token is encrypted and stored securely.")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(
+                    f"❌ Simkl linking failed: {result.get('error', 'Unknown error')}",
+                    ephemeral=True,
+                )
             return
 
-        encrypted_token = _simkl_encrypt_token(access_token)
-        if not encrypted_token:
-            await interaction.followup.send(
-                "❌ Failed to encrypt your token. Contact the bot admin.",
-                ephemeral=True,
-            )
-            return
-
-        async with aiohttp.ClientSession() as session:
-            users, sha = await github_read_json(session, FILE_USERS)
-            existing = users.get(discord_id, {})
-            existing["simkl_username"] = simkl_profile["username"]
-            existing["simkl_user_id"] = simkl_profile["user_id"]
-            existing["simkl_avatar"] = simkl_profile["avatar_url"]
-            existing["simkl_token"] = encrypted_token
-            existing.setdefault("discord_id", interaction.user.id)
-            existing.setdefault("discord_username", interaction.user.name)
-            existing.setdefault("discord_display_name", interaction.user.display_name)
-            existing.setdefault("discord_avatar", str(interaction.user.display_avatar.url) if interaction.user.display_avatar else None)
-            users[discord_id] = existing
-            ok = await github_write_json(
-                session, FILE_USERS, users, sha,
-                f"link: Simkl OAuth for {interaction.user.display_name}",
-            )
-
-        if ok:
-            embed = discord.Embed(title="✅ Simkl Linked!", color=0x2EA043)
-            embed.add_field(name="Username", value=simkl_profile["username"] or "Unknown", inline=True)
-            embed.add_field(name="Simkl ID", value=f"`{simkl_profile['user_id']}`", inline=True)
-            if simkl_profile["avatar_url"]:
-                embed.set_thumbnail(url=simkl_profile["avatar_url"])
-            embed.set_footer(text="Your token is encrypted and stored securely.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Failed to save your Simkl profile. Try again.", ephemeral=True)
-        return
-
+    _oauth_pending.pop(state, None)
     await interaction.followup.send(
-        f"⏰ Authorization timed out after {expires_mins} minutes. Run `/link_simkl` again.",
+        f"⏰ Authorization timed out after {OAUTH_EXPIRY // 60} minutes. Run `/link_simkl` again.",
         ephemeral=True,
     )
 
@@ -1930,6 +2833,16 @@ async def ensure_json_files():
         _prefix_cache[:] = (
             prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
         )
+
+    # Also ensure FILE_USERS exists in the private userdata repo
+    async with aiohttp.ClientSession() as session:
+        users_data, users_sha = await read_users(session)
+        if users_sha is None:
+            await write_users(session, {}, None, f"init: create {FILE_USERS} in userdata repo")
+            print(f"✅ Created {FILE_USERS} in userdata repo")
+        else:
+            print(f"✅ {FILE_USERS} already exists in userdata repo")
+
     print(f"✅ Active prefixes: {_prefix_cache}")
 
 
@@ -2068,7 +2981,7 @@ async def setup(
     }
 
     async with aiohttp.ClientSession() as session:
-        users, sha = await github_read_json(session, FILE_USERS)
+        users, sha = await read_users(session)
 
         # Merge into existing profile so previously linked accounts aren't wiped.
         # Only overwrite keys that are being actively set in this /setup call.
@@ -2115,9 +3028,8 @@ async def setup(
         users[discord_id] = merged
         profile_entry = merged  # use merged for embed display below
 
-        ok = await github_write_json(
+        ok = await write_users(
             session,
-            FILE_USERS,
             users,
             sha,
             f"Setup profile for {interaction.user.display_name}",
@@ -2184,7 +3096,7 @@ async def myprofile(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
 
     profile = users.get(str(interaction.user.id))
     if not profile:
@@ -2340,7 +3252,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     await interaction.response.defer()
 
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
         profile = users.get(str(interaction.user.id))
 
         if not profile:
@@ -2518,7 +3430,7 @@ async def handle_simkl_add(
     discord_id = str(interaction.user.id)
 
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
 
     profile = users.get(discord_id)
     if not profile:
@@ -4487,7 +5399,7 @@ async def prefix_setup(
     discord_id = str(ctx.author.id)
     author_display = author_name or ctx.author.display_name
     async with aiohttp.ClientSession() as session:
-        users, sha = await github_read_json(session, FILE_USERS)
+        users, sha = await read_users(session)
         users[discord_id] = {
             "discord_id": ctx.author.id,
             "discord_username": ctx.author.name,
@@ -4497,9 +5409,8 @@ async def prefix_setup(
             "mal_user_id": mal_user_id,
             "author_name": author_display,
         }
-        ok = await github_write_json(
+        ok = await write_users(
             session,
-            FILE_USERS,
             users,
             sha,
             f"Setup profile for {ctx.author.display_name}",
@@ -4520,7 +5431,7 @@ async def prefix_setup(
 @bot.command(name="myprofile")
 async def prefix_myprofile(ctx):
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
     profile = users.get(str(ctx.author.id))
     if not profile:
         await ctx.send(f"❌ No profile found. Run `{_prefix_cache[0]}setup` first!")
@@ -4552,7 +5463,7 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
         return
 
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
         profile = users.get(str(ctx.author.id))
         if not profile:
             await ctx.send(f"❌ Run `{_prefix_cache[0]}setup` first!")
@@ -5842,7 +6753,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
     async with aiohttp.ClientSession() as session:
         # ── Step 1: Load all data at once ─────────────────────────────────────
-        users, users_sha = await github_read_json(session, FILE_USERS)
+        users, users_sha = await read_users(session)
         anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
         manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
         show_entries, show_sha = await github_read_json(session, FILE_SHOWS)
@@ -6096,8 +7007,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 result["movie_entries_updated"] += 1
 
         # ── Step 5: Write all files ────────────────────────────────────────────
-        await github_write_json(
-            session, FILE_USERS, users, users_sha,
+        await write_users(
+            session, users, users_sha,
             f"chore: repopulate user profiles ({triggered_by})"
         )
         await github_write_json(
@@ -6403,7 +7314,7 @@ async def _handle_vote_interaction(
 
     # Resolve the voter's AniList or MAL ID from their profile
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
     profile = users.get(discord_id)
 
     if not profile:
@@ -6662,7 +7573,7 @@ async def my_votes(interaction: discord.Interaction):
     discord_id = str(interaction.user.id)
 
     async with aiohttp.ClientSession() as session:
-        users, _ = await github_read_json(session, FILE_USERS)
+        users, _ = await read_users(session)
         votes, _ = await github_read_json(session, FILE_VOTES)
 
     profile = users.get(discord_id)
@@ -6949,7 +7860,7 @@ async def fix_discord_info(interaction: discord.Interaction):
     )
 
     async with aiohttp.ClientSession() as session:
-        users, users_sha = await github_read_json(session, FILE_USERS)
+        users, users_sha = await read_users(session)
         anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
         manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
         show_entries, show_sha = await github_read_json(session, FILE_SHOWS)
@@ -7055,7 +7966,7 @@ async def fix_discord_info(interaction: discord.Interaction):
                 movie_updated += 1
 
         # Step 4: write all files
-        await github_write_json(session, FILE_USERS, users, users_sha, "fix: backfill discord info for all users")
+        await write_users(session, users, users_sha, "fix: backfill discord info for all users")
         await github_write_json(session, FILE_ANIME, anime_entries, anime_sha, "fix: sync discord info in anime entries")
         await github_write_json(session, FILE_MANGA, manga_entries, manga_sha, "fix: sync discord info in manga entries")
         await github_write_json(session, FILE_SHOWS, show_entries, show_sha, "fix: sync discord info in show entries")
