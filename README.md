@@ -94,7 +94,10 @@ Base URL: `https://anymex-preview-bot.onrender.com`
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/setup [anilist_username] [mal_username] [simkl_username]` | Link your AniList, MAL, and/or Simkl accounts | Everyone |
+| `/setup [anilist_username] [mal_username] [author_name]` | Link AniList/MAL by username (public profiles only) | Everyone |
+| `/link_anilist` | Link AniList via OAuth (supports **private** profiles) | Everyone |
+| `/link_mal` | Link MAL via OAuth with PKCE (supports **private** profiles) | Everyone |
+| `/link_simkl` | Link Simkl via OAuth redirect | Everyone |
 | `/myprofile` | View your saved profile and stats | Everyone |
 | `/repopulate` | Manually refresh all profiles and sync entries | Admin |
 
@@ -215,11 +218,12 @@ All slash commands also have a prefix equivalent using `?` (or your configured p
 
 ## 💾 Data Storage
 
-All data is stored as JSON files in your GitHub repository, auto-created on first startup:
+All data is stored as JSON files across two GitHub repositories:
+
+### Main Repo (`AnymeX-Preview`, branch: `beta`)
 
 | File | Description |
 |------|-------------|
-| `users.json` | User profiles — AniList/MAL/Simkl IDs, usernames, avatars, stats |
 | `underrated_anime.json` | Community underrated anime submissions |
 | `underrated_manga.json` | Community underrated manga submissions |
 | `underrated_shows.json` | Community underrated TV show submissions |
@@ -228,6 +232,13 @@ All data is stored as JSON files in your GitHub repository, auto-created on firs
 | `timezones.json` | User timezone preferences |
 | `prefixes.json` | Bot command prefix list |
 | `server_config.json` | Per-server allowed roles configuration |
+| `faq.json` | FAQ entries for support channel |
+
+### Private Repo (`clients-userdata`, branch: `main`)
+
+| File | Description |
+|------|-------------|
+| `users.json` | User profiles — AniList/MAL/Simkl IDs, usernames, avatars, stats, **encrypted OAuth tokens** |
 
 ---
 
@@ -240,7 +251,13 @@ All data is stored as JSON files in your GitHub repository, auto-created on firs
 | `API_SECRET` | ✅ | Bearer token for REST API authentication |
 | `REPOPULATOR_CHANNEL_ID` | ✅ | Discord channel ID for repopulator reports |
 | `SIMKL_CLIENT_ID` | ✅ | Simkl API client ID for show/movie search and user verification |
+| `SIMKL_ENCRYPT_KEY` | ✅ | Fernet key for encrypting Simkl tokens (generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
+| `ANILIST_CLIENT_ID` | ✅ | AniList OAuth client ID (register at https://anilist.co/settings/developer) |
+| `MAL_CLIENT_ID` | ✅ | MAL OAuth client ID (register at https://myanimelist.net/apiconfig) |
+| `MAL_CLIENT_SECRET` | ✅ | MAL OAuth client secret |
+| `OAUTH_BASE_URL` | ✅ | Bot's public URL for OAuth callbacks (e.g. `https://anymex-preview-bot.onrender.com`) |
 | `PORT` | ❌ | HTTP server port (default: `8080`) |
+| `OAUTH_ENCRYPT_KEY` | ❌ | Dedicated encryption key for AniList/MAL tokens (falls back to `SIMKL_ENCRYPT_KEY`) |
 | `PROXY_HOST` | ❌ | Proxy host (optional) |
 | `PROXY_PORT` | ❌ | Proxy port (optional) |
 | `PROXY_USER` | ❌ | Proxy username (optional) |
