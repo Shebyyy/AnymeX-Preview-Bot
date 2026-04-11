@@ -46,6 +46,23 @@ _PROXY_USER = os.environ.get("PROXY_USER")
 _PROXY_PASS = os.environ.get("PROXY_PASS")
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
 
+def _short_reason(text: str, limit: int = 80) -> str:
+    """Return a truncated reason for log embeds."""
+    if not text:
+        return "N/A"
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def _ids_line(**kwargs) -> str:
+    """Build a compact IDs string from keyword args, skipping None/falsy values.
+    Usage: _ids_line(AL=123, MAL=456, Simkl=None, DC=987654321)
+    Returns: 'AL:123 · MAL:456 · DC:987654321'
+    """
+    parts = [f"{k}:{v}" for k, v in kwargs.items() if v]
+    return " · ".join(parts) if parts else "N/A"
+
+
 ENV_PROXY_URL = (
     f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{_PROXY_PORT}"
     if all([_PROXY_HOST, _PROXY_PORT, _PROXY_USER, _PROXY_PASS])
@@ -1368,12 +1385,14 @@ async def _api_add_media(request, media_type: str):
         )
 
     if ok:
+        log_embed = discord.Embed(title=f"New Entry Added via API — {media_type.title()}", color=0x2EA043)
+        log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Author", value=resolved_author, inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=entry.get("added_by_discord_id")), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
+        asyncio.ensure_future(_send_log(log_embed))
         return web.json_response({"success": True, "entry": entry}, status=201)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
-
-
-async def api_add_anime(request):
-    return await _api_add_media(request, "ANIME")
 
 
 async def api_add_manga(request):
@@ -1545,6 +1564,11 @@ async def _api_add_simkl(request, media_type: str):
         )
 
     if ok:
+        log_embed = discord.Embed(title=f"New Entry Added via API — {media_type.title()}", color=0x2EA043)
+        log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Author", value=resolved_author, inline=True)
+        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
+        asyncio.ensure_future(_send_log(log_embed))
         return web.json_response({"success": True, "entry": entry}, status=201)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
@@ -2250,13 +2274,14 @@ async def _handle_edit_reason(
         embed = discord.Embed(title="✅ Reason Updated", color=0x2EA043)
         embed.add_field(name="Entry", value=entry["title"], inline=False)
         embed.add_field(name="Old Reason", value=old_reason[:300] or "*(empty)*", inline=False)
-        embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
         if admin and not _entry_owned_by(entry, discord_id, profile):
             embed.set_footer(text="✏️ Edited as bot admin")
-        log_embed = discord.Embed(title="✏️ Reason Edited", color=0xF1C40F)
+        log_embed = discord.Embed(title="Reason Edited", color=0xF1C40F)
         log_embed.add_field(name="Entry", value=entry["title"], inline=True)
         log_embed.add_field(name="Edited by", value=f"{interaction.user.mention} ({'admin' if admin else 'owner'})", inline=True)
-        log_embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=interaction.user.id), inline=False)
+        log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
@@ -2331,7 +2356,7 @@ async def _handle_delete_entry(
         entry_id_val = entry.get(id_key, "N/A")
         p = _prefix_cache[0]
         log_embed = discord.Embed(
-            title="🗑️ Deletion Requested by Owner",
+            title="Deletion Requested by Owner",
             description=(
                 f"{interaction.user.mention} has requested their entry be deleted.\n"
                 f"**Admins:** please review and use the command below to confirm."
@@ -2340,8 +2365,8 @@ async def _handle_delete_entry(
         )
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
-        log_embed.add_field(name="Entry ID", value=str(entry_id_val), inline=True)
-        log_embed.add_field(name="Reason", value=(entry.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=interaction.user.id), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
         log_embed.add_field(
             name="Admin Command to Delete",
             value=f"`{p}delete_entry {media_type} {entry_id_val}`",
@@ -2375,10 +2400,11 @@ async def _handle_delete_entry(
         embed.add_field(name="Title", value=removed["title"], inline=True)
         embed.add_field(name="Type", value=media_type.title(), inline=True)
         embed.set_footer(text="🛡️ Deleted as bot admin")
-        log_embed = discord.Embed(title="🗑️ Entry Deleted by Admin", color=0xDA3633)
+        log_embed = discord.Embed(title="Entry Deleted by Admin", color=0xDA3633)
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
         log_embed.add_field(name="Deleted by", value=f"{interaction.user.mention} (admin)", inline=True)
-        log_embed.add_field(name="Reason was", value=(removed.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id"), DC=interaction.user.id), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(removed.get("reason")), inline=False)
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
@@ -2446,11 +2472,12 @@ async def prefix_edit_reason(ctx, media_type: str = None, entry_id: str = None, 
     if ok:
         embed = discord.Embed(title="✅ Reason Updated", color=0x2EA043)
         embed.add_field(name="Entry", value=entry["title"], inline=False)
-        embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
-        log_embed = discord.Embed(title="✏️ Reason Edited", color=0xF1C40F)
+        embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
+        log_embed = discord.Embed(title="Reason Edited", color=0xF1C40F)
         log_embed.add_field(name="Entry", value=entry["title"], inline=True)
         log_embed.add_field(name="Edited by", value=f"{ctx.author.mention} ({'admin' if admin else 'owner'})", inline=True)
-        log_embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=ctx.author.id), inline=False)
+        log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
@@ -2503,7 +2530,7 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
     if not admin:
         p = _prefix_cache[0]
         log_embed = discord.Embed(
-            title="🗑️ Deletion Requested by Owner",
+            title="Deletion Requested by Owner",
             description=(
                 f"{ctx.author.mention} has requested their entry be deleted.\n"
                 f"**Admins:** please review and use the command below to confirm."
@@ -2512,8 +2539,8 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
         )
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
-        log_embed.add_field(name="Entry ID", value=str(entry_id), inline=True)
-        log_embed.add_field(name="Reason", value=(entry.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=ctx.author.id), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
         log_embed.add_field(
             name="Admin Command to Delete",
             value=f"`{p}delete_entry {media_type} {entry_id}`",
@@ -2546,9 +2573,10 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
         embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
         embed.add_field(name="Title", value=removed["title"], inline=True)
         embed.set_footer(text="🛡️ Deleted as bot admin")
-        log_embed = discord.Embed(title="🗑️ Entry Deleted by Admin", color=0xDA3633)
+        log_embed = discord.Embed(title="Entry Deleted by Admin", color=0xDA3633)
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
         log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} (admin)", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id"), DC=ctx.author.id), inline=False)
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
@@ -2625,7 +2653,7 @@ async def admin_add(
         embed.add_field(name="Added by", value=interaction.user.mention, inline=True)
         if user.display_avatar:
             embed.set_thumbnail(url=user.display_avatar.url)
-        log_embed = discord.Embed(title="🛡️ Bot Admin Added", color=0x2EA043)
+        log_embed = discord.Embed(title="Bot Admin Added", color=0x2EA043)
         log_embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
         log_embed.add_field(name="Role", value=f"`{role_value}`", inline=True)
         log_embed.add_field(name="Added by", value=interaction.user.mention, inline=True)
@@ -2658,7 +2686,7 @@ async def admin_remove(interaction: discord.Interaction, user: discord.User):
         embed = discord.Embed(title="✅ Bot Admin Removed", color=0xDA3633)
         embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
         embed.add_field(name="Was Role", value=f"`{removed_record.get('role', 'admin')}`", inline=True)
-        log_embed = discord.Embed(title="🛡️ Bot Admin Removed", color=0xDA3633)
+        log_embed = discord.Embed(title="Bot Admin Removed", color=0xDA3633)
         log_embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
         log_embed.add_field(name="Removed by", value=interaction.user.mention, inline=True)
         await _send_log(log_embed)
@@ -2776,6 +2804,12 @@ async def _api_edit_reason(request, media_type: str):
         )
 
     if ok:
+        log_embed = discord.Embed(title=f"Reason Edited via API — {media_type.title()}", color=0xF1C40F)
+        log_embed.add_field(name="Title", value=entry["title"], inline=True)
+        log_embed.add_field(name="Editor", value=f"discord:{req_discord_id}" if req_discord_id else "API", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
+        asyncio.ensure_future(_send_log(log_embed))
         return web.json_response({
             "success": True,
             "title": entry["title"],
@@ -2853,7 +2887,7 @@ async def _api_delete_entry(request, media_type: str):
             f"mal:{req_mal_id}" if req_mal_id else (
             f"simkl:{req_simkl_uname or req_simkl_id}")))
         log_embed = discord.Embed(
-            title="🗑️ Deletion Requested via API (Owner)",
+            title="Deletion Requested via API (Owner)",
             description=(
                 f"An owner requested their entry be deleted via the API.\n"
                 f"**Admins:** please review and use the command below to confirm."
@@ -2862,9 +2896,9 @@ async def _api_delete_entry(request, media_type: str):
         )
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
-        log_embed.add_field(name="Entry ID", value=str(item_id), inline=True)
         log_embed.add_field(name="Requested by", value=requester, inline=True)
-        log_embed.add_field(name="Reason", value=(entry.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
         log_embed.add_field(
             name="Admin Command to Delete",
             value=f"`{p}delete_entry {media_type} {item_id}`",
@@ -2889,10 +2923,10 @@ async def _api_delete_entry(request, media_type: str):
         )
 
     if ok:
-        log_embed = discord.Embed(title="🗑️ Entry Deleted via API (Admin)", color=0xDA3633)
+        log_embed = discord.Embed(title="Entry Deleted via API (Admin)", color=0xDA3633)
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
-        log_embed.add_field(name="Admin discord_id", value=str(req_discord_id), inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id"), DC=req_discord_id), inline=False)
         await _send_log(log_embed)
         return web.json_response({"success": True, "deleted": {"title": removed["title"], id_key: item_id}})
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
@@ -3687,6 +3721,11 @@ async def link_anilist(interaction: discord.Interaction):
                     embed.set_thumbnail(url=result["avatar"])
                 embed.set_footer(text="Token encrypted and stored. Works with private profiles!")
                 await interaction.followup.send(embed=embed, ephemeral=True)
+                log_embed = discord.Embed(title="Account Linked — AniList", color=0x2E51A2)
+                log_embed.add_field(name="Discord", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+                log_embed.add_field(name="AniList", value=f"{result['username']} (ID: `{result.get('user_id')}`)", inline=True)
+                log_embed.add_field(name="IDs", value=_ids_line(AL=result.get("user_id"), DC=interaction.user.id), inline=False)
+                await _send_log(log_embed)
             else:
                 await interaction.followup.send(
                     f"❌ AniList linking failed: {result.get('error', 'Unknown error')}",
@@ -3776,6 +3815,11 @@ async def link_mal(interaction: discord.Interaction):
                     embed.set_thumbnail(url=result["avatar"])
                 embed.set_footer(text="Token encrypted and stored. Works with private profiles!")
                 await interaction.followup.send(embed=embed, ephemeral=True)
+                log_embed = discord.Embed(title="Account Linked — MAL", color=0xE74C3C)
+                log_embed.add_field(name="Discord", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+                log_embed.add_field(name="MAL", value=f"{result['username']} (ID: `{result.get('user_id')}`)", inline=True)
+                log_embed.add_field(name="IDs", value=_ids_line(MAL=result.get("user_id"), DC=interaction.user.id), inline=False)
+                await _send_log(log_embed)
             else:
                 await interaction.followup.send(
                     f"❌ MAL linking failed: {result.get('error', 'Unknown error')}",
@@ -3850,6 +3894,11 @@ async def link_simkl(interaction: discord.Interaction):
                     embed.set_thumbnail(url=result["avatar"])
                 embed.set_footer(text="Your token is encrypted and stored securely.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
+                log_embed = discord.Embed(title="Account Linked — Simkl", color=0x1DB954)
+                log_embed.add_field(name="Discord", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+                log_embed.add_field(name="Simkl", value=f"{result['username']} (ID: `{result.get('user_id')}`)", inline=True)
+                log_embed.add_field(name="IDs", value=_ids_line(Simkl=result.get("user_id"), DC=interaction.user.id), inline=False)
+                await _send_log(log_embed)
             else:
                 await interaction.followup.send(
                     f"❌ Simkl linking failed: {result.get('error', 'Unknown error')}",
@@ -4413,7 +4462,7 @@ async def setup(
         )
 
     if ok:
-        embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
+        embed = discord.Embed(title="Profile Saved!", color=0x2EA043)
         embed.add_field(name="Author Name", value=author_display, inline=False)
 
         # Show full merged state (previously linked accounts are preserved)
@@ -4458,8 +4507,19 @@ async def setup(
         if avatar:
             embed.set_thumbnail(url=avatar)
         embed.set_footer(text="You can now use /add_anime, /add_manga, /add_show, /add_movie!")
+
+        log_embed = discord.Embed(title="Profile Setup", color=0x0078D4)
+        log_embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        log_embed.add_field(name="Author Name", value=author_display, inline=True)
+        if merged_al_id:
+            log_embed.add_field(name="AniList", value=f"{merged_al_name} (ID: `{merged_al_id}`)", inline=True)
+        if merged_mal_id:
+            log_embed.add_field(name="MAL", value=f"{merged_mal_name} (ID: `{merged_mal_id}`)", inline=True)
+        if merged_simkl:
+            log_embed.add_field(name="Simkl", value=merged_simkl, inline=True)
+        await _send_log(log_embed)
     else:
-        embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
+        embed = discord.Embed(title="Failed to save profile", color=0xDA3633)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -4600,21 +4660,17 @@ class ConfirmView(discord.ui.View):
             al = u.get("anilist", {})
             author_display = (al.get("username") or u.get("mal", {}).get("username") or "Unknown")
             embed.add_field(name="Author", value=author_display, inline=True)
-            embed.add_field(name="Reason", value=self.entry["reason"], inline=False)
+            embed.add_field(name="Reason", value=_short_reason(self.entry.get("reason")), inline=False)
             if self.cover_url:
                 embed.set_thumbnail(url=self.cover_url)
             log_embed = discord.Embed(
-                title=f"📥 New {self.media_type.title()} Added",
+                title=f"New {self.media_type.title()} Added",
                 color=0x2EA043,
             )
             log_embed.add_field(name="Title", value=self.entry["title"], inline=True)
             log_embed.add_field(name="Added by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
-            log_embed.add_field(name="AniList ID", value=str(self.entry.get("anilist_id", "N/A")), inline=True)
-            log_embed.add_field(name="Score", value=str(self.entry.get("score", "N/A")), inline=True)
-            log_embed.add_field(name="Genres", value=", ".join(self.entry.get("genres", [])[:4]) or "N/A", inline=True)
-            log_embed.add_field(name="Reason", value=self.entry["reason"], inline=False)
-            if self.cover_url:
-                log_embed.set_thumbnail(url=self.cover_url)
+            log_embed.add_field(name="IDs", value=_ids_line(AL=self.entry.get("anilist_id"), MAL=self.entry.get("mal_id"), DC=interaction.user.id), inline=False)
+            log_embed.add_field(name="Reason", value=_short_reason(self.entry.get("reason")), inline=False)
             await _send_log(log_embed)
         else:
             embed = discord.Embed(title="❌ Failed to commit to GitHub", color=0xDA3633)
@@ -4977,15 +5033,13 @@ class SimklConfirmView(discord.ui.View):
             if self.poster_url:
                 embed.set_thumbnail(url=self.poster_url)
             log_embed = discord.Embed(
-                title=f"📥 New {self.media_type.title()} Added",
+                title=f"New {self.media_type.title()} Added",
                 color=0x2EA043,
             )
             log_embed.add_field(name="Title", value=self.entry["title"], inline=True)
             log_embed.add_field(name="Added by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
-            log_embed.add_field(name="Simkl ID", value=str(self.entry.get("simkl_id", "N/A")), inline=True)
-            log_embed.add_field(name="Reason", value=self.entry.get("reason", "N/A"), inline=False)
-            if self.poster_url:
-                log_embed.set_thumbnail(url=self.poster_url)
+            log_embed.add_field(name="IDs", value=_ids_line(Simkl=self.entry.get("simkl_id"), DC=interaction.user.id), inline=False)
+            log_embed.add_field(name="Reason", value=_short_reason(self.entry.get("reason")), inline=False)
             await _send_log(log_embed)
         else:
             embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
@@ -5254,6 +5308,11 @@ async def remove_anime(interaction: discord.Interaction, search_term: str):
         embed = discord.Embed(
             title="Removed", description=removed.get("title"), color=0x2EA043
         )
+        log_embed = discord.Embed(title="Entry Removed — Anime", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Removed by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), DC=interaction.user.id), inline=False)
+        await _send_log(log_embed)
     else:
         embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
 
@@ -5304,6 +5363,11 @@ async def remove_manga(interaction: discord.Interaction, search_term: str):
         embed = discord.Embed(
             title="Removed", description=removed.get("title"), color=0x2EA043
         )
+        log_embed = discord.Embed(title="Entry Removed — Manga", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Removed by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        log_embed.add_field(name="AniList ID", value=str(removed.get("anilist_id", "N/A")), inline=True)
+        await _send_log(log_embed)
     else:
         embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
 
@@ -5352,6 +5416,11 @@ async def remove_show(interaction: discord.Interaction, search_term: str):
 
     if success:
         embed = discord.Embed(title="Removed", description=removed.get("title"), color=0x2EA043)
+        log_embed = discord.Embed(title="Entry Removed — Show", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Removed by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(Simkl=removed.get("simkl_id"), DC=interaction.user.id), inline=False)
+        await _send_log(log_embed)
     else:
         embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -5399,6 +5468,11 @@ async def remove_movie(interaction: discord.Interaction, search_term: str):
 
     if success:
         embed = discord.Embed(title="Removed", description=removed.get("title"), color=0x2EA043)
+        log_embed = discord.Embed(title="Entry Removed — Movie", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Removed by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(Simkl=removed.get("simkl_id"), DC=interaction.user.id), inline=False)
+        await _send_log(log_embed)
     else:
         embed = discord.Embed(title="Failed to Remove", color=0xDA3633)
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -5493,6 +5567,7 @@ async def build(
         )
         embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
         embed.description = "Build started - use button below to cancel if needed"
+
 
         # Fetch latest run to get run ID for cancel button
         async with aiohttp.ClientSession() as session:
@@ -6999,6 +7074,13 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
                     else discord.Embed(title="❌ Failed", color=0xDA3633)
                 )
             )
+            if ok:
+                log_embed = discord.Embed(title=f"New {media_type.title()} Added", color=0x2EA043)
+                log_embed.add_field(name="Title", value=title, inline=True)
+                log_embed.add_field(name="Added by", value=f"{ctx.author.mention} ({ctx.author})", inline=True)
+                log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), DC=ctx.author.id), inline=False)
+                log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
+                await _send_log(log_embed)
             for child in self.children:
                 child.disabled = True
             await interaction.message.edit(view=self)
@@ -7135,6 +7217,12 @@ async def prefix_remove(ctx, search_term, filepath, label):
         ok = await github_write_json(
             session, filepath, entries, sha, f"Remove {label}: {removed.get('title')}"
         )
+    if ok:
+        log_embed = discord.Embed(title=f"Entry Removed — {label.title()}", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Removed by", value=f"{ctx.author.mention} ({ctx.author})", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id"), DC=ctx.author.id), inline=False)
+        await _send_log(log_embed)
     await ctx.send(
         embed=discord.Embed(
             title="✅ Removed" if ok else "❌ Failed",
@@ -8830,6 +8918,11 @@ async def _handle_vote_interaction(
     embed.add_field(name="👎 Downvotes", value=f"**{result['downvotes']}**", inline=True)
     embed.add_field(name="📊 Net", value=f"**{result['net']:+d}**", inline=True)
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+    log_embed = discord.Embed(title=f"Vote — {media_type.title()}", color=color)
+    log_embed.add_field(name="Who", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+    log_embed.add_field(name="What", value=f"{action_text} on **{result['title']}** ({result['net']:+d} net)", inline=True)
+    await _send_log(log_embed)
 
 
 # ── Autocomplete for existing list entries ─────────────────────────────────────
