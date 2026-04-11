@@ -113,8 +113,14 @@ async def switch_proxy(reason: str = "manual"):
 
 async def start_bot_with_proxy():
     global _current_proxy
+    _dead_proxies: set = set()
     while True:
         proxy = get_proxy()
+        # Skip proxies already known to be dead this session
+        attempts = 0
+        while proxy in _dead_proxies and attempts < len(_proxy_list) + 1:
+            proxy = get_proxy()
+            attempts += 1
         bot.http.proxy = proxy
         if proxy:
             print(f"✅ Connecting with proxy: {proxy}")
@@ -137,6 +143,20 @@ async def start_bot_with_proxy():
                 await asyncio.sleep(3)
                 continue
             raise
+        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientConnectorError, OSError) as e:
+            bad_proxy = _current_proxy
+            _dead_proxies.add(bad_proxy)
+            print(f"⚠️ Proxy unreachable ({bad_proxy}): {e} — trying next proxy...")
+            embed = discord.Embed(title="⚠️ Proxy Connection Failed", color=0xe74c3c)
+            embed.add_field(name="Dead Proxy", value=bad_proxy or "direct", inline=False)
+            embed.description = "Switching to next proxy automatically..."
+            await _send_log(embed)
+            try:
+                await bot.close()
+            except Exception:
+                pass
+            await asyncio.sleep(2)
+            continue
 
 @tasks.loop(hours=24)
 async def auto_rotate_proxy():
