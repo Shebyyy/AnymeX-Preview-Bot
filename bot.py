@@ -65,11 +65,11 @@ async def _send_log(embed: discord.Embed):
     if not LOG_CHANNEL_ID:
         return
     try:
-        ch = bot.get_channel(LOG_CHANNEL_ID)
+        ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
         if ch:
             await ch.send(embed=embed)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Failed to send log embed: {e}")
 
 async def fetch_geonode_proxies() -> bool:
     global _proxy_list, _proxy_cycle
