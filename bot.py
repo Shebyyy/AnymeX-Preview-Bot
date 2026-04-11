@@ -1540,54 +1540,93 @@ async def _api_add_media(request, media_type: str):
             or "Unknown"
         )
 
-        entry = {
-            "anilist_id": anilist_id,
-            "mal_id": mal_id,
-            "title": title,
-            "author": resolved_author,
-            "reason": reason,
+        new_reason_obj = {
+            "discord_id": str(discord_id) if discord_id else None,
+            "discord_username": discord_username,
             "user": user_snapshot,
-            "added_by_discord_id": str(discord_id) if discord_id else None,
-            "poster": poster,
-            "score": score,
-            "nsfw": nsfw,
+            "author": resolved_author,
+            "text": reason,
+            "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
         filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
         entries, sha = await github_read_json(session, filepath)
 
-        if anilist_id and any(e.get("anilist_id") == anilist_id for e in entries):
-            return web.json_response(
-                {"error": f"{title} is already in the list", "title": title},
-                status=409,
-            )
-        if not anilist_id and mal_id and any(e.get("mal_id") == mal_id for e in entries):
-            return web.json_response(
-                {"error": f"{title} is already in the list", "title": title},
-                status=409,
-            )
+        # ── Upsert: if entry already exists, append reason instead of 409 ──────
+        existing_idx = None
+        if anilist_id:
+            existing_idx = next((i for i, e in enumerate(entries) if e.get("anilist_id") == anilist_id), None)
+        if existing_idx is None and mal_id:
+            existing_idx = next((i for i, e in enumerate(entries) if e.get("mal_id") == mal_id), None)
 
-        entries.append(entry)
-        ok = await github_write_json(
-            session,
-            filepath,
-            entries,
-            sha,
-            f"feat: add {title} to underrated {media_type.lower()}s by {resolved_author} (API)",
-        )
+        if existing_idx is not None:
+            existing = entries[existing_idx]
+            # Migrate legacy single reason into reasons[] if needed
+            if "reasons" not in existing:
+                first = {
+                    "discord_id": existing.get("added_by_discord_id"),
+                    "discord_username": existing.get("user", {}).get("discord", {}).get("username"),
+                    "user": existing.get("user", {}),
+                    "author": existing.get("author"),
+                    "text": existing.get("reason", ""),
+                    "added_at": None,
+                }
+                existing["reasons"] = [first]
+
+            # Check this user hasn't already added a reason
+            caller_id = str(discord_id) if discord_id else None
+            if caller_id and any(str(r.get("discord_id") or "") == caller_id for r in existing["reasons"]):
+                return web.json_response(
+                    {"error": "You already have a reason on this entry. Use /api/edit_reason to update it.", "title": existing["title"]},
+                    status=409,
+                )
+
+            existing["reasons"].append(new_reason_obj)
+            entries[existing_idx] = existing
+            ok = await github_write_json(
+                session, filepath, entries, sha,
+                f"feat: add reason for '{existing['title']}' by {resolved_author} (API)",
+            )
+            upserted = True
+            entry = existing
+        else:
+            # Brand new entry
+            entry = {
+                "anilist_id": anilist_id,
+                "mal_id": mal_id,
+                "title": title,
+                "author": resolved_author,
+                "reason": reason,
+                "reasons": [new_reason_obj],
+                "user": user_snapshot,
+                "added_by_discord_id": str(discord_id) if discord_id else None,
+                "poster": poster,
+                "score": score,
+                "nsfw": nsfw,
+            }
+            entries.append(entry)
+            ok = await github_write_json(
+                session, filepath, entries, sha,
+                f"feat: add {title} to underrated {media_type.lower()}s by {resolved_author} (API)",
+            )
+            upserted = False
 
     if ok:
-        log_embed = discord.Embed(title=f"📥 New {media_type.title()} Added via API", color=0x2EA043)
+        if upserted:
+            log_embed = discord.Embed(title=f"➕ Reason Added to {media_type.title()} via API", color=0x5865F2)
+        else:
+            log_embed = discord.Embed(title=f"📥 New {media_type.title()} Added via API", color=0x2EA043)
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Score", value=str(entry.get("score", "N/A")), inline=True)
         log_embed.add_field(name="Author", value=resolved_author, inline=True)
-        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=entry.get("added_by_discord_id")), inline=False)
-        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), DC=entry.get("added_by_discord_id")), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(reason), inline=False)
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
         asyncio.ensure_future(_send_log(log_embed))
-        return web.json_response({"success": True, "entry": entry}, status=201)
+        status = 200 if upserted else 201
+        return web.json_response({"success": True, "upserted": upserted, "entry": entry}, status=status)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
 
@@ -1729,51 +1768,90 @@ async def _api_add_simkl(request, media_type: str):
             or "Unknown"
         )
 
-    entry = {
-        "simkl_id": simkl_id,
-        "title": title,
-        "year": year,
-        "author": resolved_author,
-        "reason": reason,
+    new_reason_obj = {
+        "discord_id": str(discord_id) if discord_id else None,
+        "discord_username": discord_username,
         "user": user_snapshot,
-        "added_by_discord_id": str(discord_id) if discord_id else None,
-        "poster": poster_url or "",
-        "score": score,
-        "genres": genres,
-        "simkl_url": simkl_url,
-        "nsfw": nsfw,
+        "author": resolved_author,
+        "text": reason,
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
     filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
 
     async with aiohttp.ClientSession() as session:
         entries, sha = await github_read_json(session, filepath)
-        if any(e.get("simkl_id") == simkl_id for e in entries):
-            return web.json_response(
-                {"error": f"{title} is already in the list", "title": title},
-                status=409,
+        existing_idx = next((i for i, e in enumerate(entries) if e.get("simkl_id") == simkl_id), None)
+
+        if existing_idx is not None:
+            existing = entries[existing_idx]
+            # Migrate legacy single reason into reasons[] if needed
+            if "reasons" not in existing:
+                first = {
+                    "discord_id": existing.get("added_by_discord_id"),
+                    "discord_username": existing.get("user", {}).get("discord", {}).get("username"),
+                    "user": existing.get("user", {}),
+                    "author": existing.get("author"),
+                    "text": existing.get("reason", ""),
+                    "added_at": None,
+                }
+                existing["reasons"] = [first]
+
+            # Check this user hasn't already added a reason
+            caller_id = str(discord_id) if discord_id else None
+            if caller_id and any(str(r.get("discord_id") or "") == caller_id for r in existing["reasons"]):
+                return web.json_response(
+                    {"error": "You already have a reason on this entry. Use /api/edit_reason to update it.", "title": existing["title"]},
+                    status=409,
+                )
+
+            existing["reasons"].append(new_reason_obj)
+            entries[existing_idx] = existing
+            ok = await github_write_json(
+                session, filepath, entries, sha,
+                f"feat: add reason for '{existing['title']}' by {resolved_author} (API)",
             )
-        entries.append(entry)
-        ok = await github_write_json(
-            session,
-            filepath,
-            entries,
-            sha,
-            f"feat: add {title} to underrated {media_type}s by {resolved_author} (API)",
-        )
+            upserted = True
+            entry = existing
+        else:
+            entry = {
+                "simkl_id": simkl_id,
+                "title": title,
+                "year": year,
+                "author": resolved_author,
+                "reason": reason,
+                "reasons": [new_reason_obj],
+                "user": user_snapshot,
+                "added_by_discord_id": str(discord_id) if discord_id else None,
+                "poster": poster_url or "",
+                "score": score,
+                "genres": genres,
+                "simkl_url": simkl_url,
+                "nsfw": nsfw,
+            }
+            entries.append(entry)
+            ok = await github_write_json(
+                session, filepath, entries, sha,
+                f"feat: add {title} to underrated {media_type}s by {resolved_author} (API)",
+            )
+            upserted = False
 
     if ok:
-        log_embed = discord.Embed(title=f"📥 New {media_type.title()} Added via API", color=0x2EA043)
+        if upserted:
+            log_embed = discord.Embed(title=f"➕ Reason Added to {media_type.title()} via API", color=0x5865F2)
+        else:
+            log_embed = discord.Embed(title=f"📥 New {media_type.title()} Added via API", color=0x2EA043)
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Score", value=str(entry.get("score", "N/A")), inline=True)
         log_embed.add_field(name="Author", value=resolved_author, inline=True)
         log_embed.add_field(name="IDs", value=_ids_line(Simkl=entry.get("simkl_id"), DC=entry.get("added_by_discord_id")), inline=False)
-        log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
+        log_embed.add_field(name="Reason", value=_short_reason(reason), inline=False)
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
         asyncio.ensure_future(_send_log(log_embed))
-        return web.json_response({"success": True, "entry": entry}, status=201)
+        status = 200 if upserted else 201
+        return web.json_response({"success": True, "upserted": upserted, "entry": entry}, status=status)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
 
@@ -2366,6 +2444,31 @@ def _entry_owned_by_api(entry: dict, req_discord_id, req_anilist_id, req_mal_id,
 
     return False
 
+def _find_reason_idx(reasons: list, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_username):
+    """
+    Find the index of the reason in reasons[] that belongs to the calling user.
+    Matches all identity fields stored in reason.user snapshot, mirroring
+    _entry_owned_by_api but scoped to individual reason slots.
+    Priority: discord_id > anilist_user_id > mal_user_id > simkl_user_id > simkl_username
+    """
+    for i, r in enumerate(reasons):
+        u = r.get("user", {})
+        if req_discord_id:
+            if r.get("discord_id") and str(r["discord_id"]) == str(req_discord_id):
+                return i
+            if str(u.get("discord", {}).get("id") or "") == str(req_discord_id):
+                return i
+        if req_anilist_id and u.get("anilist", {}).get("id") == req_anilist_id:
+            return i
+        if req_mal_id and u.get("mal", {}).get("id") == req_mal_id:
+            return i
+        if req_simkl_id and u.get("simkl", {}).get("id") == req_simkl_id:
+            return i
+        if req_simkl_username and (u.get("simkl", {}).get("username") or "").lower() == req_simkl_username.lower():
+            return i
+    return None
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /edit_reason  (slash)
@@ -2465,8 +2568,40 @@ async def _handle_edit_reason(
         )
         return
 
-    old_reason = entry.get("reason", "")
-    entries[idx]["reason"] = new_reason
+    # Migrate legacy single reason into reasons[] if needed
+    if "reasons" not in entry:
+        first = {
+            "discord_id": entry.get("added_by_discord_id"),
+            "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+            "user": entry.get("user", {}),
+            "author": entry.get("author"),
+            "text": entry.get("reason", ""),
+            "added_at": None,
+        }
+        entries[idx]["reasons"] = [first]
+        entry = entries[idx]
+
+    reasons = entry.get("reasons", [])
+
+    # Find this user's reason slot
+    reason_idx = next((i for i, r in enumerate(reasons) if str(r.get("discord_id") or "") == discord_id), None)
+
+    # Admins editing someone else's entry: edit slot 0 as fallback
+    if reason_idx is None and admin:
+        reason_idx = 0
+
+    if reason_idx is None:
+        await interaction.followup.send(
+            "❌ You don't have a reason on this entry.",
+            ephemeral=True,
+        )
+        return
+
+    old_reason = reasons[reason_idx].get("text", "")
+    entries[idx]["reasons"][reason_idx]["text"] = new_reason
+    entries[idx]["reasons"][reason_idx]["edited_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if reason_idx == 0:
+        entries[idx]["reason"] = new_reason
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
@@ -2669,7 +2804,32 @@ async def prefix_edit_reason(ctx, media_type: str = None, entry_id: str = None, 
         await ctx.send("❌ You can only edit reasons for entries **you added**.")
         return
 
-    entries[idx]["reason"] = new_reason
+    # Migrate legacy single reason into reasons[] if needed
+    if "reasons" not in entry:
+        first = {
+            "discord_id": entry.get("added_by_discord_id"),
+            "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+            "user": entry.get("user", {}),
+            "author": entry.get("author"),
+            "text": entry.get("reason", ""),
+            "added_at": None,
+        }
+        entries[idx]["reasons"] = [first]
+        entry = entries[idx]
+
+    reasons = entry.get("reasons", [])
+    reason_idx = next((i for i, r in enumerate(reasons) if str(r.get("discord_id") or "") == discord_id), None)
+    if reason_idx is None and admin:
+        reason_idx = 0
+    if reason_idx is None:
+        await ctx.send("❌ You don't have a reason on this entry.")
+        return
+
+    old_reason = reasons[reason_idx].get("text", "")
+    entries[idx]["reasons"][reason_idx]["text"] = new_reason
+    entries[idx]["reasons"][reason_idx]["edited_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if reason_idx == 0:
+        entries[idx]["reason"] = new_reason
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
@@ -2788,6 +2948,113 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
         log_embed.add_field(name="Entry Reason", value=_short_reason(removed.get("reason")), inline=False)
         if removed.get("poster"):
             log_embed.set_thumbnail(url=removed["poster"])
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
+
+    await ctx.send(embed=embed)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ?delete_reason  (prefix — admin only)
+# Usage: ?delete_reason <anime|manga|show|movie> <anilist_id|simkl_id> <discord_id>
+# Removes a single reason from reasons[] for the given user.
+# If it was the last reason, the whole entry is removed too.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="delete_reason")
+async def prefix_delete_reason(ctx, media_type: str = None, entry_id: str = None, target_discord_id: str = None):
+    """Admin-only: confirm a reason deletion request.
+    Usage: ?delete_reason <anime|manga|show|movie> <id> <target_discord_id>
+    """
+    p = _prefix_cache[0]
+    if not media_type or not entry_id or not target_discord_id:
+        await ctx.send(f"Usage: `{p}delete_reason <anime|manga|show|movie> <id> <discord_id>`")
+        return
+
+    media_type = media_type.lower()
+    if media_type not in ("anime", "manga", "show", "movie"):
+        await ctx.send("❌ media_type must be one of: `anime`, `manga`, `show`, `movie`")
+        return
+
+    discord_id = str(ctx.author.id)
+
+    async with aiohttp.ClientSession() as session:
+        admins, _ = await read_admins(session)
+
+    if discord_id not in admins:
+        await ctx.send("❌ This command is for bot admins only.")
+        return
+
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map[media_type]
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+
+    idx = next((i for i, e in enumerate(entries) if str(e.get(id_key, "")) == entry_id), None)
+    if idx is None:
+        await ctx.send(f"❌ No {media_type} entry with ID `{entry_id}` found.")
+        return
+
+    entry = entries[idx]
+
+    # Migrate legacy single reason if needed
+    if "reasons" not in entry:
+        first = {
+            "discord_id": entry.get("added_by_discord_id"),
+            "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+            "user": entry.get("user", {}),
+            "author": entry.get("author"),
+            "text": entry.get("reason", ""),
+            "added_at": None,
+        }
+        entries[idx]["reasons"] = [first]
+        entry = entries[idx]
+
+    reasons = entry.get("reasons", [])
+    reason_idx = next((i for i, r in enumerate(reasons) if str(r.get("discord_id") or "") == str(target_discord_id)), None)
+
+    if reason_idx is None:
+        await ctx.send(f"❌ No reason found for Discord ID `{target_discord_id}` on **{entry.get('title')}**.")
+        return
+
+    deleted_reason = reasons[reason_idx]
+    entries[idx]["reasons"].pop(reason_idx)
+
+    entry_deleted = False
+    if not entries[idx]["reasons"]:
+        entries.pop(idx)
+        entry_deleted = True
+    else:
+        entries[idx]["reason"] = entries[idx]["reasons"][0].get("text", "")
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"remove: reason for '{entry['title']}' (discord:{target_discord_id}) by {ctx.author} (admin)",
+        )
+
+    if ok:
+        embed = discord.Embed(title="🗑️ Reason Deleted", color=0xDA3633)
+        embed.add_field(name="Entry", value=entry["title"], inline=True)
+        embed.add_field(name="User", value=f"<@{target_discord_id}> (`{target_discord_id}`)", inline=True)
+        embed.add_field(name="Deleted Reason", value=_short_reason(deleted_reason.get("text")), inline=False)
+        if entry_deleted:
+            embed.add_field(name="⚠️ Entry Also Removed", value="No reasons remained — full entry deleted.", inline=False)
+        embed.set_footer(text="🛡️ Actioned as bot admin")
+
+        log_embed = discord.Embed(title="🗑️ Reason Deleted by Admin", color=0xDA3633)
+        log_embed.add_field(name="Entry", value=entry["title"], inline=True)
+        log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} (`{ctx.author}`)", inline=True)
+        log_embed.add_field(name="Target User", value=f"<@{target_discord_id}> (`{target_discord_id}`)", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=target_discord_id), inline=False)
+        log_embed.add_field(name="Deleted Reason", value=_short_reason(deleted_reason.get("text")), inline=False)
+        if entry_deleted:
+            log_embed.add_field(name="⚠️ Entry Also Removed", value="No reasons remained — full entry deleted.", inline=False)
+        if entry.get("poster"):
+            log_embed.set_thumbnail(url=entry["poster"])
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
@@ -2968,22 +3235,30 @@ async def _api_edit_reason(request, media_type: str):
     except Exception:
         return web.json_response({"error": "Invalid JSON body"}, status=400)
 
-    new_reason = (body.get("reason") or "").strip()
+    def _s(key):
+        return (body.get(key) or "").strip() or None
+
+    new_reason       = (body.get("reason") or "").strip()
+    req_discord_id   = body.get("discord_id")
+    req_anilist_id   = body.get("anilist_user_id")
+    req_mal_id       = body.get("mal_user_id")
+    req_simkl_id     = body.get("simkl_user_id")
+    req_simkl_uname  = _s("simkl_username")
+    discord_username = _s("discord_username")
+    discord_avatar   = _s("discord_avatar")
+    anilist_username = _s("anilist_username")
+    anilist_avatar   = _s("anilist_avatar")
+    mal_username     = _s("mal_username")
+    mal_avatar       = _s("mal_avatar")
+    simkl_avatar     = _s("simkl_avatar")
+    api_admin        = bool(body.get("admin", False))
+
     if not new_reason:
         return web.json_response({"error": "Missing required field: reason"}, status=400)
     if len(new_reason) < 30:
         return web.json_response({"error": "Reason must be at least 30 characters"}, status=400)
     if len(new_reason) > 700:
         return web.json_response({"error": "Reason must be at most 700 characters"}, status=400)
-
-    req_discord_id   = body.get("discord_id")
-    req_anilist_id   = body.get("anilist_user_id")
-    req_mal_id       = body.get("mal_user_id")
-    req_simkl_id     = body.get("simkl_user_id")
-    req_simkl_uname  = (body.get("simkl_username") or "").strip() or None
-    api_admin        = bool(body.get("admin", False))  # caller claims admin — verified below
-
-    # Require at least one identity field (unless claiming admin)
     if not api_admin and not any([req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname]):
         return web.json_response(
             {"error": "Provide at least one user identifier: discord_id, anilist_user_id, mal_user_id, simkl_user_id, or simkl_username"},
@@ -2996,9 +3271,9 @@ async def _api_edit_reason(request, media_type: str):
 
     async with aiohttp.ClientSession() as session:
         entries, sha = await github_read_json(session, filepath)
-        admins, _ = await read_admins(session)
+        admins, _    = await read_admins(session)
+        users_data, _ = await read_users(session)
 
-    # Verify admin claim — discord_id must be in admins.json
     is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
 
     idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
@@ -3007,25 +3282,94 @@ async def _api_edit_reason(request, media_type: str):
 
     entry = entries[idx]
 
-    if not is_admin and not _entry_owned_by_api(
-        entry, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname
-    ):
-        return web.json_response({"error": "You do not own this entry."}, status=403)
+    # Migrate legacy single reason into reasons[] if needed
+    if "reasons" not in entry:
+        first = {
+            "discord_id": entry.get("added_by_discord_id"),
+            "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+            "user": entry.get("user", {}),
+            "author": entry.get("author"),
+            "text": entry.get("reason", ""),
+            "added_at": None,
+        }
+        entries[idx]["reasons"] = [first]
+        entry = entries[idx]
 
-    old_reason = entry.get("reason", "")
-    entries[idx]["reason"] = new_reason
+    reasons = entry.get("reasons", [])
+
+    # ── Resolve user snapshot from users.json if possible ───────────────────────
+    matched_profile = None
+    for _did, p in users_data.items():
+        if req_anilist_id and p.get("anilist_user_id") == req_anilist_id:
+            matched_profile = p; break
+        if req_mal_id and p.get("mal_user_id") == req_mal_id:
+            matched_profile = p; break
+        if req_simkl_id and p.get("simkl_user_id") == req_simkl_id:
+            matched_profile = p; break
+        if req_simkl_uname and (p.get("simkl_username") or "").lower() == req_simkl_uname.lower():
+            matched_profile = p; break
+        if req_discord_id and str(p.get("discord_id") or "") == str(req_discord_id):
+            matched_profile = p; break
+
+    if matched_profile:
+        user_snapshot = _build_user_snapshot(matched_profile)
+        resolved_author = (
+            matched_profile.get("author_name")
+            or matched_profile.get("anilist_username")
+            or matched_profile.get("mal_username")
+            or matched_profile.get("simkl_username")
+            or matched_profile.get("discord_username")
+            or "Unknown"
+        )
+        # Enrich req ids from matched profile so _find_reason_idx has the best chance
+        req_discord_id  = req_discord_id  or matched_profile.get("discord_id")
+        req_anilist_id  = req_anilist_id  or matched_profile.get("anilist_user_id")
+        req_mal_id      = req_mal_id      or matched_profile.get("mal_user_id")
+        req_simkl_id    = req_simkl_id    or matched_profile.get("simkl_user_id")
+        req_simkl_uname = req_simkl_uname or matched_profile.get("simkl_username")
+    else:
+        user_snapshot = {
+            "discord":  {"id": req_discord_id,  "username": discord_username,  "avatar": discord_avatar},
+            "anilist":  {"id": req_anilist_id,   "username": anilist_username,  "avatar": anilist_avatar},
+            "mal":      {"id": req_mal_id,        "username": mal_username,      "avatar": mal_avatar},
+            "simkl":    {"id": req_simkl_id,      "username": req_simkl_uname,   "avatar": simkl_avatar},
+        }
+        resolved_author = anilist_username or mal_username or req_simkl_uname or discord_username or "Unknown"
+
+    # ── Find which reason slot belongs to this caller ────────────────────────────
+    if is_admin:
+        target_discord_id = body.get("target_discord_id")
+        if target_discord_id:
+            reason_idx = _find_reason_idx(reasons, target_discord_id, None, None, None, None)
+        else:
+            reason_idx = _find_reason_idx(reasons, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname)
+        if reason_idx is None and reasons:
+            reason_idx = 0  # admin fallback: first slot
+    else:
+        reason_idx = _find_reason_idx(reasons, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname)
+
+    if reason_idx is None:
+        return web.json_response({"error": "You don't have a reason on this entry."}, status=404)
+
+    old_reason = reasons[reason_idx].get("text", "")
+    entries[idx]["reasons"][reason_idx]["text"] = new_reason
+    entries[idx]["reasons"][reason_idx]["edited_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # Sync top-level reason field with first slot
+    if reason_idx == 0:
+        entries[idx]["reason"] = new_reason
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
             session, filepath, entries, sha,
-            f"edit: reason for '{entry['title']}' via API ({'admin' if is_admin else 'owner'})",
+            f"edit: reason for '{entry['title']}' by {resolved_author} via API ({'admin' if is_admin else 'owner'})",
         )
 
     if ok:
         log_embed = discord.Embed(title=f"✏️ Reason Edited via API — {media_type.title()}", color=0xF1C40F)
         log_embed.add_field(name="Title", value=entry["title"], inline=True)
-        log_embed.add_field(name="Editor", value=f"<@{req_discord_id}> (`{req_discord_id}`)" if req_discord_id else "API Key", inline=True)
+        log_embed.add_field(name="Editor", value=f"<@{req_discord_id}> (`{req_discord_id}`)" if req_discord_id else resolved_author, inline=True)
         log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="Old Reason", value=_short_reason(old_reason) or "*(empty)*", inline=False)
         log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
         log_embed.set_footer(text="Source: API")
         asyncio.ensure_future(_send_log(log_embed))
@@ -3042,6 +3386,205 @@ async def api_edit_reason_anime(request):  return await _api_edit_reason(request
 async def api_edit_reason_manga(request):  return await _api_edit_reason(request, "manga")
 async def api_edit_reason_show(request):   return await _api_edit_reason(request, "show")
 async def api_edit_reason_movie(request):  return await _api_edit_reason(request, "movie")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — delete reason from reasons[]
+# DELETE /api/delete_reason/{type}/{id}
+# Body: same identity fields as edit_reason
+# Non-admins: posts a log request for admins to action (same pattern as delete_entry)
+# Admins:     removes immediately
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _api_delete_reason(request, media_type: str):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        item_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid id in URL"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    def _s(key):
+        return (body.get(key) or "").strip() or None
+
+    req_discord_id   = body.get("discord_id")
+    req_anilist_id   = body.get("anilist_user_id")
+    req_mal_id       = body.get("mal_user_id")
+    req_simkl_id     = body.get("simkl_user_id")
+    req_simkl_uname  = _s("simkl_username")
+    api_admin        = bool(body.get("admin", False))
+
+    if not api_admin and not any([req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname]):
+        return web.json_response(
+            {"error": "Provide at least one user identifier: discord_id, anilist_user_id, mal_user_id, simkl_user_id, or simkl_username"},
+            status=400,
+        )
+
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map.get(media_type)
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha  = await github_read_json(session, filepath)
+        admins, _     = await read_admins(session)
+        users_data, _ = await read_users(session)
+
+    is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
+
+    idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
+    if idx is None:
+        return web.json_response({"error": f"No {media_type} with {id_key}={item_id} found."}, status=404)
+
+    entry = entries[idx]
+
+    # Migrate legacy single reason into reasons[] if needed
+    if "reasons" not in entry:
+        first = {
+            "discord_id": entry.get("added_by_discord_id"),
+            "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+            "user": entry.get("user", {}),
+            "author": entry.get("author"),
+            "text": entry.get("reason", ""),
+            "added_at": None,
+        }
+        entries[idx]["reasons"] = [first]
+        entry = entries[idx]
+
+    reasons = entry.get("reasons", [])
+
+    # ── Resolve full identity from users.json to maximise match coverage ─────────
+    matched_profile = None
+    for _did, p in users_data.items():
+        if req_anilist_id and p.get("anilist_user_id") == req_anilist_id:
+            matched_profile = p; break
+        if req_mal_id and p.get("mal_user_id") == req_mal_id:
+            matched_profile = p; break
+        if req_simkl_id and p.get("simkl_user_id") == req_simkl_id:
+            matched_profile = p; break
+        if req_simkl_uname and (p.get("simkl_username") or "").lower() == req_simkl_uname.lower():
+            matched_profile = p; break
+        if req_discord_id and str(p.get("discord_id") or "") == str(req_discord_id):
+            matched_profile = p; break
+
+    if matched_profile:
+        req_discord_id  = req_discord_id  or matched_profile.get("discord_id")
+        req_anilist_id  = req_anilist_id  or matched_profile.get("anilist_user_id")
+        req_mal_id      = req_mal_id      or matched_profile.get("mal_user_id")
+        req_simkl_id    = req_simkl_id    or matched_profile.get("simkl_user_id")
+        req_simkl_uname = req_simkl_uname or matched_profile.get("simkl_username")
+        resolved_author = (
+            matched_profile.get("anilist_username")
+            or matched_profile.get("mal_username")
+            or matched_profile.get("simkl_username")
+            or matched_profile.get("discord_username")
+            or "Unknown"
+        )
+    else:
+        resolved_author = req_simkl_uname or str(req_discord_id or "Unknown")
+
+    # ── Find the reason slot to delete ──────────────────────────────────────────
+    if is_admin:
+        target_discord_id = body.get("target_discord_id")
+        if target_discord_id:
+            reason_idx = _find_reason_idx(reasons, target_discord_id, None, None, None, None)
+        else:
+            reason_idx = _find_reason_idx(reasons, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname)
+        if reason_idx is None and reasons:
+            reason_idx = 0  # admin fallback: first slot
+    else:
+        reason_idx = _find_reason_idx(reasons, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname)
+
+    if reason_idx is None:
+        return web.json_response({"error": "You don't have a reason on this entry."}, status=404)
+
+    target_reason = reasons[reason_idx]
+    p_prefix = _prefix_cache[0]
+
+    # ── Non-admin: post a deletion request to the log channel ───────────────────
+    if not is_admin:
+        requester_label = f"<@{req_discord_id}> (`{req_discord_id}`)" if req_discord_id else resolved_author
+        log_embed = discord.Embed(
+            title="🗑️ Reason Deletion Requested via API (Owner)",
+            description=(
+                "An owner requested their reason be removed from an entry.\n"
+                "**Admins:** please review and use the command below to confirm."
+            ),
+            color=0xF0A500,
+        )
+        log_embed.add_field(name="Title",        value=entry.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Type",         value=media_type.title(),       inline=True)
+        log_embed.add_field(name="Requested by", value=requester_label,          inline=True)
+        log_embed.add_field(name="IDs",          value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="Reason to Delete", value=_short_reason(target_reason.get("text")), inline=False)
+        log_embed.add_field(name="Reasons Remaining After", value=str(len(reasons) - 1), inline=True)
+        log_embed.add_field(
+            name="Admin Command to Confirm",
+            value=f"`{p_prefix}delete_reason {media_type} {item_id} {req_discord_id or '?'}`",
+            inline=False,
+        )
+        if entry.get("poster"):
+            log_embed.set_thumbnail(url=entry["poster"])
+        log_embed.set_footer(text="Source: API")
+        await _send_log(log_embed)
+        return web.json_response({
+            "success": False,
+            "pending": True,
+            "message": "Deletion request submitted. An admin will review and action it.",
+            "title": entry.get("title"),
+            id_key: item_id,
+        })
+
+    # ── Admin: delete the reason immediately ────────────────────────────────────
+    entries[idx]["reasons"].pop(reason_idx)
+
+    entry_deleted = False
+    if not entries[idx]["reasons"]:
+        entries.pop(idx)
+        entry_deleted = True
+    else:
+        entries[idx]["reason"] = entries[idx]["reasons"][0].get("text", "")
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"remove: reason for '{entry['title']}' ({resolved_author}) by admin via API",
+        )
+
+    if ok:
+        log_embed = discord.Embed(
+            title=f"🗑️ Reason Deleted via API (Admin) — {media_type.title()}",
+            color=0xDA3633,
+        )
+        log_embed.add_field(name="Title",       value=entry["title"], inline=True)
+        log_embed.add_field(name="Deleted by",  value=f"<@{req_discord_id}> (`{req_discord_id}`)" if req_discord_id else "API Key", inline=True)
+        log_embed.add_field(name="Target User", value=resolved_author, inline=True)
+        log_embed.add_field(name="IDs",         value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="Deleted Reason", value=_short_reason(target_reason.get("text")), inline=False)
+        if entry_deleted:
+            log_embed.add_field(name="\u26a0\ufe0f Entry Also Removed", value="No reasons remained — full entry deleted.", inline=False)
+        if entry.get("poster"):
+            log_embed.set_thumbnail(url=entry["poster"])
+        log_embed.set_footer(text="Source: API")
+        asyncio.ensure_future(_send_log(log_embed))
+        return web.json_response({
+            "success": True,
+            "entry_deleted": entry_deleted,
+            "title": entry["title"],
+            id_key: item_id,
+        })
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
+async def api_delete_reason_anime(request):  return await _api_delete_reason(request, "anime")
+async def api_delete_reason_manga(request):  return await _api_delete_reason(request, "manga")
+async def api_delete_reason_show(request):   return await _api_delete_reason(request, "show")
+async def api_delete_reason_movie(request):  return await _api_delete_reason(request, "movie")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3348,6 +3891,11 @@ async def start_health_server():
     app.router.add_patch("/api/edit_reason/manga/{id}", api_edit_reason_manga)
     app.router.add_patch("/api/edit_reason/show/{id}",  api_edit_reason_show)
     app.router.add_patch("/api/edit_reason/movie/{id}", api_edit_reason_movie)
+    # ── delete reason ──────────────────────────────────────────────────────────
+    app.router.add_delete("/api/delete_reason/anime/{id}", api_delete_reason_anime)
+    app.router.add_delete("/api/delete_reason/manga/{id}", api_delete_reason_manga)
+    app.router.add_delete("/api/delete_reason/show/{id}",  api_delete_reason_show)
+    app.router.add_delete("/api/delete_reason/movie/{id}", api_delete_reason_movie)
     # ── delete entry ───────────────────────────────────────────────────────────
     app.router.add_delete("/api/delete/anime/{id}", api_delete_anime)
     app.router.add_delete("/api/delete/manga/{id}", api_delete_manga)
