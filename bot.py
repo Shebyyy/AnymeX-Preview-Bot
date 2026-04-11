@@ -3034,6 +3034,23 @@ async def on_ready():
     await ensure_json_files()
     await load_faq_from_github()
 
+    # ── Send startup log to log channel ───────────────────────────────────────
+    import datetime
+    embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
+    embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
+    embed.add_field(
+        name="Active Proxy",
+        value=_current_proxy or "None (direct connection)",
+        inline=False,
+    )
+    embed.add_field(
+        name="Proxy Pool",
+        value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool",
+        inline=False,
+    )
+    embed.timestamp = datetime.datetime.utcnow()
+    await _send_log(embed)
+
 
     # Sync slash commands once to avoid Cloudflare rate limiting on every restart
     if not getattr(bot, "_synced", False):
