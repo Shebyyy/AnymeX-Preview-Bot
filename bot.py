@@ -993,8 +993,81 @@ def _check_auth(request):
     return auth == f"Bearer {API_SECRET}"
 
 
+MAL_BACKUP_BASE = "https://raw.githubusercontent.com/bal-mackup/mal-backup/refs/heads/master"
+
+
+async def _malbackup_mal_to_anilist(media_type: str, mal_id: int) -> int | None:
+    url = f"{MAL_BACKUP_BASE}/mal/{media_type}/{mal_id}.json"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json(content_type=None)
+                ani_id = data.get("aniId")
+                return int(ani_id) if ani_id else None
+    except Exception:
+        return None
+
+
+async def _malbackup_anilist_to_mal(media_type: str, anilist_id: int) -> int | None:
+    url = f"{MAL_BACKUP_BASE}/anilist/{media_type}/{anilist_id}.json"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json(content_type=None)
+                mal_id = data.get("malId")
+                return int(mal_id) if mal_id else None
+    except Exception:
+        return None
+
+
+async def _api_check_media(request, media_type: str):
+    """GET /api/check/{type}/{id}?id_type=anilist|mal|simkl
+    Returns the full entry if already in the list, or {exists: false}.
+    """
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        item_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid id in URL"}, status=400)
+
+    id_type = request.rel_url.query.get("id_type", "anilist").lower()
+
+    if media_type in ("anime", "manga"):
+        filepath = FILE_ANIME if media_type == "anime" else FILE_MANGA
+        async with aiohttp.ClientSession() as session:
+            entries, _ = await github_read_json(session, filepath)
+        if id_type == "mal":
+            entry = next((e for e in entries if e.get("mal_id") == item_id), None)
+        else:
+            entry = next((e for e in entries if e.get("anilist_id") == item_id), None)
+    else:
+        filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
+        async with aiohttp.ClientSession() as session:
+            entries, _ = await github_read_json(session, filepath)
+        entry = next((e for e in entries if e.get("simkl_id") == item_id), None)
+
+    if entry:
+        return web.json_response({"exists": True, "entry": entry})
+    return web.json_response({"exists": False})
+
+
+async def api_check_anime(request): return await _api_check_media(request, "anime")
+async def api_check_manga(request): return await _api_check_media(request, "manga")
+async def api_check_show(request): return await _api_check_media(request, "show")
+async def api_check_movie(request): return await _api_check_media(request, "movie")
+
+
 async def _api_add_media(request, media_type: str):
-    """Shared handler for POST /api/add_anime and POST /api/add_manga."""
+    """Shared handler for POST /api/add_anime and POST /api/add_manga.
+    Accepts anilist_id or mal_id as primary — cross-references via mal-backup repo.
+    All user fields are optional; the richer the caller sends, the better the snapshot.
+    """
     if not _check_auth(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
@@ -1003,46 +1076,75 @@ async def _api_add_media(request, media_type: str):
     except Exception:
         return web.json_response({"error": "Invalid JSON body"}, status=400)
 
-    anilist_id = body.get("anilist_id")
-    mal_id = body.get("mal_id")             # optional — falls back to AniList's idMal
-    anilist_user_id = body.get("anilist_user_id")   # optional
-    anilist_username = (body.get("anilist_username") or "").strip() or None
-    mal_user_id = body.get("mal_user_id")           # optional
-    mal_username = (body.get("mal_username") or "").strip() or None
-    author = (body.get("author") or "").strip() or None  # optional — falls back to anilist/mal username
-    reason = (body.get("reason") or "").strip()
+    def _s(key):
+        return (body.get(key) or "").strip() or None
 
-    # Required fields
-    missing = [k for k, v in [
-        ("anilist_id", anilist_id),
-        ("reason", reason),
-    ] if not v]
-    if missing:
-        return web.json_response({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
+    anilist_id      = body.get("anilist_id")
+    mal_id          = body.get("mal_id")
+    reason          = (body.get("reason") or "").strip()
+    author          = _s("author")
 
-    if not anilist_user_id and not mal_user_id:
-        return web.json_response({"error": "Provide at least one of: anilist_user_id, mal_user_id"}, status=400)
+    anilist_user_id = body.get("anilist_user_id")
+    anilist_username = _s("anilist_username")
+    anilist_avatar  = _s("anilist_avatar")
 
-    if not isinstance(anilist_id, int):
+    mal_user_id     = body.get("mal_user_id")
+    mal_username    = _s("mal_username")
+    mal_avatar      = _s("mal_avatar")
+
+    simkl_user_id   = body.get("simkl_user_id")
+    simkl_username  = _s("simkl_username")
+    simkl_avatar    = _s("simkl_avatar")
+
+    discord_id      = body.get("discord_id")
+    discord_username = _s("discord_username")
+    discord_avatar  = _s("discord_avatar")
+
+    if not reason:
+        return web.json_response({"error": "Missing required field: reason"}, status=400)
+    if len(reason) < 30:
+        return web.json_response({"error": "Reason must be at least 30 characters"}, status=400)
+    if len(reason) > 700:
+        return web.json_response({"error": "Reason must be at most 700 characters"}, status=400)
+    if not anilist_id and not mal_id:
+        return web.json_response({"error": "Provide at least one of: anilist_id, mal_id"}, status=400)
+    if not any([anilist_user_id, mal_user_id, simkl_user_id, anilist_username, mal_username, simkl_username]):
+        return web.json_response({"error": "Provide at least one user identifier (anilist_user_id, mal_user_id, simkl_user_id, or a username)"}, status=400)
+    if anilist_id is not None and not isinstance(anilist_id, int):
         return web.json_response({"error": "anilist_id must be an integer"}, status=400)
+    if mal_id is not None and not isinstance(mal_id, int):
+        return web.json_response({"error": "mal_id must be an integer"}, status=400)
+
+    mb_type = "anime" if media_type == "ANIME" else "manga"
+
+    if anilist_id is None and mal_id is not None:
+        anilist_id = await _malbackup_mal_to_anilist(mb_type, mal_id)
+
+    if mal_id is None and anilist_id is not None:
+        mal_id = await _malbackup_anilist_to_mal(mb_type, anilist_id)
 
     async with aiohttp.ClientSession() as session:
-        media = await fetch_anilist(session, anilist_id, media_type)
-        if not media:
-            return web.json_response(
-                {"error": f"Could not find {media_type.lower()} with anilist_id={anilist_id} on AniList"},
-                status=404,
-            )
+        media = None
+        if anilist_id:
+            media = await fetch_anilist(session, anilist_id, media_type)
+            if not media:
+                anilist_id = None
 
-        titles = media["title"]
-        title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
-        resolved_mal_id = mal_id if mal_id is not None else media.get("idMal")
-        score = media.get("averageScore") or "N/A"
-        type_path = "anime" if media_type == "ANIME" else "manga"
-        anilist_url = f"https://anilist.co/{type_path}/{anilist_id}"
-        mal_url = f"https://myanimelist.net/{type_path}/{resolved_mal_id}" if resolved_mal_id else "N/A"
+        if media:
+            titles = media["title"]
+            title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
+            if mal_id is None:
+                mal_id = media.get("idMal")
+            score = media.get("averageScore") or "N/A"
+            poster = media.get("coverImage", {}).get("large", "")
+            nsfw = bool(media.get("isAdult") or False)
+        else:
+            title = f"MAL ID {mal_id}"
+            score = "N/A"
+            poster = ""
+            nsfw = False
 
-        # Try to find this user's full profile from users.json for the snapshot
+        # Try users.json first for a full enriched snapshot
         users_data, _ = await read_users(session)
         matched_profile = None
         for _discord_id, p in users_data.items():
@@ -1052,48 +1154,67 @@ async def _api_add_media(request, media_type: str):
             if mal_user_id and p.get("mal_user_id") == mal_user_id:
                 matched_profile = p
                 break
+            if simkl_user_id and p.get("simkl_user_id") == simkl_user_id:
+                matched_profile = p
+                break
 
         if matched_profile:
             user_snapshot = _build_user_snapshot(matched_profile)
         else:
-            # API caller not in users.json — build a minimal snapshot from request body
+            # Build snapshot entirely from caller-supplied fields — no users.json needed
             user_snapshot = {
+                "discord": {
+                    "id": discord_id,
+                    "username": discord_username,
+                    "avatar": discord_avatar,
+                },
                 "anilist": {
                     "id": anilist_user_id,
                     "username": anilist_username,
-                    "avatar": None,
+                    "avatar": anilist_avatar,
                 },
                 "mal": {
                     "id": mal_user_id,
                     "username": mal_username,
-                    "avatar": None,
+                    "avatar": mal_avatar,
+                },
+                "simkl": {
+                    "id": simkl_user_id,
+                    "username": simkl_username,
+                    "avatar": simkl_avatar,
                 },
             }
 
-        # Resolve author: use provided value, fall back to anilist username → mal username → "Unknown"
         resolved_author = (
             author
             or user_snapshot.get("anilist", {}).get("username")
             or user_snapshot.get("mal", {}).get("username")
+            or user_snapshot.get("simkl", {}).get("username")
+            or user_snapshot.get("discord", {}).get("username")
             or "Unknown"
         )
 
         entry = {
             "anilist_id": anilist_id,
-            "mal_id": resolved_mal_id,
+            "mal_id": mal_id,
             "title": title,
             "author": resolved_author,
             "reason": reason,
             "user": user_snapshot,
-            "poster": media.get("coverImage", {}).get("large", ""),
+            "poster": poster,
             "score": score,
-            "nsfw": bool(media.get("isAdult") or False),
+            "nsfw": nsfw,
         }
 
         filepath = FILE_ANIME if media_type == "ANIME" else FILE_MANGA
         entries, sha = await github_read_json(session, filepath)
 
-        if any(e.get("anilist_id") == anilist_id for e in entries):
+        if anilist_id and any(e.get("anilist_id") == anilist_id for e in entries):
+            return web.json_response(
+                {"error": f"{title} is already in the list", "title": title},
+                status=409,
+            )
+        if not anilist_id and mal_id and any(e.get("mal_id") == mal_id for e in entries):
             return web.json_response(
                 {"error": f"{title} is already in the list", "title": title},
                 status=409,
@@ -1105,7 +1226,7 @@ async def _api_add_media(request, media_type: str):
             filepath,
             entries,
             sha,
-            f"feat: add {title} to underrated {media_type.lower()}s by {author} (API)",
+            f"feat: add {title} to underrated {media_type.lower()}s by {resolved_author} (API)",
         )
 
     if ok:
@@ -1122,7 +1243,9 @@ async def api_add_manga(request):
 
 
 async def _api_add_simkl(request, media_type: str):
-    """Shared handler for POST /api/add_show and POST /api/add_movie."""
+    """Shared handler for POST /api/add_show and POST /api/add_movie.
+    All user fields are optional; the richer the caller sends, the better the snapshot.
+    """
     if not _check_auth(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
 
@@ -1131,13 +1254,36 @@ async def _api_add_simkl(request, media_type: str):
     except Exception:
         return web.json_response({"error": "Invalid JSON body"}, status=400)
 
-    simkl_id = body.get("simkl_id")
-    reason = (body.get("reason") or "").strip()
-    author = (body.get("author") or "").strip() or None
+    def _s(key):
+        return (body.get(key) or "").strip() or None
+
+    simkl_id        = body.get("simkl_id")
+    reason          = (body.get("reason") or "").strip()
+    author          = _s("author")
+
+    simkl_user_id   = body.get("simkl_user_id")
+    simkl_username  = _s("simkl_username")
+    simkl_avatar    = _s("simkl_avatar")
+
+    anilist_user_id = body.get("anilist_user_id")
+    anilist_username = _s("anilist_username")
+    anilist_avatar  = _s("anilist_avatar")
+
+    mal_user_id     = body.get("mal_user_id")
+    mal_username    = _s("mal_username")
+    mal_avatar      = _s("mal_avatar")
+
+    discord_id      = body.get("discord_id")
+    discord_username = _s("discord_username")
+    discord_avatar  = _s("discord_avatar")
 
     missing = [k for k, v in [("simkl_id", simkl_id), ("reason", reason)] if not v]
     if missing:
         return web.json_response({"error": f"Missing required fields: {', '.join(missing)}"}, status=400)
+    if len(reason) < 30:
+        return web.json_response({"error": "Reason must be at least 30 characters"}, status=400)
+    if len(reason) > 700:
+        return web.json_response({"error": "Reason must be at most 700 characters"}, status=400)
 
     if not isinstance(simkl_id, int):
         return web.json_response({"error": "simkl_id must be an integer"}, status=400)
@@ -1145,7 +1291,6 @@ async def _api_add_simkl(request, media_type: str):
     if not SIMKL_CLIENT_ID:
         return web.json_response({"error": "SIMKL_CLIENT_ID not configured on server"}, status=500)
 
-    # Fetch from Simkl
     if media_type == "show":
         media = await _simkl_fetch_show(simkl_id)
     else:
@@ -1167,24 +1312,66 @@ async def _api_add_simkl(request, media_type: str):
     nsfw = certification in _adult_certs
     simkl_url = f"https://simkl.com/{media_type}s/{simkl_id}"
 
-    # Try to match a user by simkl_username from request
-    simkl_username = (body.get("simkl_username") or "").strip() or None
     async with aiohttp.ClientSession() as session:
         users_data, _ = await read_users(session)
 
     matched_profile = None
-    if simkl_username:
-        for _discord_id, p in users_data.items():
-            if p.get("simkl_username", "").lower() == simkl_username.lower():
-                matched_profile = p
-                break
+    for _discord_id, p in users_data.items():
+        if simkl_user_id and p.get("simkl_user_id") == simkl_user_id:
+            matched_profile = p
+            break
+        if simkl_username and p.get("simkl_username", "").lower() == simkl_username.lower():
+            matched_profile = p
+            break
+        if anilist_user_id and p.get("anilist_user_id") == anilist_user_id:
+            matched_profile = p
+            break
+        if mal_user_id and p.get("mal_user_id") == mal_user_id:
+            matched_profile = p
+            break
 
     if matched_profile:
         user_snapshot = _build_user_snapshot(matched_profile)
-        resolved_author = author or matched_profile.get("author_name") or simkl_username or "Unknown"
+        resolved_author = (
+            author
+            or matched_profile.get("author_name")
+            or matched_profile.get("simkl_username")
+            or matched_profile.get("anilist_username")
+            or matched_profile.get("mal_username")
+            or "Unknown"
+        )
     else:
-        user_snapshot = {"simkl": {"username": simkl_username}}
-        resolved_author = author or simkl_username or "Unknown"
+        # Build snapshot entirely from caller-supplied fields — no users.json needed
+        user_snapshot = {
+            "discord": {
+                "id": discord_id,
+                "username": discord_username,
+                "avatar": discord_avatar,
+            },
+            "anilist": {
+                "id": anilist_user_id,
+                "username": anilist_username,
+                "avatar": anilist_avatar,
+            },
+            "mal": {
+                "id": mal_user_id,
+                "username": mal_username,
+                "avatar": mal_avatar,
+            },
+            "simkl": {
+                "id": simkl_user_id,
+                "username": simkl_username,
+                "avatar": simkl_avatar,
+            },
+        }
+        resolved_author = (
+            author
+            or simkl_username
+            or anilist_username
+            or mal_username
+            or discord_username
+            or "Unknown"
+        )
 
     entry = {
         "simkl_id": simkl_id,
@@ -1722,6 +1909,11 @@ async def start_health_server():
     app.router.add_post("/api/add_manga", api_add_manga)
     app.router.add_post("/api/add_show", api_add_show)
     app.router.add_post("/api/add_movie", api_add_movie)
+    # ── check if item already in list ──────────────────────────────────────────
+    app.router.add_get("/api/check/anime/{id}", api_check_anime)
+    app.router.add_get("/api/check/manga/{id}", api_check_manga)
+    app.router.add_get("/api/check/show/{id}", api_check_show)
+    app.router.add_get("/api/check/movie/{id}", api_check_movie)
     # ── voting ─────────────────────────────────────────────────────────────────
     app.router.add_post("/api/vote/anime/{anilist_id}", api_vote_anime)
     app.router.add_post("/api/vote/manga/{anilist_id}", api_vote_manga)
@@ -3182,6 +3374,28 @@ class ConfirmView(discord.ui.View):
 async def handle_add(interaction, anilist_id: int, reason: str, media_type: str):
     await interaction.response.defer()
 
+    reason = reason.strip()
+    if len(reason) < 30:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Reason too short",
+                description="Your reason must be at least **30 characters**. Tell the community why this deserves more attention!",
+                color=0xFF4444,
+            ),
+            ephemeral=True,
+        )
+        return
+    if len(reason) > 700:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Reason too long",
+                description=f"Your reason must be at most **700 characters** (yours is {len(reason)}).",
+                color=0xFF4444,
+            ),
+            ephemeral=True,
+        )
+        return
+
     async with aiohttp.ClientSession() as session:
         users, _ = await read_users(session)
         profile = users.get(str(interaction.user.id))
@@ -3357,6 +3571,28 @@ async def handle_simkl_add(
     media_type: str,  # "show" or "movie"
 ):
     await interaction.response.defer()
+
+    reason = reason.strip()
+    if len(reason) < 30:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Reason too short",
+                description="Your reason must be at least **30 characters**. Tell the community why this deserves more attention!",
+                color=0xFF4444,
+            ),
+            ephemeral=True,
+        )
+        return
+    if len(reason) > 700:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Reason too long",
+                description=f"Your reason must be at most **700 characters** (yours is {len(reason)}).",
+                color=0xFF4444,
+            ),
+            ephemeral=True,
+        )
+        return
 
     discord_id = str(interaction.user.id)
 
@@ -5391,6 +5627,13 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
         return
     if not mal_id:
         await ctx.send("❌ Invalid MAL link.")
+        return
+    reason = (reason or "").strip()
+    if len(reason) < 30:
+        await ctx.send(f"❌ Reason too short — must be at least **30 characters** (yours is {len(reason)}).")
+        return
+    if len(reason) > 700:
+        await ctx.send(f"❌ Reason too long — must be at most **700 characters** (yours is {len(reason)}).")
         return
 
     async with aiohttp.ClientSession() as session:
