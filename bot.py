@@ -62,14 +62,24 @@ _proxy_cycle = None
 _current_proxy: str | None = None
 
 async def _send_log(embed: discord.Embed):
+    print(f"📤 _send_log called. LOG_CHANNEL_ID={LOG_CHANNEL_ID}")
     if not LOG_CHANNEL_ID:
+        print("⚠️ _send_log skipped: LOG_CHANNEL_ID is not set")
         return
     try:
-        ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
+        ch = bot.get_channel(LOG_CHANNEL_ID)
+        print(f"📤 get_channel result: {ch}")
+        if not ch:
+            print("📤 Channel not in cache, trying fetch_channel...")
+            ch = await bot.fetch_channel(LOG_CHANNEL_ID)
+            print(f"📤 fetch_channel result: {ch}")
         if ch:
             await ch.send(embed=embed)
+            print(f"✅ Log embed sent to #{getattr(ch, 'name', ch.id)}")
+        else:
+            print("⚠️ Channel is None even after fetch")
     except Exception as e:
-        print(f"⚠️ Failed to send log embed: {e}")
+        print(f"⚠️ Failed to send log embed: {type(e).__name__}: {e}")
 
 async def fetch_geonode_proxies() -> bool:
     global _proxy_list, _proxy_cycle
@@ -3028,20 +3038,28 @@ async def on_ready():
 
     # ── Send startup log to log channel ───────────────────────────────────────
     import datetime
-    embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
-    embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
-    embed.add_field(
-        name="Active Proxy",
-        value=_current_proxy or "None (direct connection)",
-        inline=False,
-    )
-    embed.add_field(
-        name="Proxy Pool",
-        value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool",
-        inline=False,
-    )
-    embed.timestamp = datetime.datetime.utcnow()
-    await _send_log(embed)
+    if LOG_CHANNEL_ID:
+        try:
+            ch = bot.get_channel(LOG_CHANNEL_ID)
+            if not ch:
+                ch = await bot.fetch_channel(LOG_CHANNEL_ID)
+            if ch:
+                embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
+                embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
+                embed.add_field(
+                    name="Active Proxy",
+                    value=_current_proxy or "None (direct connection)",
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Proxy Pool",
+                    value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool",
+                    inline=False,
+                )
+                embed.timestamp = datetime.datetime.utcnow()
+                await ch.send(content="🟢 Bot started!", embed=embed)
+        except Exception as e:
+            print(f"⚠️ Startup log failed: {type(e).__name__}: {e}")
 
 
     # Sync slash commands once to avoid Cloudflare rate limiting on every restart
