@@ -136,10 +136,8 @@ async def start_bot_with_proxy():
                 embed.add_field(name="Blocked Proxy", value=_current_proxy or "direct", inline=False)
                 embed.description = "Switching to next proxy automatically..."
                 await _send_log(embed)
-                try:
-                    await bot.close()
-                except Exception:
-                    pass
+                # Reset the HTTP session without closing the bot
+                bot.http._HTTPClient__session = None
                 await asyncio.sleep(3)
                 continue
             raise
@@ -147,15 +145,9 @@ async def start_bot_with_proxy():
             bad_proxy = _current_proxy
             _dead_proxies.add(bad_proxy)
             print(f"⚠️ Proxy unreachable ({bad_proxy}): {e} — trying next proxy...")
-            embed = discord.Embed(title="⚠️ Proxy Connection Failed", color=0xe74c3c)
-            embed.add_field(name="Dead Proxy", value=bad_proxy or "direct", inline=False)
-            embed.description = "Switching to next proxy automatically..."
-            await _send_log(embed)
-            try:
-                await bot.close()
-            except Exception:
-                pass
-            await asyncio.sleep(2)
+            # Reset the HTTP session so the next attempt gets a fresh connection
+            bot.http._HTTPClient__session = None
+            await asyncio.sleep(1)
             continue
 
 @tasks.loop(hours=24)
