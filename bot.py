@@ -434,14 +434,19 @@ def _generate_pkce() -> tuple[str, str]:
 
 # ── State management ──────────────────────────────────────────────────────────────
 
-def _create_oauth_state(discord_id: int, service: str) -> str:
+def _create_oauth_state(discord_id: int, service: str, discord_user: discord.User | discord.Member | None = None) -> str:
     """Create a unique OAuth state, store it, and return it."""
     state = secrets.token_urlsafe(32)
-    _oauth_pending[state] = {
+    data = {
         "discord_id": str(discord_id),
         "service": service,
         "created": time.time(),
     }
+    if discord_user:
+        data["discord_username"] = discord_user.name
+        data["discord_display_name"] = discord_user.display_name
+        data["discord_avatar"] = str(discord_user.display_avatar.url) if discord_user.display_avatar else None
+    _oauth_pending[state] = data
     return state
 
 
@@ -1916,23 +1921,7 @@ async def _oauth_save_profile(discord_id: str, service: str, profile_data: dict,
 
         # If this user is also a bot admin, sync their linked account info into admins.json
         if ok:
-            try:
-                admins, admins_sha = await read_admins(session)
-                if discord_id in admins:
-                    admins[discord_id].update({
-                        "anilist_user_id": merged.get("anilist_user_id"),
-                        "anilist_username": merged.get("anilist_username"),
-                        "anilist_avatar": merged.get("anilist_avatar"),
-                        "mal_user_id": merged.get("mal_user_id"),
-                        "mal_username": merged.get("mal_username"),
-                        "mal_avatar": merged.get("mal_avatar"),
-                        "simkl_user_id": merged.get("simkl_user_id"),
-                        "simkl_username": merged.get("simkl_username"),
-                        "simkl_avatar": merged.get("simkl_avatar"),
-                    })
-                    await write_admins(session, admins, admins_sha, f"sync: {service} info for admin {discord_id}")
-            except Exception as e:
-                print(f"⚠️ Failed to sync admin profile after OAuth for {discord_id}: {e}")
+            await _sync_admin_from_user(session, discord_id, merged, source=f"{service} OAuth")
 
         return ok
 
@@ -2065,7 +2054,15 @@ async def anilist_callback(request):
         "anilist_chapters_read": manga_stats.get("chaptersRead"),
     }
 
-    ok = await _oauth_save_profile(discord_id, "anilist", profile_data, access_token)
+    ok = await _oauth_save_profile(
+        discord_id, "anilist", profile_data, access_token,
+        extra_fields={
+            "discord_id": pending.get("discord_id"),
+            "discord_username": pending.get("discord_username"),
+            "discord_display_name": pending.get("discord_display_name"),
+            "discord_avatar": pending.get("discord_avatar"),
+        },
+    )
     if not ok:
         return web.Response(
             content_type="text/html",
@@ -2162,7 +2159,15 @@ async def mal_callback(request):
     if encrypted_refresh:
         profile_data["mal_refresh_token"] = encrypted_refresh
 
-    ok = await _oauth_save_profile(discord_id, "mal", profile_data, access_token)
+    ok = await _oauth_save_profile(
+        discord_id, "mal", profile_data, access_token,
+        extra_fields={
+            "discord_id": pending.get("discord_id"),
+            "discord_username": pending.get("discord_username"),
+            "discord_display_name": pending.get("discord_display_name"),
+            "discord_avatar": pending.get("discord_avatar"),
+        },
+    )
     if not ok:
         return web.Response(
             content_type="text/html",
@@ -2341,6 +2346,15 @@ async def simkl_callback(request):
     async with aiohttp.ClientSession() as session:
         users, sha = await read_users(session)
         existing = users.get(discord_id, {})
+        # Save Discord identity from the OAuth state
+        if pending.get("discord_username"):
+            existing["discord_username"] = pending["discord_username"]
+        if pending.get("discord_display_name"):
+            existing["discord_display_name"] = pending["discord_display_name"]
+        if pending.get("discord_avatar"):
+            existing["discord_avatar"] = pending["discord_avatar"]
+        if pending.get("discord_id"):
+            existing["discord_id"] = pending["discord_id"]
         existing["simkl_username"] = simkl_profile["username"]
         existing["simkl_user_id"] = simkl_profile["user_id"]
         existing["simkl_avatar"] = simkl_profile["avatar_url"]
@@ -2350,6 +2364,9 @@ async def simkl_callback(request):
             session, users, sha,
             f"link: Simkl OAuth redirect for discord:{discord_id}",
         )
+        # Sync admin if applicable
+        if ok:
+            await _sync_admin_from_user(session, discord_id, existing, source="Simkl OAuth redirect")
 
     if not ok:
         return web.Response(
@@ -4229,6 +4246,36 @@ def _admin_snapshot(discord_user: discord.User | discord.Member) -> dict:
     }
 
 
+async def _sync_admin_from_user(session: aiohttp.ClientSession, discord_id: str, user_profile: dict, source: str = "unknown"):
+    """If discord_id is an admin, sync their service IDs from user_profile into admins.json."""
+    try:
+        admins, admins_sha = await read_admins(session)
+        if discord_id not in admins:
+            return  # not an admin, nothing to sync
+        sync_fields = [
+            ("anilist_user_id", "anilist_user_id"),
+            ("anilist_username", "anilist_username"),
+            ("anilist_avatar", "anilist_avatar"),
+            ("mal_user_id", "mal_user_id"),
+            ("mal_username", "mal_username"),
+            ("mal_avatar", "mal_avatar"),
+            ("simkl_user_id", "simkl_user_id"),
+            ("simkl_username", "simkl_username"),
+            ("simkl_avatar", "simkl_avatar"),
+        ]
+        changed = False
+        rec = admins[discord_id]
+        for admin_key, user_key in sync_fields:
+            val = user_profile.get(user_key)
+            if val is not None and rec.get(admin_key) != val:
+                rec[admin_key] = val
+                changed = True
+        if changed:
+            await write_admins(session, admins, admins_sha, f"sync: {source} for admin {discord_id}")
+    except Exception as e:
+        print(f"⚠️ Failed to sync admin profile from {source}: {e}")
+
+
 # ── AniList autocomplete search helpers ────────────────────────────────────────
 
 
@@ -4521,7 +4568,7 @@ async def link_anilist(interaction: discord.Interaction):
         )
         return
 
-    state = _create_oauth_state(interaction.user.id, "anilist")
+    state = _create_oauth_state(interaction.user.id, "anilist", interaction.user)
     auth_url = (
         f"https://anilist.co/api/v2/oauth/authorize"
         f"?client_id={ANILIST_CLIENT_ID}"
@@ -4620,7 +4667,7 @@ async def link_mal(interaction: discord.Interaction):
         )
         return
 
-    state = _create_oauth_state(interaction.user.id, "mal")
+    state = _create_oauth_state(interaction.user.id, "mal", interaction.user)
     verifier, challenge = _generate_pkce()
     _mal_pkce_store[state] = verifier
 
@@ -4716,7 +4763,7 @@ async def link_simkl(interaction: discord.Interaction):
         await interaction.followup.send("❌ Token encryption key is not configured. Contact the bot admin.", ephemeral=True)
         return
 
-    state = _create_oauth_state(interaction.user.id, "simkl")
+    state = _create_oauth_state(interaction.user.id, "simkl", interaction.user)
     auth_url = (
         f"https://simkl.com/oauth/authorize"
         f"?client_id={SIMKL_CLIENT_ID}"
@@ -4981,18 +5028,6 @@ async def manga_autocomplete(
     ][:25]
 
 
-async def anilist_user_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    if not current or len(current) < 2:
-        return []
-    results = await _anilist_user_search(current)
-    return [
-        app_commands.Choice(name=f"{u['name']} (ID: {u['id']})", value=str(u["id"]))
-        for u in results
-    ][:25]
-
-
 async def show_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
@@ -5154,257 +5189,6 @@ async def ensure_json_files():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /setup
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-@bot.tree.command(
-    name="setup", description="Link your AniList and/or MAL accounts to your Discord"
-)
-@app_commands.describe(
-    anilist_username="Your AniList username (optional — leave blank if you don't have one)",
-    mal_username="Your MyAnimeList username (optional — leave blank if you don't have one)",
-    author_name="Display name for list entries (defaults to Discord username)",
-)
-@app_commands.autocomplete(anilist_username=anilist_user_autocomplete)
-async def setup(
-    interaction: discord.Interaction,
-    anilist_username: str = "",
-    mal_username: str = "",
-    author_name: str = "",
-):
-    await interaction.response.defer(ephemeral=True)
-
-    discord_id = str(interaction.user.id)
-    author_display = author_name or interaction.user.display_name
-
-    if not anilist_username and not mal_username:
-        await interaction.followup.send(
-            "❌ Please provide at least one of: AniList username or MAL username. To link Simkl, use /link_simkl instead.",
-            ephemeral=True,
-        )
-        return
-
-    # ── AniList resolution ────────────────────────────────────────────────────
-    anilist_profile_data = None
-    anilist_user_id = None
-    anilist_username_display = None
-
-    if anilist_username:
-        if anilist_username.isdigit():
-            anilist_user_id = int(anilist_username)
-            anilist_profile_data = await _anilist_fetch_user_by_id(anilist_user_id)
-            if not anilist_profile_data:
-                await interaction.followup.send(
-                    f"❌ AniList user with ID `{anilist_user_id}` not found.",
-                    ephemeral=True,
-                )
-                return
-            anilist_username_display = anilist_profile_data["name"]
-        else:
-            anilist_profile_data = await _anilist_fetch_user_by_name(anilist_username)
-            if not anilist_profile_data:
-                await interaction.followup.send(
-                    f"❌ AniList user `{anilist_username}` not found. Try the autocomplete suggestions.",
-                    ephemeral=True,
-                )
-                return
-            anilist_user_id = anilist_profile_data["id"]
-            anilist_username_display = anilist_profile_data["name"]
-
-    # ── MAL resolution ────────────────────────────────────────────────────────
-    mal_profile_data = None
-    mal_user_id = None
-
-    if mal_username:
-        mal_profile_data = await _mal_fetch_full_profile(mal_username)
-        if not mal_profile_data:
-            await interaction.followup.send(
-                f"❌ MAL user `{mal_username}` not found. Check your username and try again.",
-                ephemeral=True,
-            )
-            return
-        mal_user_id = mal_profile_data["mal_id"]
-
-    # ── Build stored profile ──────────────────────────────────────────────────
-    profile_entry = {
-        "author_name": author_display,
-        "discord_id": interaction.user.id,
-        "discord_username": interaction.user.name,
-        "discord_display_name": interaction.user.display_name,
-        "discord_avatar": str(interaction.user.display_avatar.url) if interaction.user.display_avatar else None,
-        # AniList — None if user has no AniList
-        "anilist_user_id": anilist_user_id,
-        "anilist_username": anilist_username_display,
-        "anilist_url": anilist_profile_data.get("siteUrl") if anilist_profile_data else None,
-        "anilist_avatar": (
-            anilist_profile_data.get("avatar", {}).get("large")
-            if anilist_profile_data else None
-        ),
-        "anilist_banner": anilist_profile_data.get("bannerImage") if anilist_profile_data else None,
-        "anilist_about": (anilist_profile_data.get("about") or "")[:300] if anilist_profile_data else None,
-        "anilist_anime_count": (
-            anilist_profile_data.get("statistics", {}).get("anime", {}).get("count")
-            if anilist_profile_data else None
-        ),
-        "anilist_manga_count": (
-            anilist_profile_data.get("statistics", {}).get("manga", {}).get("count")
-            if anilist_profile_data else None
-        ),
-        "anilist_mean_score": (
-            anilist_profile_data.get("statistics", {}).get("anime", {}).get("meanScore")
-            if anilist_profile_data else None
-        ),
-        "anilist_minutes_watched": (
-            anilist_profile_data.get("statistics", {}).get("anime", {}).get("minutesWatched")
-            if anilist_profile_data else None
-        ),
-        "anilist_chapters_read": (
-            anilist_profile_data.get("statistics", {}).get("manga", {}).get("chaptersRead")
-            if anilist_profile_data else None
-        ),
-        # MAL — None if user has no MAL
-        "mal_user_id": mal_user_id,
-        "mal_username": mal_profile_data.get("username") if mal_profile_data else None,
-        "mal_url": mal_profile_data.get("url") if mal_profile_data else None,
-        "mal_avatar": mal_profile_data.get("image_url") if mal_profile_data else None,
-        "mal_about": mal_profile_data.get("about") if mal_profile_data else None,
-        "mal_anime_completed": (
-            mal_profile_data.get("anime_stats", {}).get("completed")
-            if mal_profile_data else None
-        ),
-        "mal_anime_mean_score": (
-            mal_profile_data.get("anime_stats", {}).get("mean_score")
-            if mal_profile_data else None
-        ),
-        "mal_manga_completed": (
-            mal_profile_data.get("manga_stats", {}).get("completed")
-            if mal_profile_data else None
-        ),
-        "mal_manga_mean_score": (
-            mal_profile_data.get("manga_stats", {}).get("mean_score")
-            if mal_profile_data else None
-        ),
-    }
-
-    async with aiohttp.ClientSession() as session:
-        users, sha = await read_users(session)
-
-        # Merge into existing profile so previously linked accounts aren't wiped.
-        # Only overwrite keys that are being actively set in this /setup call.
-        existing = users.get(discord_id, {})
-
-        # Always update Discord identity fields
-        merged = {**existing}
-        merged["author_name"] = author_display
-        merged["discord_id"] = interaction.user.id
-        merged["discord_username"] = interaction.user.name
-        merged["discord_display_name"] = interaction.user.display_name
-        merged["discord_avatar"] = str(interaction.user.display_avatar.url) if interaction.user.display_avatar else None
-
-        # Only overwrite AniList fields if an AniList username was provided this time
-        if anilist_username:
-            merged.update({
-                "anilist_user_id": profile_entry["anilist_user_id"],
-                "anilist_username": profile_entry["anilist_username"],
-                "anilist_url": profile_entry["anilist_url"],
-                "anilist_avatar": profile_entry["anilist_avatar"],
-                "anilist_banner": profile_entry["anilist_banner"],
-                "anilist_about": profile_entry["anilist_about"],
-                "anilist_anime_count": profile_entry["anilist_anime_count"],
-                "anilist_manga_count": profile_entry["anilist_manga_count"],
-                "anilist_mean_score": profile_entry["anilist_mean_score"],
-                "anilist_minutes_watched": profile_entry["anilist_minutes_watched"],
-                "anilist_chapters_read": profile_entry["anilist_chapters_read"],
-            })
-
-        # Only overwrite MAL fields if a MAL username was provided this time
-        if mal_username:
-            merged.update({
-                "mal_user_id": profile_entry["mal_user_id"],
-                "mal_username": profile_entry["mal_username"],
-                "mal_url": profile_entry["mal_url"],
-                "mal_avatar": profile_entry["mal_avatar"],
-                "mal_about": profile_entry["mal_about"],
-                "mal_anime_completed": profile_entry["mal_anime_completed"],
-                "mal_anime_mean_score": profile_entry["mal_anime_mean_score"],
-                "mal_manga_completed": profile_entry["mal_manga_completed"],
-                "mal_manga_mean_score": profile_entry["mal_manga_mean_score"],
-            })
-
-        users[discord_id] = merged
-        profile_entry = merged  # use merged for embed display below
-
-        ok = await write_users(
-            session,
-            users,
-            sha,
-            f"Setup profile for {interaction.user.display_name}",
-        )
-
-    if ok:
-        embed = discord.Embed(title="Profile Saved!", color=0x2EA043)
-        embed.add_field(name="Author Name", value=author_display, inline=False)
-
-        # Show full merged state (previously linked accounts are preserved)
-        merged_al_id = profile_entry.get("anilist_user_id")
-        merged_al_name = profile_entry.get("anilist_username")
-        merged_al_url = profile_entry.get("anilist_url")
-        if merged_al_id:
-            tag = " *(updated)*" if anilist_username else " *(existing)*"
-            embed.add_field(
-                name=f"AniList{tag}",
-                value=f"[{merged_al_name}]({merged_al_url}) (ID: `{merged_al_id}`)",
-                inline=True,
-            )
-        else:
-            embed.add_field(name="AniList", value="Not linked", inline=True)
-
-        merged_mal_id = profile_entry.get("mal_user_id")
-        merged_mal_name = profile_entry.get("mal_username")
-        merged_mal_url = profile_entry.get("mal_url")
-        if merged_mal_id:
-            tag = " *(updated)*" if mal_username else " *(existing)*"
-            embed.add_field(
-                name=f"MAL{tag}",
-                value=f"[{merged_mal_name}]({merged_mal_url}) (ID: `{merged_mal_id}`)",
-                inline=True,
-            )
-        else:
-            embed.add_field(name="MAL", value="Not linked", inline=True)
-
-        merged_simkl = profile_entry.get("simkl_username")
-        if merged_simkl:
-            embed.add_field(
-                name="Simkl *(existing)*",
-                value=f"[{merged_simkl}](https://simkl.com/users/{merged_simkl})",
-                inline=True,
-            )
-        else:
-            embed.add_field(name="Simkl", value="Not linked — use `/link_simkl`", inline=True)
-
-        # Set avatar: prefer AniList, fallback to MAL, then Simkl
-        avatar = profile_entry.get("anilist_avatar") or profile_entry.get("mal_avatar") or profile_entry.get("simkl_avatar")
-        if avatar:
-            embed.set_thumbnail(url=avatar)
-        embed.set_footer(text="You can now use /add_anime, /add_manga, /add_show, /add_movie!")
-
-        log_embed = discord.Embed(title="👤 Profile Setup", color=0x0078D4)
-        log_embed.add_field(name="User", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=True)
-        log_embed.add_field(name="Author Name", value=author_display, inline=True)
-        if merged_al_id:
-            log_embed.add_field(name="AniList", value=f"{merged_al_name} (ID: `{merged_al_id}`)", inline=True)
-        if merged_mal_id:
-            log_embed.add_field(name="MAL", value=f"{merged_mal_name} (ID: `{merged_mal_id}`)", inline=True)
-        if merged_simkl:
-            log_embed.add_field(name="Simkl", value=merged_simkl, inline=True)
-        await _send_log(log_embed)
-    else:
-        embed = discord.Embed(title="Failed to save profile", color=0xDA3633)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # /myprofile
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -5419,7 +5203,7 @@ async def myprofile(interaction: discord.Interaction):
     profile = users.get(str(interaction.user.id))
     if not profile:
         await interaction.followup.send(
-            "❌ No profile found. Run `/setup` first!", ephemeral=True
+            "❌ No profile found. Link an account first using `/link_anilist`, `/link_mal`, or `/link_simkl`!", ephemeral=True
         )
         return
 
@@ -5488,7 +5272,7 @@ async def myprofile(interaction: discord.Interaction):
     if avatar:
         embed.set_thumbnail(url=avatar)
 
-    embed.set_footer(text="Use /setup to update your profile.")
+    embed.set_footer(text="Use /link_anilist, /link_mal, or /link_simkl to update your profile.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -5611,7 +5395,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="⚠️ Profile not set up",
-                    description="Run `/setup` first!",
+                    description="Link your accounts first using `/link_anilist`, `/link_mal`, or `/link_simkl`!",
                     color=0xFFA500,
                 ),
                 ephemeral=True,
@@ -5810,7 +5594,7 @@ async def handle_simkl_add(
     profile = users.get(discord_id)
     if not profile:
         await interaction.followup.send(
-            "❌ You need to run `/setup` first before adding content.", ephemeral=True
+            "❌ You need to link an account first using `/link_anilist`, `/link_mal`, or `/link_simkl` before adding content.", ephemeral=True
         )
         return
 
@@ -7626,7 +7410,9 @@ async def prefix_help(ctx, command_name: str = None):
 
     if command_name:
         help_map = {
-            "setup": f"`{p}setup <anilist_id> <mal_id> [author_name]`\nLink your AniList and MAL accounts.",
+            "link_anilist": f"`{p}link_anilist <username>` — (Slash only) Link your AniList account via OAuth.",
+            "link_mal": f"`{p}link_mal <username>` — (Slash only) Link your MAL account via OAuth.",
+            "link_simkl": f"`{p}link_simkl` — (Slash only) Link your Simkl account via OAuth.",
             "myprofile": f"`{p}myprofile`\nView your saved profile.",
             "add_anime": f"`{p}add_anime <anilist_url> <mal_url> <reason>`\nAdd an underrated anime.",
             "add_manga": f"`{p}add_manga <anilist_url> <mal_url> <reason>`\nAdd an underrated manga.",
@@ -7672,7 +7458,7 @@ async def prefix_help(ctx, command_name: str = None):
         description=f"Active prefixes: `{'`, `'.join(prefixes)}`\nUse `{p}help <command>` for details.\nSlash commands `/` available for all features.",
         color=0x0066FF,
     )
-    embed.add_field(name="👤 Profile", value="`setup` `myprofile`", inline=False)
+    embed.add_field(name="👤 Profile", value="`myprofile` (use `/link_anilist`, `/link_mal`, `/link_simkl` to link accounts)", inline=False)
     embed.add_field(
         name="🎌 Anime / Manga",
         value="`add_anime` `add_manga` `list_anime` `list_manga` `remove_anime` `remove_manga`",
@@ -7805,47 +7591,6 @@ async def prefix_setprefix(ctx, action: str = None, new_prefix: str = None):
                 )
 
 
-# ── ?setup ────────────────────────────────────────────────────────────────────
-
-
-@bot.command(name="setup")
-async def prefix_setup(
-    ctx, anilist_user_id: int = None, mal_user_id: int = None, *, author_name: str = ""
-):
-    if not anilist_user_id or not mal_user_id:
-        await ctx.send(
-            f"Usage: `{_prefix_cache[0]}setup <anilist_id> <mal_id> [author_name]`"
-        )
-        return
-    discord_id = str(ctx.author.id)
-    author_display = author_name or ctx.author.display_name
-    async with aiohttp.ClientSession() as session:
-        users, sha = await read_users(session)
-        users[discord_id] = {
-            "discord_id": ctx.author.id,
-            "discord_username": ctx.author.name,
-            "discord_display_name": ctx.author.display_name,
-            "discord_avatar": str(ctx.author.display_avatar.url) if ctx.author.display_avatar else None,
-            "anilist_user_id": anilist_user_id,
-            "mal_user_id": mal_user_id,
-            "author_name": author_display,
-        }
-        ok = await write_users(
-            session,
-            users,
-            sha,
-            f"Setup profile for {ctx.author.display_name}",
-        )
-    if ok:
-        embed = discord.Embed(title="✅ Profile Saved!", color=0x2EA043)
-        embed.add_field(name="AniList ID", value=f"`{anilist_user_id}`", inline=True)
-        embed.add_field(name="MAL ID", value=f"`{mal_user_id}`", inline=True)
-        embed.add_field(name="Author Name", value=author_display, inline=True)
-    else:
-        embed = discord.Embed(title="❌ Failed to save profile", color=0xDA3633)
-    await ctx.send(embed=embed)
-
-
 # ── ?myprofile ────────────────────────────────────────────────────────────────
 
 
@@ -7855,7 +7600,7 @@ async def prefix_myprofile(ctx):
         users, _ = await read_users(session)
     profile = users.get(str(ctx.author.id))
     if not profile:
-        await ctx.send(f"❌ No profile found. Run `{_prefix_cache[0]}setup` first!")
+        await ctx.send(f"❌ No profile found. Link an account first using `/link_anilist`, `/link_mal`, or `/link_simkl`!")
         return
     embed = discord.Embed(title="👤 Your Profile", color=0x0078D4)
     embed.add_field(
@@ -7894,7 +7639,7 @@ async def prefix_handle_add(ctx, anilist_link, mal_link, reason, media_type):
         users, _ = await read_users(session)
         profile = users.get(str(ctx.author.id))
         if not profile:
-            await ctx.send(f"❌ Run `{_prefix_cache[0]}setup` first!")
+            await ctx.send(f"❌ Link your accounts first! Use `/link_anilist`, `/link_mal`, or `/link_simkl`.")
             return
         media = await fetch_anilist(session, anilist_id, media_type)
 
@@ -9171,7 +8916,7 @@ async def seasonal_anime(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Profile Repopulator — refreshes user info in users.json, anime/manga JSONs
+# Profile Repopulator — refreshes user info in users.json, all entry JSONs (anime, manga, shows, movies)
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Channel ID to post weekly/startup repopulator reports (set via env var)
@@ -9180,10 +8925,13 @@ REPOPULATOR_CHANNEL_ID = int(os.environ.get("REPOPULATOR_CHANNEL_ID", 0))
 
 async def run_repopulator(triggered_by: str = "system") -> dict:
     """
-    Re-fetches every user's AniList + MAL profile and updates:
-      - users.json            (full profile refresh)
-      - underrated_anime.json (author name, anilist_username, mal_username, score per entry)
-      - underrated_manga.json (same)
+    Re-fetches every user's AniList + MAL + Simkl profile and updates:
+      - users.json             (full profile refresh)
+      - admins.json            (sync service IDs from users.json)
+      - underrated_anime.json  (user snapshots, poster, score, nsfw, format migration)
+      - underrated_manga.json  (same)
+      - underrated_shows.json  (same)
+      - underrated_movies.json (same)
 
     Returns a result dict with counts for reporting.
     """
@@ -9191,6 +8939,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         "users_updated": 0,
         "users_skipped": 0,
         "users_failed": 0,
+        "admins_updated": 0,
         "anime_entries_updated": 0,
         "manga_entries_updated": 0,
         "show_entries_updated": 0,
@@ -9510,7 +9259,43 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if changed:
                 result["movie_entries_updated"] += 1
 
-        # ── Step 5: Write all files ────────────────────────────────────────────
+        # ── Step 5: Sync admins.json from users.json ─────────────────────────
+        admins, admins_sha = await read_admins(session)
+        admins_changed = False
+        for discord_id, admin_rec in admins.items():
+            user_profile = users.get(discord_id)
+            if not user_profile:
+                continue
+            updated = False
+            # Fill in any missing service IDs from users.json
+            sync_fields = [
+                ("anilist_user_id", "anilist_user_id"),
+                ("anilist_username", "anilist_username"),
+                ("anilist_avatar", "anilist_avatar"),
+                ("mal_user_id", "mal_user_id"),
+                ("mal_username", "mal_username"),
+                ("mal_avatar", "mal_avatar"),
+                ("simkl_user_id", "simkl_user_id"),
+                ("simkl_username", "simkl_username"),
+                ("simkl_avatar", "simkl_avatar"),
+            ]
+            for admin_key, user_key in sync_fields:
+                user_val = user_profile.get(user_key)
+                admin_val = admin_rec.get(admin_key)
+                # Update if user has it and admin doesn't, or if user's value is fresher (non-None vs None)
+                if user_val is not None and (admin_val is None or admin_val != user_val):
+                    admin_rec[admin_key] = user_val
+                    updated = True
+            if updated:
+                admins_changed = True
+                result["admins_updated"] += 1
+        if admins_changed:
+            await write_admins(
+                session, admins, admins_sha,
+                f"chore: sync admin profiles from users.json ({triggered_by})"
+            )
+
+        # ── Step 6: Write all files ────────────────────────────────────────────
         await write_users(
             session, users, users_sha,
             f"chore: repopulate user profiles ({triggered_by})"
@@ -9566,6 +9351,11 @@ def _build_repopulator_embed(result: dict, title: str) -> discord.Embed:
         value=f"🔄 Synced: **{result.get('movie_entries_updated', 0)}**",
         inline=True,
     )
+    embed.add_field(
+        name="🛡️ Admins Synced",
+        value=f"🔄 Updated: **{result.get('admins_updated', 0)}**",
+        inline=True,
+    )
     if result.get("note"):
         embed.add_field(name="ℹ️ Note", value=result["note"], inline=False)
     embed.set_footer(text=f"Triggered by: {result.get('triggered_by', 'system')}")
@@ -9595,7 +9385,7 @@ async def before_weekly_repopulator():
 
 @bot.tree.command(
     name="repopulate",
-    description="Manually refresh all user profiles and sync anime/manga entries (Admin only)",
+    description="Refresh all user profiles and sync entries (anime, manga, shows, movies) [Admin]",
 )
 @app_commands.default_permissions(administrator=True)
 async def repopulate(interaction: discord.Interaction):
@@ -9603,9 +9393,9 @@ async def repopulate(interaction: discord.Interaction):
         embed=discord.Embed(
             title="🔄 Repopulator Started",
             description=(
-                "Fetching all user profiles from AniList and MAL...\n"
-                "This may take a moment depending on how many users are registered.\n"
-                "I'll send a follow-up here when done!"
+                "Refreshing user profiles & syncing entries...\n"
+                "📁 users.json, anime, manga, shows, movies\n"
+                "This may take a moment. I'll send a follow-up when done!"
             ),
             color=0x0078D4,
         )
@@ -9823,7 +9613,7 @@ async def _handle_vote_interaction(
 
     if not profile:
         await interaction.followup.send(
-            "❌ You need to run `/setup` and link your AniList or MAL account before voting.",
+            "❌ You need to link an account first using `/link_anilist`, `/link_mal`, or `/link_simkl` before voting.",
             ephemeral=True,
         )
         return
@@ -9843,7 +9633,7 @@ async def _handle_vote_interaction(
         display_name = simkl_uname
     else:
         await interaction.followup.send(
-            "❌ Your profile has no linked AniList, MAL, or Simkl account. Run `/setup` to link one.",
+            "❌ Your profile has no linked AniList, MAL, or Simkl account. Use `/link_anilist`, `/link_mal`, or `/link_simkl` to link one.",
             ephemeral=True,
         )
         return
@@ -10092,7 +9882,7 @@ async def my_votes(interaction: discord.Interaction):
     profile = users.get(discord_id)
     if not profile:
         await interaction.followup.send(
-            "❌ No profile found. Run `/setup` first!", ephemeral=True
+            "❌ No profile found. Link an account first using `/link_anilist`, `/link_mal`, or `/link_simkl`!", ephemeral=True
         )
         return
 
