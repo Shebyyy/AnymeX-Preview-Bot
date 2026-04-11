@@ -38,15 +38,109 @@ async def load_faq_from_github():
         print(f"⚠️ Could not load faq.json: {e}")
 
 # ── Proxy Config ───────────────────────────────────────────────────────────────
+import itertools as _itertools
+
 _PROXY_HOST = os.environ.get("PROXY_HOST")
 _PROXY_PORT = os.environ.get("PROXY_PORT")
 _PROXY_USER = os.environ.get("PROXY_USER")
 _PROXY_PASS = os.environ.get("PROXY_PASS")
-PROXY_URL = (
+LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
+
+ENV_PROXY_URL = (
     f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{_PROXY_PORT}"
     if all([_PROXY_HOST, _PROXY_PORT, _PROXY_USER, _PROXY_PASS])
-    else None
+    else (
+        f"http://{_PROXY_HOST}:{_PROXY_PORT}"
+        if all([_PROXY_HOST, _PROXY_PORT])
+        else None
+    )
 )
+
+_GEONODE_URL = "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http"
+_proxy_list: list[str] = []
+_proxy_cycle = None
+_current_proxy: str | None = None
+
+async def _send_log(embed: discord.Embed):
+    if not LOG_CHANNEL_ID:
+        return
+    try:
+        ch = bot.get_channel(LOG_CHANNEL_ID)
+        if ch:
+            await ch.send(embed=embed)
+    except Exception:
+        pass
+
+async def fetch_geonode_proxies() -> bool:
+    global _proxy_list, _proxy_cycle
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(_GEONODE_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+                proxies = [
+                    f"http://{p['ip']}:{p['port']}"
+                    for p in data.get("data", [])
+                    if "http" in p.get("protocols", [])
+                ]
+                if proxies:
+                    _proxy_list = proxies
+                    _proxy_cycle = _itertools.cycle(_proxy_list)
+                    print(f"✅ Loaded {len(_proxy_list)} HTTP proxies from Geonode")
+                    return True
+    except Exception as e:
+        print(f"⚠️ Failed to fetch Geonode proxies: {e}")
+    return False
+
+def get_proxy() -> str | None:
+    global _current_proxy
+    if _proxy_cycle:
+        _current_proxy = next(_proxy_cycle)
+    else:
+        _current_proxy = ENV_PROXY_URL
+    return _current_proxy
+
+async def switch_proxy(reason: str = "manual"):
+    global _current_proxy
+    old = _current_proxy
+    new = get_proxy()
+    bot.http.proxy = new
+    print(f"🔄 Proxy switched [{reason}]: {old} → {new}")
+    embed = discord.Embed(title="🔄 Proxy Switched", color=0xf1c40f)
+    embed.add_field(name="Reason", value=reason, inline=False)
+    embed.add_field(name="Old", value=old or "None", inline=False)
+    embed.add_field(name="New", value=new or "None (direct)", inline=False)
+    await _send_log(embed)
+
+async def start_bot_with_proxy():
+    global _current_proxy
+    while True:
+        proxy = get_proxy()
+        bot.http.proxy = proxy
+        if proxy:
+            print(f"✅ Connecting with proxy: {proxy}")
+        else:
+            print("⚠️ No proxy, connecting directly")
+        try:
+            await bot.start(DISCORD_TOKEN)
+            break
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                print(f"⚠️ Discord rate limited proxy, switching...")
+                embed = discord.Embed(title="⚠️ Rate Limited by Discord", color=0xe74c3c)
+                embed.add_field(name="Blocked Proxy", value=_current_proxy or "direct", inline=False)
+                embed.description = "Switching to next proxy automatically..."
+                await _send_log(embed)
+                try:
+                    await bot.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(3)
+                continue
+            raise
+
+@tasks.loop(hours=24)
+async def auto_rotate_proxy():
+    await switch_proxy(reason="24h auto-rotate")
 
 GITHUB_OWNER = "Shebyyy"
 GITHUB_REPO = "AnymeX-Preview"
@@ -915,6 +1009,44 @@ async def get_prefix(bot, message):
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
 # ── /config_role ───────────────────────────────────────────────────────────────
+
+
+
+# ── /switchproxy ────────────────────────────────────────────────────────────────
+
+
+@bot.tree.command(
+    name="switchproxy",
+    description="Manually switch to the next proxy (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+async def switchproxy_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    old = _current_proxy
+    await switch_proxy(reason=f"manual by {interaction.user}")
+    new = _current_proxy
+    embed = discord.Embed(title="🔄 Proxy Switched", color=0x2ecc71)
+    embed.add_field(name="Old", value=old or "None", inline=False)
+    embed.add_field(name="New", value=new or "None (direct)", inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ── /switchproxy ────────────────────────────────────────────────────────────────
+
+
+@bot.tree.command(
+    name="switchproxy",
+    description="Manually switch to the next proxy (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+async def switchproxy_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    old = _current_proxy
+    await switch_proxy(reason=f"manual by {interaction.user}")
+    new = _current_proxy
+    embed = discord.Embed(title="🔄 Proxy Switched", color=0x2ecc71)
+    embed.add_field(name="Old", value=old or "None", inline=False)
+    embed.add_field(name="New", value=new or "None (direct)", inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(
@@ -3349,6 +3481,19 @@ class ConfirmView(discord.ui.View):
             embed.add_field(name="Reason", value=self.entry["reason"], inline=False)
             if self.cover_url:
                 embed.set_thumbnail(url=self.cover_url)
+            log_embed = discord.Embed(
+                title=f"📥 New {self.media_type.title()} Added",
+                color=0x2EA043,
+            )
+            log_embed.add_field(name="Title", value=self.entry["title"], inline=True)
+            log_embed.add_field(name="Added by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+            log_embed.add_field(name="AniList ID", value=str(self.entry.get("anilist_id", "N/A")), inline=True)
+            log_embed.add_field(name="Score", value=str(self.entry.get("score", "N/A")), inline=True)
+            log_embed.add_field(name="Genres", value=", ".join(self.entry.get("genres", [])[:4]) or "N/A", inline=True)
+            log_embed.add_field(name="Reason", value=self.entry["reason"], inline=False)
+            if self.cover_url:
+                log_embed.set_thumbnail(url=self.cover_url)
+            await _send_log(log_embed)
         else:
             embed = discord.Embed(title="❌ Failed to commit to GitHub", color=0xDA3633)
 
@@ -3707,6 +3852,17 @@ class SimklConfirmView(discord.ui.View):
             )
             if self.poster_url:
                 embed.set_thumbnail(url=self.poster_url)
+            log_embed = discord.Embed(
+                title=f"📥 New {self.media_type.title()} Added",
+                color=0x2EA043,
+            )
+            log_embed.add_field(name="Title", value=self.entry["title"], inline=True)
+            log_embed.add_field(name="Added by", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+            log_embed.add_field(name="Simkl ID", value=str(self.entry.get("simkl_id", "N/A")), inline=True)
+            log_embed.add_field(name="Reason", value=self.entry.get("reason", "N/A"), inline=False)
+            if self.poster_url:
+                log_embed.set_thumbnail(url=self.poster_url)
+            await _send_log(log_embed)
         else:
             embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
 
@@ -8212,13 +8368,14 @@ async def on_message(message: discord.Message):
 
 async def main():
     await start_health_server()
-    if PROXY_URL:
-        print(f"✅ Using proxy: {_PROXY_HOST}:{_PROXY_PORT}")
-        from discord.http import HTTPClient
-        bot.http.proxy = PROXY_URL
-    else:
-        print("⚠️ No proxy configured, connecting directly")
-    await bot.start(DISCORD_TOKEN)
+    geonode_ok = await fetch_geonode_proxies()
+    if not geonode_ok:
+        if ENV_PROXY_URL:
+            print(f"⚠️ Geonode failed, falling back to env proxy")
+        else:
+            print("⚠️ No proxy available, connecting directly")
+    auto_rotate_proxy.start()
+    await start_bot_with_proxy()
 
 
 if __name__ == "__main__":
