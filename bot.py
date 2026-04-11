@@ -124,16 +124,32 @@ async def switch_proxy(reason: str = "manual"):
 async def start_bot_with_proxy():
     global _current_proxy
     _dead_proxies: set = set()
+    _using_env_fallback = False
+
     while True:
-        proxy = get_proxy()
-        # Skip proxies already known to be dead this session
-        attempts = 0
-        while proxy in _dead_proxies and attempts < len(_proxy_list) + 1:
+        # If all Geonode proxies are exhausted, fall back to ENV_PROXY_URL
+        if not _using_env_fallback and _proxy_list and len(_dead_proxies) >= len(_proxy_list):
+            _using_env_fallback = True
+            if ENV_PROXY_URL:
+                print(f"⚠️ All Geonode proxies dead — falling back to ENV proxy: {ENV_PROXY_URL}")
+                _current_proxy = ENV_PROXY_URL
+                bot.http.proxy = ENV_PROXY_URL
+            else:
+                print("⚠️ All Geonode proxies dead and ENV proxy not set — connecting directly")
+                _current_proxy = None
+                bot.http.proxy = None
+
+        if not _using_env_fallback:
             proxy = get_proxy()
-            attempts += 1
-        bot.http.proxy = proxy
-        if proxy:
-            print(f"✅ Connecting with proxy: {proxy}")
+            # Skip proxies already known to be dead this session
+            attempts = 0
+            while proxy in _dead_proxies and attempts < len(_proxy_list) + 1:
+                proxy = get_proxy()
+                attempts += 1
+            bot.http.proxy = proxy
+
+        if bot.http.proxy:
+            print(f"✅ Connecting with proxy: {bot.http.proxy}")
         else:
             print("⚠️ No proxy, connecting directly")
         try:
@@ -146,16 +162,19 @@ async def start_bot_with_proxy():
                 embed.add_field(name="Blocked Proxy", value=_current_proxy or "direct", inline=False)
                 embed.description = "Switching to next proxy automatically..."
                 await _send_log(embed)
-                # Reset the HTTP session without closing the bot
                 bot.http._HTTPClient__session = None
                 await asyncio.sleep(3)
                 continue
             raise
-        except (aiohttp.ClientProxyConnectionError, aiohttp.ClientConnectorError, OSError) as e:
+        except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError, aiohttp.ClientConnectorError, OSError) as e:
             bad_proxy = _current_proxy
-            _dead_proxies.add(bad_proxy)
-            print(f"⚠️ Proxy unreachable ({bad_proxy}): {e} — trying next proxy...")
-            # Reset the HTTP session so the next attempt gets a fresh connection
+            if _using_env_fallback:
+                print(f"⚠️ ENV proxy also failed ({bad_proxy}): {e} — connecting directly")
+                _current_proxy = None
+                bot.http.proxy = None
+            else:
+                _dead_proxies.add(bad_proxy)
+                print(f"⚠️ Proxy unreachable ({bad_proxy}): {e} — trying next proxy...")
             bot.http._HTTPClient__session = None
             await asyncio.sleep(1)
             continue
@@ -2304,23 +2323,59 @@ async def _handle_delete_entry(
         )
         return
 
+    # Non-admins: don't delete — send a log request for admins to action
+    if not admin:
+        id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+        entry_id_val = entry.get(id_key, "N/A")
+        p = _prefix_cache[0]
+        log_embed = discord.Embed(
+            title="🗑️ Deletion Requested by Owner",
+            description=(
+                f"{interaction.user.mention} has requested their entry be deleted.\n"
+                f"**Admins:** please review and use the command below to confirm."
+            ),
+            color=0xF0A500,
+        )
+        log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Type", value=media_type.title(), inline=True)
+        log_embed.add_field(name="Entry ID", value=str(entry_id_val), inline=True)
+        log_embed.add_field(name="Reason", value=(entry.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(
+            name="Admin Command to Delete",
+            value=f"`{p}delete_entry {media_type} {entry_id_val}`",
+            inline=False,
+        )
+        log_embed.set_footer(text=f"Requested by {interaction.user} ({interaction.user.id})")
+        await _send_log(log_embed)
+
+        notify_embed = discord.Embed(
+            title="📬 Deletion Request Submitted",
+            description=(
+                f"Your request to delete **{entry.get('title', 'this entry')}** has been sent to the admins.\n"
+                "They will review and delete it using the admin command."
+            ),
+            color=0x5865F2,
+        )
+        await interaction.followup.send(embed=notify_embed, ephemeral=True)
+        return
+
+    # Admin path: delete immediately
     removed = entries.pop(idx)
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
             session, filepath, entries, sha,
-            f"remove: '{removed['title']}' deleted by {interaction.user} ({'admin' if admin else 'owner'})",
+            f"remove: '{removed['title']}' deleted by {interaction.user} (admin)",
         )
 
     if ok:
         embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
         embed.add_field(name="Title", value=removed["title"], inline=True)
         embed.add_field(name="Type", value=media_type.title(), inline=True)
-        if admin and not _entry_owned_by(removed, discord_id, profile):
-            embed.set_footer(text="🛡️ Deleted as bot admin")
-        log_embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
+        embed.set_footer(text="🛡️ Deleted as bot admin")
+        log_embed = discord.Embed(title="🗑️ Entry Deleted by Admin", color=0xDA3633)
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
-        log_embed.add_field(name="Deleted by", value=f"{interaction.user.mention} ({'admin' if admin else 'owner'})", inline=True)
+        log_embed.add_field(name="Deleted by", value=f"{interaction.user.mention} (admin)", inline=True)
         log_embed.add_field(name="Reason was", value=(removed.get("reason") or "N/A")[:200], inline=False)
         await _send_log(log_embed)
     else:
@@ -2442,20 +2497,56 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
         await ctx.send("❌ You can only delete entries **you added**.")
         return
 
+    # Non-admins: don't delete — send a log request for admins to action
+    if not admin:
+        p = _prefix_cache[0]
+        log_embed = discord.Embed(
+            title="🗑️ Deletion Requested by Owner",
+            description=(
+                f"{ctx.author.mention} has requested their entry be deleted.\n"
+                f"**Admins:** please review and use the command below to confirm."
+            ),
+            color=0xF0A500,
+        )
+        log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Type", value=media_type.title(), inline=True)
+        log_embed.add_field(name="Entry ID", value=str(entry_id), inline=True)
+        log_embed.add_field(name="Reason", value=(entry.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(
+            name="Admin Command to Delete",
+            value=f"`{p}delete_entry {media_type} {entry_id}`",
+            inline=False,
+        )
+        log_embed.set_footer(text=f"Requested by {ctx.author} ({ctx.author.id})")
+        await _send_log(log_embed)
+
+        notify_embed = discord.Embed(
+            title="📬 Deletion Request Submitted",
+            description=(
+                f"Your request to delete **{entry.get('title', 'this entry')}** has been sent to the admins.\n"
+                "They will review and delete it using the admin command."
+            ),
+            color=0x5865F2,
+        )
+        await ctx.send(embed=notify_embed)
+        return
+
+    # Admin path: delete immediately
     removed = entries.pop(idx)
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
             session, filepath, entries, sha,
-            f"remove: '{removed['title']}' deleted by {ctx.author} ({'admin' if admin else 'owner'})",
+            f"remove: '{removed['title']}' deleted by {ctx.author} (admin)",
         )
 
     if ok:
         embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
         embed.add_field(name="Title", value=removed["title"], inline=True)
-        log_embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
+        embed.set_footer(text="🛡️ Deleted as bot admin")
+        log_embed = discord.Embed(title="🗑️ Entry Deleted by Admin", color=0xDA3633)
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
-        log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} ({'admin' if admin else 'owner'})", inline=True)
+        log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} (admin)", inline=True)
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
@@ -2736,15 +2827,55 @@ async def _api_delete_entry(request, media_type: str):
     ):
         return web.json_response({"error": "You do not own this entry."}, status=403)
 
+    # Non-admins via API: don't delete — log a request for admins to action
+    if not is_admin:
+        p = _prefix_cache[0]
+        requester = f"discord:{req_discord_id}" if req_discord_id else (
+            f"anilist:{req_anilist_id}" if req_anilist_id else (
+            f"mal:{req_mal_id}" if req_mal_id else (
+            f"simkl:{req_simkl_uname or req_simkl_id}")))
+        log_embed = discord.Embed(
+            title="🗑️ Deletion Requested via API (Owner)",
+            description=(
+                f"An owner requested their entry be deleted via the API.\n"
+                f"**Admins:** please review and use the command below to confirm."
+            ),
+            color=0xF0A500,
+        )
+        log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
+        log_embed.add_field(name="Type", value=media_type.title(), inline=True)
+        log_embed.add_field(name="Entry ID", value=str(item_id), inline=True)
+        log_embed.add_field(name="Requested by", value=requester, inline=True)
+        log_embed.add_field(name="Reason", value=(entry.get("reason") or "N/A")[:200], inline=False)
+        log_embed.add_field(
+            name="Admin Command to Delete",
+            value=f"`{p}delete_entry {media_type} {item_id}`",
+            inline=False,
+        )
+        await _send_log(log_embed)
+        return web.json_response({
+            "success": False,
+            "pending": True,
+            "message": "Deletion request submitted. An admin will review and action it.",
+            "title": entry.get("title"),
+            id_key: item_id,
+        })
+
+    # Admin path: delete immediately
     removed = entries.pop(idx)
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
             session, filepath, entries, sha,
-            f"remove: '{removed['title']}' deleted via API ({'admin' if is_admin else 'owner'})",
+            f"remove: '{removed['title']}' deleted via API (admin)",
         )
 
     if ok:
+        log_embed = discord.Embed(title="🗑️ Entry Deleted via API (Admin)", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed["title"], inline=True)
+        log_embed.add_field(name="Type", value=media_type.title(), inline=True)
+        log_embed.add_field(name="Admin discord_id", value=str(req_discord_id), inline=True)
+        await _send_log(log_embed)
         return web.json_response({"success": True, "deleted": {"title": removed["title"], id_key: item_id}})
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
