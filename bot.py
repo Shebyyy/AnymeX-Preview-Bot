@@ -1587,6 +1587,9 @@ async def _api_add_media(request, media_type: str):
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
 
+async def api_add_anime(request):
+    return await _api_add_media(request, "ANIME")
+
 async def api_add_manga(request):
     return await _api_add_media(request, "MANGA")
 
