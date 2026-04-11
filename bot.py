@@ -1562,6 +1562,27 @@ async def _oauth_save_profile(discord_id: str, service: str, profile_data: dict,
             session, users, sha,
             f"link: {service} OAuth for discord:{discord_id}",
         )
+
+        # If this user is also a bot admin, sync their linked account info into admins.json
+        if ok:
+            try:
+                admins, admins_sha = await read_admins(session)
+                if discord_id in admins:
+                    admins[discord_id].update({
+                        "anilist_user_id": merged.get("anilist_user_id"),
+                        "anilist_username": merged.get("anilist_username"),
+                        "anilist_avatar": merged.get("anilist_avatar"),
+                        "mal_user_id": merged.get("mal_user_id"),
+                        "mal_username": merged.get("mal_username"),
+                        "mal_avatar": merged.get("mal_avatar"),
+                        "simkl_user_id": merged.get("simkl_user_id"),
+                        "simkl_username": merged.get("simkl_username"),
+                        "simkl_avatar": merged.get("simkl_avatar"),
+                    })
+                    await write_admins(session, admins, admins_sha, f"sync: {service} info for admin {discord_id}")
+            except Exception as e:
+                print(f"⚠️ Failed to sync admin profile after OAuth for {discord_id}: {e}")
+
         return ok
 
 
@@ -2547,11 +2568,27 @@ async def admin_add(
             )
             return
 
+        # Pull existing profile from users.json to include AniList/MAL/Simkl info
+        users, _ = await read_users(session)
+        profile = users.get(target_id, {})
+
         admins[target_id] = {
             "discord_id": target_id,
             "discord_username": user.name,
             "discord_display_name": user.display_name,
             "discord_avatar": str(user.display_avatar.url) if user.display_avatar else None,
+            # AniList
+            "anilist_user_id": profile.get("anilist_user_id"),
+            "anilist_username": profile.get("anilist_username"),
+            "anilist_avatar": profile.get("anilist_avatar"),
+            # MAL
+            "mal_user_id": profile.get("mal_user_id"),
+            "mal_username": profile.get("mal_username"),
+            "mal_avatar": profile.get("mal_avatar"),
+            # Simkl
+            "simkl_user_id": profile.get("simkl_user_id"),
+            "simkl_username": profile.get("simkl_username"),
+            "simkl_avatar": profile.get("simkl_avatar"),
             "role": role_value,
             "added_by": str(interaction.user.id),
             "added_by_username": interaction.user.name,
@@ -2907,11 +2944,27 @@ async def api_admin_add(request):
             username = discord_username
             avatar = None
 
+        # Pull AniList/MAL/Simkl info from users.json if the user has a profile
+        users, _ = await read_users(session)
+        profile = users.get(discord_id, {})
+
         admins[discord_id] = {
             "discord_id": discord_id,
             "discord_username": username or discord_username,
             "discord_display_name": display_name or discord_username,
             "discord_avatar": avatar,
+            # AniList
+            "anilist_user_id": profile.get("anilist_user_id"),
+            "anilist_username": profile.get("anilist_username"),
+            "anilist_avatar": profile.get("anilist_avatar"),
+            # MAL
+            "mal_user_id": profile.get("mal_user_id"),
+            "mal_username": profile.get("mal_username"),
+            "mal_avatar": profile.get("mal_avatar"),
+            # Simkl
+            "simkl_user_id": profile.get("simkl_user_id"),
+            "simkl_username": profile.get("simkl_username"),
+            "simkl_avatar": profile.get("simkl_avatar"),
             "role": role,
             "added_by": added_by,
             "added_at": time.time(),
