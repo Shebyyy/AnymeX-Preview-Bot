@@ -1573,9 +1573,21 @@ async def _api_add_media(request, media_type: str):
                 }
                 existing["reasons"] = [first]
 
-            # Check this user hasn't already added a reason
-            caller_id = str(discord_id) if discord_id else None
-            if caller_id and any(str(r.get("discord_id") or "") == caller_id for r in existing["reasons"]):
+            # Check this user hasn't already added a reason (match by any service ID)
+            _has_duplicate = False
+            for r in existing["reasons"]:
+                ru = r.get("user", {})
+                if discord_id and str(r.get("discord_id") or "") == str(discord_id):
+                    _has_duplicate = True; break
+                if anilist_user_id and str(ru.get("anilist", {}).get("id") or "") == str(anilist_user_id):
+                    _has_duplicate = True; break
+                if mal_user_id and str(ru.get("mal", {}).get("id") or "") == str(mal_user_id):
+                    _has_duplicate = True; break
+                if simkl_user_id and str(ru.get("simkl", {}).get("id") or "") == str(simkl_user_id):
+                    _has_duplicate = True; break
+                if simkl_username and (ru.get("simkl", {}).get("username") or "").lower() == simkl_username.lower():
+                    _has_duplicate = True; break
+            if _has_duplicate:
                 return web.json_response(
                     {"error": "You already have a reason on this entry. Use /api/edit_reason to update it.", "title": existing["title"]},
                     status=409,
@@ -1797,9 +1809,21 @@ async def _api_add_simkl(request, media_type: str):
                 }
                 existing["reasons"] = [first]
 
-            # Check this user hasn't already added a reason
-            caller_id = str(discord_id) if discord_id else None
-            if caller_id and any(str(r.get("discord_id") or "") == caller_id for r in existing["reasons"]):
+            # Check this user hasn't already added a reason (match by any service ID)
+            _has_duplicate = False
+            for r in existing["reasons"]:
+                ru = r.get("user", {})
+                if discord_id and str(r.get("discord_id") or "") == str(discord_id):
+                    _has_duplicate = True; break
+                if anilist_user_id and str(ru.get("anilist", {}).get("id") or "") == str(anilist_user_id):
+                    _has_duplicate = True; break
+                if mal_user_id and str(ru.get("mal", {}).get("id") or "") == str(mal_user_id):
+                    _has_duplicate = True; break
+                if simkl_user_id and str(ru.get("simkl", {}).get("id") or "") == str(simkl_user_id):
+                    _has_duplicate = True; break
+                if simkl_username and (ru.get("simkl", {}).get("username") or "").lower() == simkl_username.lower():
+                    _has_duplicate = True; break
+            if _has_duplicate:
                 return web.json_response(
                     {"error": "You already have a reason on this entry. Use /api/edit_reason to update it.", "title": existing["title"]},
                     status=409,
@@ -9290,25 +9314,39 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
             users[discord_id] = profile
 
+        # ── Helper: match a user snapshot by any service ID ───────────────────
+        def _match_profile(u: dict):
+            al_uid = u.get("anilist", {}).get("id")
+            mal_uid = u.get("mal", {}).get("id")
+            simkl_uname = u.get("simkl", {}).get("username")
+            if al_uid and al_uid in al_id_to_profile:
+                return al_id_to_profile[al_uid]
+            if mal_uid and mal_uid in mal_id_to_profile:
+                return mal_id_to_profile[mal_uid]
+            if simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                return simkl_uname_to_profile[simkl_uname.lower()]
+            return None
+
         # ── Step 3: Update anime entries ──────────────────────────────────────
         anime_ids = [e["anilist_id"] for e in anime_entries]
         anime_media_map = await fetch_anilist_batch(session, anime_ids, "ANIME")
 
         for entry in anime_entries:
             changed = False
-            u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
 
-            matched = None
-            if al_uid and al_uid in al_id_to_profile:
-                matched = al_id_to_profile[al_uid]
-            elif mal_uid and mal_uid in mal_id_to_profile:
-                matched = mal_id_to_profile[mal_uid]
-
+            # Update top-level user snapshot
+            matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
+
+            # Update per-reason user snapshots inside reasons[]
+            for reason in entry.get("reasons", []):
+                r_user = reason.get("user", {})
+                r_matched = _match_profile(r_user)
+                if r_matched:
+                    reason["user"] = _build_user_snapshot(r_matched)
+                    changed = True
 
             media = anime_media_map.get(entry["anilist_id"])
             if media:
@@ -9328,19 +9366,18 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
         for entry in manga_entries:
             changed = False
-            u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
 
-            matched = None
-            if al_uid and al_uid in al_id_to_profile:
-                matched = al_id_to_profile[al_uid]
-            elif mal_uid and mal_uid in mal_id_to_profile:
-                matched = mal_id_to_profile[mal_uid]
-
+            matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
+
+            for reason in entry.get("reasons", []):
+                r_user = reason.get("user", {})
+                r_matched = _match_profile(r_user)
+                if r_matched:
+                    reason["user"] = _build_user_snapshot(r_matched)
+                    changed = True
 
             media = manga_media_map.get(entry["anilist_id"])
             if media:
@@ -9358,22 +9395,18 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         _adult_certs = {"NC-17", "X", "TV-MA", "R18", "18+", "AO"}
         for entry in show_entries:
             changed = False
-            u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
-            simkl_uname = u.get("simkl", {}).get("username")
 
-            matched = None
-            if al_uid and al_uid in al_id_to_profile:
-                matched = al_id_to_profile[al_uid]
-            elif mal_uid and mal_uid in mal_id_to_profile:
-                matched = mal_id_to_profile[mal_uid]
-            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
-                matched = simkl_uname_to_profile[simkl_uname.lower()]
-
+            matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
+
+            for reason in entry.get("reasons", []):
+                r_user = reason.get("user", {})
+                r_matched = _match_profile(r_user)
+                if r_matched:
+                    reason["user"] = _build_user_snapshot(r_matched)
+                    changed = True
 
             simkl_id = entry.get("simkl_id")
             if simkl_id:
@@ -9393,22 +9426,18 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         # ── Step 4c: Update movie entries ─────────────────────────────────────
         for entry in movie_entries:
             changed = False
-            u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
-            simkl_uname = u.get("simkl", {}).get("username")
 
-            matched = None
-            if al_uid and al_uid in al_id_to_profile:
-                matched = al_id_to_profile[al_uid]
-            elif mal_uid and mal_uid in mal_id_to_profile:
-                matched = mal_id_to_profile[mal_uid]
-            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
-                matched = simkl_uname_to_profile[simkl_uname.lower()]
-
+            matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 changed = True
+
+            for reason in entry.get("reasons", []):
+                r_user = reason.get("user", {})
+                r_matched = _match_profile(r_user)
+                if r_matched:
+                    reason["user"] = _build_user_snapshot(r_matched)
+                    changed = True
 
             simkl_id = entry.get("simkl_id")
             if simkl_id:
