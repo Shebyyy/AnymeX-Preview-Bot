@@ -416,6 +416,7 @@ FILE_PREFIXES = "prefixes.json"
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
 FILE_FAQ = "faq.json"
+FILE_ADMINS = "admins.json"  # stored in private userdata repo alongside users.json
 
 
 DEFAULT_PREFIXES = ["?"]
@@ -1337,6 +1338,7 @@ async def _api_add_media(request, media_type: str):
             "author": resolved_author,
             "reason": reason,
             "user": user_snapshot,
+            "added_by_discord_id": str(discord_id) if discord_id else None,
             "poster": poster,
             "score": score,
             "nsfw": nsfw,
@@ -1516,6 +1518,7 @@ async def _api_add_simkl(request, media_type: str):
         "author": resolved_author,
         "reason": reason,
         "user": user_snapshot,
+        "added_by_discord_id": str(discord_id) if discord_id else None,
         "poster": poster_url or "",
         "score": score,
         "genres": genres,
@@ -2031,6 +2034,828 @@ async def oauth_status(request):
     return web.json_response({"status": "pending"})
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Ownership helper — matches on ALL linked IDs
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _entry_owned_by(entry: dict, discord_id: str, profile: dict | None = None) -> bool:
+    """
+    Return True if this discord user owns this entry.
+    Checks (in order):
+      1. added_by_discord_id field (fastest, for new entries)
+      2. entry.user.discord.id
+      3. entry.user.anilist.id  vs  profile.anilist_user_id
+      4. entry.user.mal.id      vs  profile.mal_user_id
+      5. entry.user.simkl.id    vs  profile.simkl_user_id
+      6. entry.user.simkl.username vs profile.simkl_username
+    """
+    # 1. Flat field stamp (new entries)
+    if entry.get("added_by_discord_id") and str(entry["added_by_discord_id"]) == str(discord_id):
+        return True
+
+    u = entry.get("user", {})
+
+    # 2. Discord ID inside snapshot
+    snap_discord_id = u.get("discord", {}).get("id")
+    if snap_discord_id and str(snap_discord_id) == str(discord_id):
+        return True
+
+    if not profile:
+        return False
+
+    # 3. AniList ID
+    snap_al = u.get("anilist", {}).get("id")
+    prof_al = profile.get("anilist_user_id")
+    if snap_al and prof_al and snap_al == prof_al:
+        return True
+
+    # 4. MAL ID
+    snap_mal = u.get("mal", {}).get("id")
+    prof_mal = profile.get("mal_user_id")
+    if snap_mal and prof_mal and snap_mal == prof_mal:
+        return True
+
+    # 5. Simkl user ID
+    snap_simkl_id = u.get("simkl", {}).get("id")
+    prof_simkl_id = profile.get("simkl_user_id")
+    if snap_simkl_id and prof_simkl_id and snap_simkl_id == prof_simkl_id:
+        return True
+
+    # 6. Simkl username (case-insensitive)
+    snap_simkl_uname = (u.get("simkl", {}).get("username") or "").lower()
+    prof_simkl_uname = (profile.get("simkl_username") or "").lower()
+    if snap_simkl_uname and prof_simkl_uname and snap_simkl_uname == prof_simkl_uname:
+        return True
+
+    return False
+
+
+def _entry_owned_by_api(entry: dict, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_username) -> bool:
+    """
+    Ownership check for API callers who may not have a users.json profile.
+    Checks all provided IDs against the entry's user snapshot + added_by_discord_id.
+    """
+    u = entry.get("user", {})
+
+    if req_discord_id:
+        if entry.get("added_by_discord_id") and str(entry["added_by_discord_id"]) == str(req_discord_id):
+            return True
+        if str(u.get("discord", {}).get("id", "")) == str(req_discord_id):
+            return True
+
+    if req_anilist_id and u.get("anilist", {}).get("id") == req_anilist_id:
+        return True
+
+    if req_mal_id and u.get("mal", {}).get("id") == req_mal_id:
+        return True
+
+    if req_simkl_id and u.get("simkl", {}).get("id") == req_simkl_id:
+        return True
+
+    if req_simkl_username and (u.get("simkl", {}).get("username") or "").lower() == req_simkl_username.lower():
+        return True
+
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /edit_reason  (slash)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /edit_reason  (slash)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _edit_reason_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete that shows ALL entries (not just the user's own) for convenience."""
+    mt = None
+    for opt in (interaction.data or {}).get("options", []):
+        if opt.get("name") == "media_type":
+            mt = opt.get("value")
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map.get(mt, FILE_ANIME)
+    async with aiohttp.ClientSession() as session:
+        entries, _ = await github_read_json(session, filepath)
+    filtered = [e for e in entries if current.lower() in e.get("title", "").lower()]
+    id_key = "simkl_id" if mt in ("show", "movie") else "anilist_id"
+    return [
+        app_commands.Choice(name=e["title"][:100], value=str(e[id_key]))
+        for e in filtered[:25]
+        if e.get(id_key)
+    ]
+
+
+@bot.tree.command(name="edit_reason", description="Edit the reason for your entry (owner or bot admin only)")
+@app_commands.describe(
+    media_type="Which list to edit",
+    title="Search for your entry",
+    new_reason="The updated reason (30–700 characters)",
+)
+@app_commands.choices(media_type=[
+    app_commands.Choice(name="Anime",   value="anime"),
+    app_commands.Choice(name="Manga",   value="manga"),
+    app_commands.Choice(name="TV Show", value="show"),
+    app_commands.Choice(name="Movie",   value="movie"),
+])
+@app_commands.autocomplete(title=_edit_reason_autocomplete)
+async def edit_reason(
+    interaction: discord.Interaction,
+    media_type: app_commands.Choice[str],
+    title: str,
+    new_reason: str,
+):
+    await interaction.response.defer(ephemeral=True)
+    await _handle_edit_reason(interaction, media_type.value, title, new_reason)
+
+
+async def _handle_edit_reason(
+    interaction: discord.Interaction,
+    media_type: str,
+    title_or_id: str,
+    new_reason: str,
+):
+    new_reason = new_reason.strip()
+    if len(new_reason) < 30:
+        await interaction.followup.send("❌ Reason must be at least **30 characters**.", ephemeral=True)
+        return
+    if len(new_reason) > 700:
+        await interaction.followup.send(f"❌ Reason must be at most **700 characters** (yours is {len(new_reason)}).", ephemeral=True)
+        return
+
+    discord_id = str(interaction.user.id)
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map.get(media_type)
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        users, _ = await read_users(session)
+        admins, _ = await read_admins(session)
+
+    profile = users.get(discord_id)
+    admin = str(discord_id) in admins
+
+    # Find entry
+    if title_or_id.isdigit():
+        idx = next((i for i, e in enumerate(entries) if str(e.get(id_key, "")) == title_or_id), None)
+    else:
+        idx = next((i for i, e in enumerate(entries) if title_or_id.lower() in e.get("title", "").lower()), None)
+
+    if idx is None:
+        await interaction.followup.send("❌ Entry not found.", ephemeral=True)
+        return
+
+    entry = entries[idx]
+
+    if not admin and not _entry_owned_by(entry, discord_id, profile):
+        await interaction.followup.send(
+            "❌ You can only edit reasons for entries **you added**.",
+            ephemeral=True,
+        )
+        return
+
+    old_reason = entry.get("reason", "")
+    entries[idx]["reason"] = new_reason
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"edit: reason for '{entry['title']}' by {interaction.user} ({'admin' if admin else 'owner'})",
+        )
+
+    if ok:
+        embed = discord.Embed(title="✅ Reason Updated", color=0x2EA043)
+        embed.add_field(name="Entry", value=entry["title"], inline=False)
+        embed.add_field(name="Old Reason", value=old_reason[:300] or "*(empty)*", inline=False)
+        embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        if admin and not _entry_owned_by(entry, discord_id, profile):
+            embed.set_footer(text="✏️ Edited as bot admin")
+        log_embed = discord.Embed(title="✏️ Reason Edited", color=0xF1C40F)
+        log_embed.add_field(name="Entry", value=entry["title"], inline=True)
+        log_embed.add_field(name="Edited by", value=f"{interaction.user.mention} ({'admin' if admin else 'owner'})", inline=True)
+        log_embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /delete_entry  (slash)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="delete_entry", description="Delete your own entry from any list (owner or bot admin only)")
+@app_commands.describe(
+    media_type="Which list to delete from",
+    title="Search for your entry",
+)
+@app_commands.choices(media_type=[
+    app_commands.Choice(name="Anime",   value="anime"),
+    app_commands.Choice(name="Manga",   value="manga"),
+    app_commands.Choice(name="TV Show", value="show"),
+    app_commands.Choice(name="Movie",   value="movie"),
+])
+@app_commands.autocomplete(title=_edit_reason_autocomplete)
+async def delete_entry(
+    interaction: discord.Interaction,
+    media_type: app_commands.Choice[str],
+    title: str,
+):
+    await interaction.response.defer(ephemeral=True)
+    await _handle_delete_entry(interaction, media_type.value, title)
+
+
+async def _handle_delete_entry(
+    interaction: discord.Interaction,
+    media_type: str,
+    title_or_id: str,
+):
+    discord_id = str(interaction.user.id)
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map.get(media_type)
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        users, _ = await read_users(session)
+        admins, _ = await read_admins(session)
+
+    profile = users.get(discord_id)
+    admin = str(discord_id) in admins
+
+    if title_or_id.isdigit():
+        idx = next((i for i, e in enumerate(entries) if str(e.get(id_key, "")) == title_or_id), None)
+    else:
+        idx = next((i for i, e in enumerate(entries) if title_or_id.lower() in e.get("title", "").lower()), None)
+
+    if idx is None:
+        await interaction.followup.send("❌ Entry not found.", ephemeral=True)
+        return
+
+    entry = entries[idx]
+
+    if not admin and not _entry_owned_by(entry, discord_id, profile):
+        await interaction.followup.send(
+            "❌ You can only delete entries **you added**.",
+            ephemeral=True,
+        )
+        return
+
+    removed = entries.pop(idx)
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"remove: '{removed['title']}' deleted by {interaction.user} ({'admin' if admin else 'owner'})",
+        )
+
+    if ok:
+        embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
+        embed.add_field(name="Title", value=removed["title"], inline=True)
+        embed.add_field(name="Type", value=media_type.title(), inline=True)
+        if admin and not _entry_owned_by(removed, discord_id, profile):
+            embed.set_footer(text="🛡️ Deleted as bot admin")
+        log_embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed["title"], inline=True)
+        log_embed.add_field(name="Deleted by", value=f"{interaction.user.mention} ({'admin' if admin else 'owner'})", inline=True)
+        log_embed.add_field(name="Reason was", value=(removed.get("reason") or "N/A")[:200], inline=False)
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ?edit_reason  (prefix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="edit_reason")
+async def prefix_edit_reason(ctx, media_type: str = None, entry_id: str = None, *, new_reason: str = None):
+    """Usage: ?edit_reason <anime|manga|show|movie> <anilist_id|simkl_id> <new reason>"""
+    if not media_type or not entry_id or not new_reason:
+        p = _prefix_cache[0]
+        await ctx.send(f"Usage: `{p}edit_reason <anime|manga|show|movie> <id> <new reason>`")
+        return
+
+    media_type = media_type.lower()
+    if media_type not in ("anime", "manga", "show", "movie"):
+        await ctx.send("❌ media_type must be one of: `anime`, `manga`, `show`, `movie`")
+        return
+
+    new_reason = new_reason.strip()
+    if len(new_reason) < 30:
+        await ctx.send("❌ Reason must be at least **30 characters**.")
+        return
+    if len(new_reason) > 700:
+        await ctx.send(f"❌ Reason must be at most **700 characters** (yours is {len(new_reason)}).")
+        return
+
+    discord_id = str(ctx.author.id)
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map[media_type]
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        users, _ = await read_users(session)
+        admins, _ = await read_admins(session)
+
+    profile = users.get(discord_id)
+    admin = discord_id in admins
+
+    idx = next((i for i, e in enumerate(entries) if str(e.get(id_key, "")) == entry_id), None)
+    if idx is None:
+        await ctx.send(f"❌ No {media_type} entry with ID `{entry_id}` found.")
+        return
+
+    entry = entries[idx]
+
+    if not admin and not _entry_owned_by(entry, discord_id, profile):
+        await ctx.send("❌ You can only edit reasons for entries **you added**.")
+        return
+
+    entries[idx]["reason"] = new_reason
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"edit: reason for '{entry['title']}' by {ctx.author} ({'admin' if admin else 'owner'})",
+        )
+
+    if ok:
+        embed = discord.Embed(title="✅ Reason Updated", color=0x2EA043)
+        embed.add_field(name="Entry", value=entry["title"], inline=False)
+        embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        log_embed = discord.Embed(title="✏️ Reason Edited", color=0xF1C40F)
+        log_embed.add_field(name="Entry", value=entry["title"], inline=True)
+        log_embed.add_field(name="Edited by", value=f"{ctx.author.mention} ({'admin' if admin else 'owner'})", inline=True)
+        log_embed.add_field(name="New Reason", value=new_reason[:300], inline=False)
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
+
+    await ctx.send(embed=embed)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ?delete_entry  (prefix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="delete_entry")
+async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None):
+    """Usage: ?delete_entry <anime|manga|show|movie> <anilist_id|simkl_id>"""
+    if not media_type or not entry_id:
+        p = _prefix_cache[0]
+        await ctx.send(f"Usage: `{p}delete_entry <anime|manga|show|movie> <id>`")
+        return
+
+    media_type = media_type.lower()
+    if media_type not in ("anime", "manga", "show", "movie"):
+        await ctx.send("❌ media_type must be one of: `anime`, `manga`, `show`, `movie`")
+        return
+
+    discord_id = str(ctx.author.id)
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map[media_type]
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        users, _ = await read_users(session)
+        admins, _ = await read_admins(session)
+
+    profile = users.get(discord_id)
+    admin = discord_id in admins
+
+    idx = next((i for i, e in enumerate(entries) if str(e.get(id_key, "")) == entry_id), None)
+    if idx is None:
+        await ctx.send(f"❌ No {media_type} entry with ID `{entry_id}` found.")
+        return
+
+    entry = entries[idx]
+
+    if not admin and not _entry_owned_by(entry, discord_id, profile):
+        await ctx.send("❌ You can only delete entries **you added**.")
+        return
+
+    removed = entries.pop(idx)
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"remove: '{removed['title']}' deleted by {ctx.author} ({'admin' if admin else 'owner'})",
+        )
+
+    if ok:
+        embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
+        embed.add_field(name="Title", value=removed["title"], inline=True)
+        log_embed = discord.Embed(title="🗑️ Entry Deleted", color=0xDA3633)
+        log_embed.add_field(name="Title", value=removed["title"], inline=True)
+        log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} ({'admin' if admin else 'owner'})", inline=True)
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to delete from GitHub", color=0xDA3633)
+
+    await ctx.send(embed=embed)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Admin management slash commands
+# /admin_add  /admin_remove  /admin_list
+# Requires Discord server administrator permission
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="admin_add", description="Add a bot admin (Discord admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(user="User to make a bot admin", role="Admin role level")
+@app_commands.choices(role=[
+    app_commands.Choice(name="admin",      value="admin"),
+    app_commands.Choice(name="superadmin", value="superadmin"),
+])
+async def admin_add(
+    interaction: discord.Interaction,
+    user: discord.User,
+    role: app_commands.Choice[str] = None,
+):
+    await interaction.response.defer(ephemeral=True)
+
+    role_value = role.value if role else "admin"
+    target_id = str(user.id)
+
+    async with aiohttp.ClientSession() as session:
+        admins, sha = await read_admins(session)
+
+        if target_id in admins:
+            await interaction.followup.send(
+                f"⚠️ {user.mention} is already a bot admin (`{admins[target_id].get('role', 'admin')}`).",
+                ephemeral=True,
+            )
+            return
+
+        admins[target_id] = {
+            "discord_id": target_id,
+            "discord_username": user.name,
+            "discord_display_name": user.display_name,
+            "discord_avatar": str(user.display_avatar.url) if user.display_avatar else None,
+            "role": role_value,
+            "added_by": str(interaction.user.id),
+            "added_by_username": interaction.user.name,
+            "added_at": time.time(),
+        }
+
+        ok = await write_admins(session, admins, sha, f"admin: add {user.name} as {role_value} by {interaction.user.name}")
+
+    if ok:
+        embed = discord.Embed(title="✅ Bot Admin Added", color=0x2EA043)
+        embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
+        embed.add_field(name="Role", value=f"`{role_value}`", inline=True)
+        embed.add_field(name="Added by", value=interaction.user.mention, inline=True)
+        if user.display_avatar:
+            embed.set_thumbnail(url=user.display_avatar.url)
+        log_embed = discord.Embed(title="🛡️ Bot Admin Added", color=0x2EA043)
+        log_embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
+        log_embed.add_field(name="Role", value=f"`{role_value}`", inline=True)
+        log_embed.add_field(name="Added by", value=interaction.user.mention, inline=True)
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="admin_remove", description="Remove a bot admin (Discord admin only)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(user="User to remove from bot admins")
+async def admin_remove(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.defer(ephemeral=True)
+
+    target_id = str(user.id)
+
+    async with aiohttp.ClientSession() as session:
+        admins, sha = await read_admins(session)
+
+        if target_id not in admins:
+            await interaction.followup.send(f"❌ {user.mention} is not a bot admin.", ephemeral=True)
+            return
+
+        removed_record = admins.pop(target_id)
+        ok = await write_admins(session, admins, sha, f"admin: remove {user.name} by {interaction.user.name}")
+
+    if ok:
+        embed = discord.Embed(title="✅ Bot Admin Removed", color=0xDA3633)
+        embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
+        embed.add_field(name="Was Role", value=f"`{removed_record.get('role', 'admin')}`", inline=True)
+        log_embed = discord.Embed(title="🛡️ Bot Admin Removed", color=0xDA3633)
+        log_embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
+        log_embed.add_field(name="Removed by", value=interaction.user.mention, inline=True)
+        await _send_log(log_embed)
+    else:
+        embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="admin_list", description="List all bot admins (Discord admin only)")
+@app_commands.default_permissions(administrator=True)
+async def admin_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        admins, _ = await read_admins(session)
+
+    if not admins:
+        await interaction.followup.send(
+            embed=discord.Embed(title="🛡️ Bot Admins", description="No bot admins configured yet.", color=0x0078D4),
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(title="🛡️ Bot Admins", color=0x0078D4)
+    from datetime import datetime
+    for discord_id, rec in admins.items():
+        name = rec.get("discord_display_name") or rec.get("discord_username") or f"User {discord_id}"
+        role = rec.get("role", "admin")
+        added_by = rec.get("added_by_username") or rec.get("added_by", "unknown")
+        added_at = rec.get("added_at")
+        ts = f"<t:{int(added_at)}:R>" if added_at else "unknown"
+        embed.add_field(
+            name=f"{'👑' if role == 'superadmin' else '🛡️'} {name}",
+            value=f"Role: `{role}` | ID: `{discord_id}`\nAdded by: `{added_by}` | {ts}",
+            inline=False,
+        )
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — edit reason
+# PATCH /api/edit_reason/{type}/{id}
+# Body: { "reason": "...", "discord_id": 123, "anilist_user_id": 456,
+#         "mal_user_id": 789, "simkl_user_id": 101, "simkl_username": "..." }
+# At least one user identifier required, or bearer token with admin flag.
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _api_edit_reason(request, media_type: str):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        item_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid id in URL"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    new_reason = (body.get("reason") or "").strip()
+    if not new_reason:
+        return web.json_response({"error": "Missing required field: reason"}, status=400)
+    if len(new_reason) < 30:
+        return web.json_response({"error": "Reason must be at least 30 characters"}, status=400)
+    if len(new_reason) > 700:
+        return web.json_response({"error": "Reason must be at most 700 characters"}, status=400)
+
+    req_discord_id   = body.get("discord_id")
+    req_anilist_id   = body.get("anilist_user_id")
+    req_mal_id       = body.get("mal_user_id")
+    req_simkl_id     = body.get("simkl_user_id")
+    req_simkl_uname  = (body.get("simkl_username") or "").strip() or None
+    api_admin        = bool(body.get("admin", False))  # caller claims admin — verified below
+
+    # Require at least one identity field (unless claiming admin)
+    if not api_admin and not any([req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname]):
+        return web.json_response(
+            {"error": "Provide at least one user identifier: discord_id, anilist_user_id, mal_user_id, simkl_user_id, or simkl_username"},
+            status=400,
+        )
+
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map.get(media_type)
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        admins, _ = await read_admins(session)
+
+    # Verify admin claim — discord_id must be in admins.json
+    is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
+
+    idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
+    if idx is None:
+        return web.json_response({"error": f"No {media_type} with {id_key}={item_id} found."}, status=404)
+
+    entry = entries[idx]
+
+    if not is_admin and not _entry_owned_by_api(
+        entry, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname
+    ):
+        return web.json_response({"error": "You do not own this entry."}, status=403)
+
+    old_reason = entry.get("reason", "")
+    entries[idx]["reason"] = new_reason
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"edit: reason for '{entry['title']}' via API ({'admin' if is_admin else 'owner'})",
+        )
+
+    if ok:
+        return web.json_response({
+            "success": True,
+            "title": entry["title"],
+            "old_reason": old_reason,
+            "new_reason": new_reason,
+        })
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
+async def api_edit_reason_anime(request):  return await _api_edit_reason(request, "anime")
+async def api_edit_reason_manga(request):  return await _api_edit_reason(request, "manga")
+async def api_edit_reason_show(request):   return await _api_edit_reason(request, "show")
+async def api_edit_reason_movie(request):  return await _api_edit_reason(request, "movie")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — delete entry
+# DELETE /api/delete/{type}/{id}
+# Body: same identity fields as edit_reason
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _api_delete_entry(request, media_type: str):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    try:
+        item_id = int(request.match_info["id"])
+    except (KeyError, ValueError):
+        return web.json_response({"error": "Invalid id in URL"}, status=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    req_discord_id   = body.get("discord_id")
+    req_anilist_id   = body.get("anilist_user_id")
+    req_mal_id       = body.get("mal_user_id")
+    req_simkl_id     = body.get("simkl_user_id")
+    req_simkl_uname  = (body.get("simkl_username") or "").strip() or None
+    api_admin        = bool(body.get("admin", False))
+
+    if not api_admin and not any([req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname]):
+        return web.json_response(
+            {"error": "Provide at least one user identifier: discord_id, anilist_user_id, mal_user_id, simkl_user_id, or simkl_username"},
+            status=400,
+        )
+
+    filepath_map = {"anime": FILE_ANIME, "manga": FILE_MANGA, "show": FILE_SHOWS, "movie": FILE_MOVIES}
+    filepath = filepath_map.get(media_type)
+    id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
+
+    async with aiohttp.ClientSession() as session:
+        entries, sha = await github_read_json(session, filepath)
+        admins, _ = await read_admins(session)
+
+    is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
+
+    idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
+    if idx is None:
+        return web.json_response({"error": f"No {media_type} with {id_key}={item_id} found."}, status=404)
+
+    entry = entries[idx]
+
+    if not is_admin and not _entry_owned_by_api(
+        entry, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname
+    ):
+        return web.json_response({"error": "You do not own this entry."}, status=403)
+
+    removed = entries.pop(idx)
+
+    async with aiohttp.ClientSession() as session:
+        ok = await github_write_json(
+            session, filepath, entries, sha,
+            f"remove: '{removed['title']}' deleted via API ({'admin' if is_admin else 'owner'})",
+        )
+
+    if ok:
+        return web.json_response({"success": True, "deleted": {"title": removed["title"], id_key: item_id}})
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
+async def api_delete_anime(request):  return await _api_delete_entry(request, "anime")
+async def api_delete_manga(request):  return await _api_delete_entry(request, "manga")
+async def api_delete_show(request):   return await _api_delete_entry(request, "show")
+async def api_delete_movie(request):  return await _api_delete_entry(request, "movie")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# API — admin management
+# GET    /api/admins
+# POST   /api/admins/add     body: { "discord_id": ..., "discord_username": ..., "role": "admin"|"superadmin", "added_by": ... }
+# DELETE /api/admins/remove  body: { "discord_id": ... }
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def api_get_admins(request):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    async with aiohttp.ClientSession() as session:
+        admins, _ = await read_admins(session)
+    # Strip sensitive internal fields before returning
+    safe = {
+        did: {
+            "discord_id": rec.get("discord_id"),
+            "discord_username": rec.get("discord_username"),
+            "discord_display_name": rec.get("discord_display_name"),
+            "discord_avatar": rec.get("discord_avatar"),
+            "role": rec.get("role", "admin"),
+            "added_at": rec.get("added_at"),
+        }
+        for did, rec in admins.items()
+    }
+    return web.json_response({"admins": safe, "count": len(safe)})
+
+
+async def api_admin_add(request):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    discord_id = str(body.get("discord_id", "")).strip()
+    discord_username = (body.get("discord_username") or "").strip()
+    role = (body.get("role") or "admin").strip()
+    added_by = str(body.get("added_by", "API")).strip()
+
+    if not discord_id:
+        return web.json_response({"error": "discord_id is required"}, status=400)
+    if role not in ("admin", "superadmin"):
+        return web.json_response({"error": "role must be 'admin' or 'superadmin'"}, status=400)
+
+    async with aiohttp.ClientSession() as session:
+        admins, sha = await read_admins(session)
+        if discord_id in admins:
+            return web.json_response({"error": "User is already an admin", "role": admins[discord_id].get("role")}, status=409)
+
+        # Try to fetch fresh Discord info from bot cache
+        try:
+            discord_user = await bot.fetch_user(int(discord_id))
+            display_name = discord_user.display_name
+            username = discord_user.name
+            avatar = str(discord_user.display_avatar.url) if discord_user.display_avatar else None
+        except Exception:
+            display_name = discord_username
+            username = discord_username
+            avatar = None
+
+        admins[discord_id] = {
+            "discord_id": discord_id,
+            "discord_username": username or discord_username,
+            "discord_display_name": display_name or discord_username,
+            "discord_avatar": avatar,
+            "role": role,
+            "added_by": added_by,
+            "added_at": time.time(),
+        }
+        ok = await write_admins(session, admins, sha, f"admin: add {discord_id} as {role} via API")
+
+    if ok:
+        return web.json_response({"success": True, "discord_id": discord_id, "role": role}, status=201)
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
+async def api_admin_remove(request):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    discord_id = str(body.get("discord_id", "")).strip()
+    if not discord_id:
+        return web.json_response({"error": "discord_id is required"}, status=400)
+
+    async with aiohttp.ClientSession() as session:
+        admins, sha = await read_admins(session)
+        if discord_id not in admins:
+            return web.json_response({"error": "User is not an admin"}, status=404)
+        admins.pop(discord_id)
+        ok = await write_admins(session, admins, sha, f"admin: remove {discord_id} via API")
+
+    if ok:
+        return web.json_response({"success": True, "discord_id": discord_id})
+    return web.json_response({"error": "Failed to write to GitHub"}, status=500)
+
+
 async def start_health_server():
     app = web.Application()
     app.router.add_get("/", health)
@@ -2060,6 +2885,20 @@ async def start_health_server():
     app.router.add_get("/api/votes/show/{anilist_id}", api_get_votes_show)
     app.router.add_get("/api/votes/movie/{anilist_id}", api_get_votes_movie)
     app.router.add_get("/api/votes/leaderboard", api_leaderboard)
+    # ── edit reason ────────────────────────────────────────────────────────────
+    app.router.add_patch("/api/edit_reason/anime/{id}", api_edit_reason_anime)
+    app.router.add_patch("/api/edit_reason/manga/{id}", api_edit_reason_manga)
+    app.router.add_patch("/api/edit_reason/show/{id}",  api_edit_reason_show)
+    app.router.add_patch("/api/edit_reason/movie/{id}", api_edit_reason_movie)
+    # ── delete entry ───────────────────────────────────────────────────────────
+    app.router.add_delete("/api/delete/anime/{id}", api_delete_anime)
+    app.router.add_delete("/api/delete/manga/{id}", api_delete_manga)
+    app.router.add_delete("/api/delete/show/{id}",  api_delete_show)
+    app.router.add_delete("/api/delete/movie/{id}", api_delete_movie)
+    # ── admin management ───────────────────────────────────────────────────────
+    app.router.add_get("/api/admins",          api_get_admins)
+    app.router.add_post("/api/admins/add",     api_admin_add)
+    app.router.add_delete("/api/admins/remove", api_admin_remove)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -2255,6 +3094,52 @@ def _build_user_snapshot(profile: dict) -> dict:
             "id": profile.get("simkl_user_id"),
             "avatar": profile.get("simkl_avatar"),
         },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Admin records (admins.json in private userdata repo)
+# Structure: { "discord_id": { "discord_id": str, "discord_username": str,
+#              "discord_display_name": str, "discord_avatar": str,
+#              "role": "superadmin"|"admin", "added_by": str, "added_at": float } }
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def read_admins(session: aiohttp.ClientSession) -> tuple[dict, str | None]:
+    """Read admins.json from the private userdata repo. Returns (data, sha)."""
+    data, sha = await github_read_json(
+        session, FILE_ADMINS, repo=USERDATA_REPO, branch=USERDATA_BRANCH
+    )
+    if not isinstance(data, dict):
+        data = {}
+    return data, sha
+
+
+async def write_admins(
+    session: aiohttp.ClientSession,
+    admins: dict,
+    sha: str | None,
+    message: str,
+) -> bool:
+    return await github_write_json(
+        session, FILE_ADMINS, admins, sha, message,
+        repo=USERDATA_REPO, branch=USERDATA_BRANCH,
+    )
+
+
+async def is_bot_admin(discord_id: str | int) -> bool:
+    """Return True if this Discord user is in admins.json."""
+    async with aiohttp.ClientSession() as session:
+        admins, _ = await read_admins(session)
+    return str(discord_id) in admins
+
+
+def _admin_snapshot(discord_user: discord.User | discord.Member) -> dict:
+    """Build an admin record from a Discord user object."""
+    return {
+        "discord_id": str(discord_user.id),
+        "discord_username": discord_user.name,
+        "discord_display_name": discord_user.display_name,
+        "discord_avatar": str(discord_user.display_avatar.url) if discord_user.display_avatar else None,
     }
 
 
@@ -3118,7 +4003,7 @@ async def ensure_json_files():
             prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
         )
 
-    # Also ensure FILE_USERS exists in the private userdata repo
+    # Also ensure FILE_USERS and FILE_ADMINS exist in the private userdata repo
     async with aiohttp.ClientSession() as session:
         users_data, users_sha = await read_users(session)
         if users_sha is None:
@@ -3126,6 +4011,13 @@ async def ensure_json_files():
             print(f"✅ Created {FILE_USERS} in userdata repo")
         else:
             print(f"✅ {FILE_USERS} already exists in userdata repo")
+
+        admins_data, admins_sha = await read_admins(session)
+        if admins_sha is None:
+            await write_admins(session, {}, None, f"init: create {FILE_ADMINS} in userdata repo")
+            print(f"✅ Created {FILE_ADMINS} in userdata repo")
+        else:
+            print(f"✅ {FILE_ADMINS} already exists in userdata repo")
 
     print(f"✅ Active prefixes: {_prefix_cache}")
 
@@ -3625,6 +4517,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
         "author": author,
         "reason": reason,
         "user": user_snapshot,
+        "added_by_discord_id": str(interaction.user.id),
         "poster": cover_url,
         "score": score,
         "genres": media.get("genres", []),
@@ -3817,6 +4710,7 @@ async def handle_simkl_add(
         "author": author,
         "reason": reason,
         "user": user_snapshot,
+        "added_by_discord_id": str(interaction.user.id),
         "poster": poster_url or "",
         "score": score,
         "genres": genres,
