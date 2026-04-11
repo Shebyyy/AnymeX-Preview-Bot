@@ -4415,6 +4415,7 @@ async def on_disconnect():
         # Only rotate if health check also fails.
         print("⚠️ Will verify proxy on next health check cycle.")
 
+@bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     await ensure_json_files()
