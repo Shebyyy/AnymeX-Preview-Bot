@@ -1030,24 +1030,6 @@ async def switchproxy_cmd(interaction: discord.Interaction):
     embed.add_field(name="New", value=new or "None (direct)", inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# ── /switchproxy ────────────────────────────────────────────────────────────────
-
-
-@bot.tree.command(
-    name="switchproxy",
-    description="Manually switch to the next proxy (Admin only)",
-)
-@app_commands.default_permissions(administrator=True)
-async def switchproxy_cmd(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    old = _current_proxy
-    await switch_proxy(reason=f"manual by {interaction.user}")
-    new = _current_proxy
-    embed = discord.Embed(title="🔄 Proxy Switched", color=0x2ecc71)
-    embed.add_field(name="Old", value=old or "None", inline=False)
-    embed.add_field(name="New", value=new or "None (direct)", inline=False)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
 
 @bot.tree.command(
     name="config_role",
