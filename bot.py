@@ -3274,8 +3274,6 @@ async def _api_edit_reason(request, media_type: str):
         admins, _    = await read_admins(session)
         users_data, _ = await read_users(session)
 
-    is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
-
     idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
     if idx is None:
         return web.json_response({"error": f"No {media_type} with {id_key}={item_id} found."}, status=404)
@@ -3335,6 +3333,19 @@ async def _api_edit_reason(request, media_type: str):
             "simkl":    {"id": req_simkl_id,      "username": req_simkl_uname,   "avatar": simkl_avatar},
         }
         resolved_author = anilist_username or mal_username or req_simkl_uname or discord_username or "Unknown"
+
+    # ── Determine admin status by matching any service ID against admins.json ──
+    is_admin = False
+    if api_admin:
+        for rec in admins.values():
+            if req_anilist_id and str(rec.get("anilist_user_id", "")) == str(req_anilist_id):
+                is_admin = True; break
+            if req_mal_id and str(rec.get("mal_user_id", "")) == str(req_mal_id):
+                is_admin = True; break
+            if req_simkl_id and str(rec.get("simkl_user_id", "")) == str(req_simkl_id):
+                is_admin = True; break
+            if req_discord_id and str(rec.get("discord_id", "")) == str(req_discord_id):
+                is_admin = True; break
 
     # ── Find which reason slot belongs to this caller ────────────────────────────
     if is_admin:
@@ -3435,8 +3446,6 @@ async def _api_delete_reason(request, media_type: str):
         admins, _     = await read_admins(session)
         users_data, _ = await read_users(session)
 
-    is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
-
     idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
     if idx is None:
         return web.json_response({"error": f"No {media_type} with {id_key}={item_id} found."}, status=404)
@@ -3487,6 +3496,19 @@ async def _api_delete_reason(request, media_type: str):
         )
     else:
         resolved_author = req_simkl_uname or str(req_discord_id or "Unknown")
+
+    # ── Determine admin status by matching any service ID against admins.json ──
+    is_admin = False
+    if api_admin:
+        for rec in admins.values():
+            if req_anilist_id and str(rec.get("anilist_user_id", "")) == str(req_anilist_id):
+                is_admin = True; break
+            if req_mal_id and str(rec.get("mal_user_id", "")) == str(req_mal_id):
+                is_admin = True; break
+            if req_simkl_id and str(rec.get("simkl_user_id", "")) == str(req_simkl_id):
+                is_admin = True; break
+            if req_discord_id and str(rec.get("discord_id", "")) == str(req_discord_id):
+                is_admin = True; break
 
     # ── Find the reason slot to delete ──────────────────────────────────────────
     if is_admin:
@@ -3627,14 +3649,47 @@ async def _api_delete_entry(request, media_type: str):
     async with aiohttp.ClientSession() as session:
         entries, sha = await github_read_json(session, filepath)
         admins, _ = await read_admins(session)
-
-    is_admin = api_admin and req_discord_id and str(req_discord_id) in admins
+        users_data, _ = await read_users(session)
 
     idx = next((i for i, e in enumerate(entries) if e.get(id_key) == item_id), None)
     if idx is None:
         return web.json_response({"error": f"No {media_type} with {id_key}={item_id} found."}, status=404)
 
     entry = entries[idx]
+
+    # ── Resolve full identity from users.json to maximise match coverage ─────────
+    matched_profile = None
+    for _did, p in users_data.items():
+        if req_anilist_id and p.get("anilist_user_id") == req_anilist_id:
+            matched_profile = p; break
+        if req_mal_id and p.get("mal_user_id") == req_mal_id:
+            matched_profile = p; break
+        if req_simkl_id and p.get("simkl_user_id") == req_simkl_id:
+            matched_profile = p; break
+        if req_simkl_uname and (p.get("simkl_username") or "").lower() == req_simkl_uname.lower():
+            matched_profile = p; break
+        if req_discord_id and str(p.get("discord_id") or "") == str(req_discord_id):
+            matched_profile = p; break
+
+    if matched_profile:
+        req_discord_id  = req_discord_id  or matched_profile.get("discord_id")
+        req_anilist_id  = req_anilist_id  or matched_profile.get("anilist_user_id")
+        req_mal_id      = req_mal_id      or matched_profile.get("mal_user_id")
+        req_simkl_id    = req_simkl_id    or matched_profile.get("simkl_user_id")
+        req_simkl_uname = req_simkl_uname or matched_profile.get("simkl_username")
+
+    # ── Determine admin status by matching any service ID against admins.json ──
+    is_admin = False
+    if api_admin:
+        for rec in admins.values():
+            if req_anilist_id and str(rec.get("anilist_user_id", "")) == str(req_anilist_id):
+                is_admin = True; break
+            if req_mal_id and str(rec.get("mal_user_id", "")) == str(req_mal_id):
+                is_admin = True; break
+            if req_simkl_id and str(rec.get("simkl_user_id", "")) == str(req_simkl_id):
+                is_admin = True; break
+            if req_discord_id and str(rec.get("discord_id", "")) == str(req_discord_id):
+                is_admin = True; break
 
     if not is_admin and not _entry_owned_by_api(
         entry, req_discord_id, req_anilist_id, req_mal_id, req_simkl_id, req_simkl_uname
