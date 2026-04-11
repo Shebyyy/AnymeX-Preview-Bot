@@ -56,7 +56,8 @@ ENV_PROXY_URL = (
     )
 )
 
-_GEONODE_URL = "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http"
+# Geonode proxy API disabled — using ENV proxy only
+# _GEONODE_URL = "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http"
 _proxy_list: list[str] = []
 _proxy_cycle = None
 _current_proxy: str | None = None
@@ -82,31 +83,14 @@ async def _send_log(embed: discord.Embed):
         print(f"⚠️ Failed to send log embed: {type(e).__name__}: {e}")
 
 async def fetch_geonode_proxies() -> bool:
-    global _proxy_list, _proxy_cycle
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(_GEONODE_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                proxies = [
-                    f"http://{p['ip']}:{p['port']}"
-                    for p in data.get("data", [])
-                    if "http" in p.get("protocols", [])
-                ]
-                if proxies:
-                    _proxy_list = proxies
-                    _proxy_cycle = _itertools.cycle(_proxy_list)
-                    print(f"✅ Loaded {len(_proxy_list)} HTTP proxies from Geonode")
-                    return True
-    except Exception as e:
-        print(f"⚠️ Failed to fetch Geonode proxies: {e}")
+    # Geonode proxy API disabled — always use ENV proxy
+    print("ℹ️ Geonode proxy fetching is disabled. Using ENV proxy only.")
     return False
 
 def get_proxy() -> str | None:
     global _current_proxy
-    if _proxy_cycle:
-        _current_proxy = next(_proxy_cycle)
-    else:
-        _current_proxy = ENV_PROXY_URL
+    # Always use ENV proxy — Geonode list is disabled
+    _current_proxy = ENV_PROXY_URL
     return _current_proxy
 
 async def switch_proxy(reason: str = "manual"):
@@ -123,58 +107,34 @@ async def switch_proxy(reason: str = "manual"):
 
 async def start_bot_with_proxy():
     global _current_proxy
-    _dead_proxies: set = set()
-    _using_env_fallback = False
+
+    # Use ENV proxy directly — Geonode proxy list is disabled
+    _current_proxy = ENV_PROXY_URL
+    bot.http.proxy = ENV_PROXY_URL
 
     while True:
-        # If all Geonode proxies are exhausted, fall back to ENV_PROXY_URL
-        if not _using_env_fallback and _proxy_list and len(_dead_proxies) >= len(_proxy_list):
-            _using_env_fallback = True
-            if ENV_PROXY_URL:
-                print(f"⚠️ All Geonode proxies dead — falling back to ENV proxy: {ENV_PROXY_URL}")
-                _current_proxy = ENV_PROXY_URL
-                bot.http.proxy = ENV_PROXY_URL
-            else:
-                print("⚠️ All Geonode proxies dead and ENV proxy not set — connecting directly")
-                _current_proxy = None
-                bot.http.proxy = None
-
-        if not _using_env_fallback:
-            proxy = get_proxy()
-            # Skip proxies already known to be dead this session
-            attempts = 0
-            while proxy in _dead_proxies and attempts < len(_proxy_list) + 1:
-                proxy = get_proxy()
-                attempts += 1
-            bot.http.proxy = proxy
-
         if bot.http.proxy:
             print(f"✅ Connecting with proxy: {bot.http.proxy}")
         else:
-            print("⚠️ No proxy, connecting directly")
+            print("⚠️ No proxy set via ENV, connecting directly")
         try:
             await bot.start(DISCORD_TOKEN)
             break
         except discord.errors.HTTPException as e:
             if e.status == 429:
-                print(f"⚠️ Discord rate limited proxy, switching...")
+                print(f"⚠️ Discord rate limited. Retrying in 5s...")
                 embed = discord.Embed(title="⚠️ Rate Limited by Discord", color=0xe74c3c)
-                embed.add_field(name="Blocked Proxy", value=_current_proxy or "direct", inline=False)
-                embed.description = "Switching to next proxy automatically..."
+                embed.add_field(name="Proxy", value=_current_proxy or "direct", inline=False)
+                embed.description = "Retrying after short delay..."
                 await _send_log(embed)
                 bot.http._HTTPClient__session = None
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
                 continue
             raise
         except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError, aiohttp.ClientConnectorError, OSError) as e:
-            bad_proxy = _current_proxy
-            if _using_env_fallback:
-                print(f"⚠️ ENV proxy also failed ({bad_proxy}): {e} — connecting directly")
-                _current_proxy = None
-                bot.http.proxy = None
-            else:
-                _dead_proxies.add(bad_proxy)
-                print(f"⚠️ Proxy unreachable ({bad_proxy}): {e} — trying next proxy...")
+            print(f"⚠️ ENV proxy failed ({_current_proxy}): {e} — retrying directly without proxy")
+            _current_proxy = None
+            bot.http.proxy = None
             bot.http._HTTPClient__session = None
             await asyncio.sleep(1)
             continue
@@ -9422,12 +9382,12 @@ async def on_message(message: discord.Message):
 
 async def main():
     await start_health_server()
-    geonode_ok = await fetch_geonode_proxies()
-    if not geonode_ok:
-        if ENV_PROXY_URL:
-            print(f"⚠️ Geonode failed, falling back to env proxy")
-        else:
-            print("⚠️ No proxy available, connecting directly")
+    # Geonode proxy fetching disabled — using ENV proxy from environment variables
+    await fetch_geonode_proxies()  # no-op, logs info message
+    if ENV_PROXY_URL:
+        print(f"✅ Using ENV proxy: {ENV_PROXY_URL}")
+    else:
+        print("⚠️ No ENV proxy configured (PROXY_HOST/PORT/USER/PASS), connecting directly")
     auto_rotate_proxy.start()
     await start_bot_with_proxy()
 
