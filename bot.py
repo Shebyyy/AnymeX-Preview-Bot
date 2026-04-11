@@ -5083,17 +5083,21 @@ async def on_ready():
         except Exception as e:
             print(f"⚠️ Failed to sync slash commands: {e}")
 
-    # ── Run repopulator on startup ─────────────────────────────────────────────
-    print("🔄 Running startup repopulator...")
-    try:
-        result = await run_repopulator(triggered_by="bot startup")
-        print(f"✅ Startup repopulator done: {result}")
-        channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
-        if channel:
-            embed = _build_repopulator_embed(result, "🚀 Startup Profile Sync Complete")
-            await channel.send(embed=embed)
-    except Exception as e:
-        print(f"⚠️ Startup repopulator failed: {e}")
+    # ── Run repopulator in background so bot stays responsive ──────────────────
+    async def _startup_repopulator():
+        print("🔄 Running startup repopulator (background)...")
+        try:
+            result = await run_repopulator(triggered_by="bot startup")
+            print(f"✅ Startup repopulator done: {result}")
+            channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
+            if channel:
+                embed = _build_repopulator_embed(result, "🚀 Startup Profile Sync Complete")
+                await channel.send(embed=embed)
+        except Exception as e:
+            print(f"⚠️ Startup repopulator failed: {e}")
+
+    import asyncio
+    asyncio.create_task(_startup_repopulator())
 
     # ── Start weekly loop if not already running ───────────────────────────────
     if not weekly_repopulator.is_running():
@@ -9334,6 +9338,19 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         for entry in anime_entries:
             changed = False
 
+            # Migrate legacy single-reason entries into reasons[] array
+            if "reasons" not in entry:
+                first = {
+                    "discord_id": entry.get("added_by_discord_id"),
+                    "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+                    "user": entry.get("user", {}),
+                    "author": entry.get("author"),
+                    "text": entry.get("reason", ""),
+                    "added_at": None,
+                }
+                entry["reasons"] = [first]
+                changed = True
+
             # Update top-level user snapshot
             matched = _match_profile(entry.get("user", {}))
             if matched:
@@ -9367,6 +9384,19 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         for entry in manga_entries:
             changed = False
 
+            # Migrate legacy single-reason entries into reasons[] array
+            if "reasons" not in entry:
+                first = {
+                    "discord_id": entry.get("added_by_discord_id"),
+                    "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+                    "user": entry.get("user", {}),
+                    "author": entry.get("author"),
+                    "text": entry.get("reason", ""),
+                    "added_at": None,
+                }
+                entry["reasons"] = [first]
+                changed = True
+
             matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
@@ -9395,6 +9425,19 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         _adult_certs = {"NC-17", "X", "TV-MA", "R18", "18+", "AO"}
         for entry in show_entries:
             changed = False
+
+            # Migrate legacy single-reason entries into reasons[] array
+            if "reasons" not in entry:
+                first = {
+                    "discord_id": entry.get("added_by_discord_id"),
+                    "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+                    "user": entry.get("user", {}),
+                    "author": entry.get("author"),
+                    "text": entry.get("reason", ""),
+                    "added_at": None,
+                }
+                entry["reasons"] = [first]
+                changed = True
 
             matched = _match_profile(entry.get("user", {}))
             if matched:
@@ -9426,6 +9469,19 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         # ── Step 4c: Update movie entries ─────────────────────────────────────
         for entry in movie_entries:
             changed = False
+
+            # Migrate legacy single-reason entries into reasons[] array
+            if "reasons" not in entry:
+                first = {
+                    "discord_id": entry.get("added_by_discord_id"),
+                    "discord_username": entry.get("user", {}).get("discord", {}).get("username"),
+                    "user": entry.get("user", {}),
+                    "author": entry.get("author"),
+                    "text": entry.get("reason", ""),
+                    "added_at": None,
+                }
+                entry["reasons"] = [first]
+                changed = True
 
             matched = _match_profile(entry.get("user", {}))
             if matched:
