@@ -1141,8 +1141,9 @@ async def _malbackup_anilist_to_mal(media_type: str, anilist_id: int) -> int | N
 
 
 async def _api_check_media(request, media_type: str):
-    """GET /api/check/{type}/{id}?id_type=anilist|mal|simkl
+    """GET /api/check/{type}/{id}?id_type=anilist|mal|simkl&anilist_user_id=N&mal_user_id=N&simkl_user_id=N
     Returns the full entry if already in the list, or {exists: false}.
+    Also returns is_admin: true if the caller's user ID matches any admin in admins.json.
     """
     if not _check_auth(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
@@ -1154,10 +1155,16 @@ async def _api_check_media(request, media_type: str):
 
     id_type = request.rel_url.query.get("id_type", "anilist").lower()
 
+    # Optional caller identity for admin check
+    req_anilist_id = request.rel_url.query.get("anilist_user_id")
+    req_mal_id     = request.rel_url.query.get("mal_user_id")
+    req_simkl_id   = request.rel_url.query.get("simkl_user_id")
+
     if media_type in ("anime", "manga"):
         filepath = FILE_ANIME if media_type == "anime" else FILE_MANGA
         async with aiohttp.ClientSession() as session:
             entries, _ = await github_read_json(session, filepath)
+            admins, _  = await read_admins(session)
         if id_type == "mal":
             entry = next((e for e in entries if e.get("mal_id") == item_id), None)
         else:
@@ -1166,11 +1173,25 @@ async def _api_check_media(request, media_type: str):
         filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
         async with aiohttp.ClientSession() as session:
             entries, _ = await github_read_json(session, filepath)
+            admins, _  = await read_admins(session)
         entry = next((e for e in entries if e.get("simkl_id") == item_id), None)
 
+    # Check if the caller is a bot admin by matching their service user ID
+    is_admin = False
+    for rec in admins.values():
+        if req_anilist_id and str(rec.get("anilist_user_id", "")) == str(req_anilist_id):
+            is_admin = True
+            break
+        if req_mal_id and str(rec.get("mal_user_id", "")) == str(req_mal_id):
+            is_admin = True
+            break
+        if req_simkl_id and str(rec.get("simkl_user_id", "")) == str(req_simkl_id):
+            is_admin = True
+            break
+
     if entry:
-        return web.json_response({"exists": True, "entry": entry})
-    return web.json_response({"exists": False})
+        return web.json_response({"exists": True, "entry": entry, "is_admin": is_admin})
+    return web.json_response({"exists": False, "is_admin": is_admin})
 
 
 async def api_check_anime(request): return await _api_check_media(request, "anime")
@@ -2890,6 +2911,41 @@ async def api_delete_movie(request):  return await _api_delete_entry(request, "m
 # DELETE /api/admins/remove  body: { "discord_id": ... }
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def api_is_admin(request):
+    if not _check_auth(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    anilist_user_id = body.get("anilist_user_id")
+    mal_user_id = body.get("mal_user_id")
+    simkl_user_id = body.get("simkl_user_id")
+    anilist_username = body.get("anilist_username")
+    mal_username = body.get("mal_username")
+    simkl_username = body.get("simkl_username")
+
+    async with aiohttp.ClientSession() as session:
+        admins, _ = await read_admins(session)
+
+    for discord_id, rec in admins.items():
+        if anilist_user_id and rec.get("anilist_user_id") == anilist_user_id:
+            return web.json_response({"is_admin": True, "discord_id": discord_id, "role": rec.get("role")})
+        if mal_user_id and rec.get("mal_user_id") == mal_user_id:
+            return web.json_response({"is_admin": True, "discord_id": discord_id, "role": rec.get("role")})
+        if simkl_user_id and rec.get("simkl_user_id") == simkl_user_id:
+            return web.json_response({"is_admin": True, "discord_id": discord_id, "role": rec.get("role")})
+        if anilist_username and rec.get("anilist_username") == anilist_username:
+            return web.json_response({"is_admin": True, "discord_id": discord_id, "role": rec.get("role")})
+        if mal_username and rec.get("mal_username") == mal_username:
+            return web.json_response({"is_admin": True, "discord_id": discord_id, "role": rec.get("role")})
+        if simkl_username and rec.get("simkl_username") == simkl_username:
+            return web.json_response({"is_admin": True, "discord_id": discord_id, "role": rec.get("role")})
+
+    return web.json_response({"is_admin": False})
+
+
 async def api_get_admins(request):
     if not _check_auth(request):
         return web.json_response({"error": "Unauthorized"}, status=401)
@@ -3043,6 +3099,7 @@ async def start_health_server():
     app.router.add_get("/api/admins",          api_get_admins)
     app.router.add_post("/api/admins/add",     api_admin_add)
     app.router.add_delete("/api/admins/remove", api_admin_remove)
+    app.router.add_post("/api/is_admin",       api_is_admin)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
