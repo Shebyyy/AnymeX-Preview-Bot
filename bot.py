@@ -2510,6 +2510,35 @@ def _find_reason_idx(reasons: list, req_discord_id, req_anilist_id, req_mal_id, 
     return None
 
 
+def _find_reason_by_any_id(reasons: list, raw_id: str):
+    """
+    Find a reason in reasons[] by matching raw_id against ANY identity field.
+    Looks directly in the entry's own data — no users.json needed.
+    Matches: discord_id, discord.id, anilist.id, mal.id, simkl.id, simkl.username
+    """
+    for i, r in enumerate(reasons):
+        u = r.get("user", {})
+        # discord_id (flat field)
+        if str(r.get("discord_id") or "") == str(raw_id):
+            return i
+        # discord.id (snapshot)
+        if str(u.get("discord", {}).get("id") or "") == str(raw_id):
+            return i
+        # anilist.id
+        if str(u.get("anilist", {}).get("id") or "") == str(raw_id):
+            return i
+        # mal.id
+        if str(u.get("mal", {}).get("id") or "") == str(raw_id):
+            return i
+        # simkl.id
+        if str(u.get("simkl", {}).get("id") or "") == str(raw_id):
+            return i
+        # simkl.username (case-insensitive)
+        if (u.get("simkl", {}).get("username") or "").lower() == str(raw_id).lower():
+            return i
+    return None
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # /edit_reason  (slash)
@@ -2736,8 +2765,19 @@ async def _handle_delete_entry(
         id_key = "simkl_id" if media_type in ("show", "movie") else "anilist_id"
         entry_id_val = entry.get(id_key, "N/A")
         p = _prefix_cache[0]
+        # Show the user's linked service IDs so admins can identify them
+        user_al = profile.get("anilist_user_id") if profile else None
+        user_mal = profile.get("mal_user_id") if profile else None
+        user_simkl = profile.get("simkl_user_id") if profile else None
+        user_simkl_uname = profile.get("simkl_username") if profile else None
+        # Pick the best identifier for the admin command
+        admin_target = discord_id  # default
+        if user_al: admin_target = str(user_al)
+        elif user_mal: admin_target = str(user_mal)
+        elif user_simkl: admin_target = str(user_simkl)
+        elif user_simkl_uname: admin_target = user_simkl_uname
         log_embed = discord.Embed(
-            title="Deletion Requested by Owner",
+            title="🗑️ Deletion Requested by Owner",
             description=(
                 f"{interaction.user.mention} has requested their entry be deleted.\n"
                 f"**Admins:** please review and use the command below to confirm."
@@ -2746,7 +2786,8 @@ async def _handle_delete_entry(
         )
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
-        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=interaction.user.id), inline=False)
+        log_embed.add_field(name="Media IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id")), inline=False)
+        log_embed.add_field(name="User IDs", value=_ids_line(AL=user_al, MAL=user_mal, Simkl=user_simkl, DC=interaction.user.id), inline=False)
         log_embed.add_field(name="Reason", value=_short_reason(entry.get("reason")), inline=False)
         log_embed.add_field(
             name="Admin Command to Delete",
@@ -2785,7 +2826,7 @@ async def _handle_delete_entry(
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
         log_embed.add_field(name="Deleted by", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=True)
-        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id"), DC=interaction.user.id), inline=False)
+        log_embed.add_field(name="Media IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id")), inline=False)
         log_embed.add_field(name="Entry Reason", value=_short_reason(removed.get("reason")), inline=False)
         if removed.get("poster"):
             log_embed.set_thumbnail(url=removed["poster"])
@@ -2939,6 +2980,9 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
     # Non-admins: don't delete — send a log request for admins to action
     if not admin:
         p = _prefix_cache[0]
+        user_al = profile.get("anilist_user_id") if profile else None
+        user_mal = profile.get("mal_user_id") if profile else None
+        user_simkl = profile.get("simkl_user_id") if profile else None
         log_embed = discord.Embed(
             title="🗑️ Deletion Requested by Owner",
             description=(
@@ -2950,7 +2994,8 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
         log_embed.add_field(name="Title", value=entry.get("title", "N/A"), inline=True)
         log_embed.add_field(name="Type", value=media_type.title(), inline=True)
         log_embed.add_field(name="Score", value=str(entry.get("score", "N/A")), inline=True)
-        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=ctx.author.id), inline=False)
+        log_embed.add_field(name="Media IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id")), inline=False)
+        log_embed.add_field(name="User IDs", value=_ids_line(AL=user_al, MAL=user_mal, Simkl=user_simkl, DC=ctx.author.id), inline=False)
         log_embed.add_field(name="Entry Reason", value=_short_reason(entry.get("reason")), inline=False)
         log_embed.add_field(name="Admin Command", value=f"`{p}delete_entry {media_type} {entry_id}`", inline=False)
         if entry.get("poster"):
@@ -2985,7 +3030,7 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
         log_embed = discord.Embed(title="🗑️ Entry Deleted by Admin", color=0xDA3633)
         log_embed.add_field(name="Title", value=removed["title"], inline=True)
         log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} (`{ctx.author}`)", inline=True)
-        log_embed.add_field(name="IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id"), DC=ctx.author.id), inline=False)
+        log_embed.add_field(name="Media IDs", value=_ids_line(AL=removed.get("anilist_id"), MAL=removed.get("mal_id"), Simkl=removed.get("simkl_id")), inline=False)
         log_embed.add_field(name="Entry Reason", value=_short_reason(removed.get("reason")), inline=False)
         if removed.get("poster"):
             log_embed.set_thumbnail(url=removed["poster"])
@@ -3004,13 +3049,14 @@ async def prefix_delete_entry(ctx, media_type: str = None, entry_id: str = None)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="delete_reason")
-async def prefix_delete_reason(ctx, media_type: str = None, entry_id: str = None, target_discord_id: str = None):
+async def prefix_delete_reason(ctx, media_type: str = None, entry_id: str = None, *, target_user: str = None):
     """Admin-only: confirm a reason deletion request.
-    Usage: ?delete_reason <anime|manga|show|movie> <id> <target_discord_id>
+    Usage: ?delete_reason <anime|manga|show|movie> <id> <discord_id|anilist_id|mal_id|simkl_id|simkl_username>
+    Accepts any user identifier.
     """
     p = _prefix_cache[0]
-    if not media_type or not entry_id or not target_discord_id:
-        await ctx.send(f"Usage: `{p}delete_reason <anime|manga|show|movie> <id> <discord_id>`")
+    if not media_type or not entry_id or not target_user:
+        await ctx.send(f"Usage: `{p}delete_reason <anime|manga|show|movie> <id> <discord_id|anilist_id|mal_id|simkl_id|simkl_username>`")
         return
 
     media_type = media_type.lower()
@@ -3055,10 +3101,30 @@ async def prefix_delete_reason(ctx, media_type: str = None, entry_id: str = None
         entry = entries[idx]
 
     reasons = entry.get("reasons", [])
-    reason_idx = next((i for i, r in enumerate(reasons) if str(r.get("discord_id") or "") == str(target_discord_id)), None)
+
+    # ── Find the reason by matching raw_id against the entry's own data ───────
+    # No users.json needed — all identity fields are in each reason's user snapshot
+    reason_idx = _find_reason_by_any_id(reasons, target_user)
+
+    # Build display labels from the matched reason's data
+    req_discord_id = None
+    req_anilist_id = None
+    req_mal_id = None
+    req_simkl_id = None
+    req_simkl_uname = None
+    if reason_idx is not None:
+        mu = reasons[reason_idx].get("user", {})
+        req_discord_id = reasons[reason_idx].get("discord_id") or mu.get("discord", {}).get("id")
+        req_anilist_id = mu.get("anilist", {}).get("id")
+        req_mal_id = mu.get("mal", {}).get("id")
+        req_simkl_id = mu.get("simkl", {}).get("id")
+        req_simkl_uname = mu.get("simkl", {}).get("username")
+
+    resolved_label = str(req_discord_id or req_anilist_id or req_mal_id or req_simkl_id or req_simkl_uname or target_user)
+    resolved_mention = f"<@{req_discord_id}>" if req_discord_id else resolved_label
 
     if reason_idx is None:
-        await ctx.send(f"❌ No reason found for Discord ID `{target_discord_id}` on **{entry.get('title')}**.")
+        await ctx.send(f"❌ No reason found for `{target_user}` on **{entry.get('title')}**.")
         return
 
     deleted_reason = reasons[reason_idx]
@@ -3074,13 +3140,13 @@ async def prefix_delete_reason(ctx, media_type: str = None, entry_id: str = None
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
             session, filepath, entries, sha,
-            f"remove: reason for '{entry['title']}' (discord:{target_discord_id}) by {ctx.author} (admin)",
+            f"remove: reason for '{entry['title']}' ({resolved_label}) by {ctx.author} (admin)",
         )
 
     if ok:
         embed = discord.Embed(title="🗑️ Reason Deleted", color=0xDA3633)
         embed.add_field(name="Entry", value=entry["title"], inline=True)
-        embed.add_field(name="User", value=f"<@{target_discord_id}> (`{target_discord_id}`)", inline=True)
+        embed.add_field(name="User", value=resolved_mention, inline=True)
         embed.add_field(name="Deleted Reason", value=_short_reason(deleted_reason.get("text")), inline=False)
         if entry_deleted:
             embed.add_field(name="⚠️ Entry Also Removed", value="No reasons remained — full entry deleted.", inline=False)
@@ -3089,8 +3155,8 @@ async def prefix_delete_reason(ctx, media_type: str = None, entry_id: str = None
         log_embed = discord.Embed(title="🗑️ Reason Deleted by Admin", color=0xDA3633)
         log_embed.add_field(name="Entry", value=entry["title"], inline=True)
         log_embed.add_field(name="Deleted by", value=f"{ctx.author.mention} (`{ctx.author}`)", inline=True)
-        log_embed.add_field(name="Target User", value=f"<@{target_discord_id}> (`{target_discord_id}`)", inline=True)
-        log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=target_discord_id), inline=False)
+        log_embed.add_field(name="Target User", value=f"{resolved_mention} (`{resolved_label}`)", inline=True)
+        log_embed.add_field(name="IDs", value=_ids_line(AL=req_anilist_id, MAL=req_mal_id, Simkl=req_simkl_id, DC=req_discord_id), inline=False)
         log_embed.add_field(name="Deleted Reason", value=_short_reason(deleted_reason.get("text")), inline=False)
         if entry_deleted:
             log_embed.add_field(name="⚠️ Entry Also Removed", value="No reasons remained — full entry deleted.", inline=False)
@@ -3584,11 +3650,12 @@ async def _api_delete_reason(request, media_type: str):
         log_embed.add_field(name="Type",         value=media_type.title(),       inline=True)
         log_embed.add_field(name="Requested by", value=requester_label,          inline=True)
         log_embed.add_field(name="IDs",          value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="User IDs",      value=_ids_line(AL=req_anilist_id, MAL=req_mal_id, Simkl=req_simkl_id, DC=req_discord_id), inline=False)
         log_embed.add_field(name="Reason to Delete", value=_short_reason(target_reason.get("text")), inline=False)
         log_embed.add_field(name="Reasons Remaining After", value=str(len(reasons) - 1), inline=True)
         log_embed.add_field(
             name="Admin Command to Confirm",
-            value=f"`{p_prefix}delete_reason {media_type} {item_id} {req_discord_id or '?'}`",
+            value=f"`{p_prefix}delete_reason {media_type} {item_id} {req_discord_id or req_anilist_id or req_mal_id or req_simkl_id or req_simkl_uname or '?'}`",
             inline=False,
         )
         if entry.get("poster"):
@@ -3627,7 +3694,8 @@ async def _api_delete_reason(request, media_type: str):
         log_embed.add_field(name="Title",       value=entry["title"], inline=True)
         log_embed.add_field(name="Deleted by",  value=f"<@{req_discord_id}> (`{req_discord_id}`)" if req_discord_id else "API Key", inline=True)
         log_embed.add_field(name="Target User", value=resolved_author, inline=True)
-        log_embed.add_field(name="IDs",         value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
+        log_embed.add_field(name="Media IDs",   value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id")), inline=False)
+        log_embed.add_field(name="User IDs",    value=_ids_line(AL=req_anilist_id, MAL=req_mal_id, Simkl=req_simkl_id, DC=req_discord_id), inline=False)
         log_embed.add_field(name="Deleted Reason", value=_short_reason(target_reason.get("text")), inline=False)
         if entry_deleted:
             log_embed.add_field(name="\u26a0\ufe0f Entry Also Removed", value="No reasons remained — full entry deleted.", inline=False)
