@@ -442,16 +442,27 @@ async def proxy_health_check():
 # ── Bot startup (always uses ENV proxy, no waiting) ───────────────────────────
 
 async def start_bot_with_proxy():
-    global _current_proxy, _env_proxy_failed
+    global _current_proxy, _env_proxy_failed, _proxy_list
 
-    # Always start with ENV proxy — fast, reliable, no searching
-    _current_proxy = ENV_PROXY_URL
+    # Try to load saved proxy from proxies.json first
+    try:
+        async with aiohttp.ClientSession() as session:
+            saved, _ = await read_proxies(session)
+            saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
+            saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
+            age = time.time() - saved_at
+            if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
+                _proxy_list = saved_proxies
+                _current_proxy = saved_proxies[0]
+                print(f"✅ Starting bot with saved proxy from JSON: {_current_proxy} ({age/60:.0f}min old)")
+            else:
+                raise ValueError(f"No fresh saved proxies (age={age/60:.0f}min, count={len(saved_proxies)})")
+    except Exception as e:
+        # Fall back to ENV proxy
+        _current_proxy = ENV_PROXY_URL
+        print(f"⚠️ Could not load saved proxy ({e}) — falling back to ENV proxy: {_current_proxy or 'direct'}")
+
     bot.http.proxy = _current_proxy
-
-    if _current_proxy:
-        print(f"✅ Starting bot with ENV proxy: {_current_proxy}")
-    else:
-        print("⚠️ No ENV proxy set — connecting directly")
 
     retry_count = 0
     while True:
