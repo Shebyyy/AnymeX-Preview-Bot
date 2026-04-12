@@ -107,6 +107,7 @@ _env_proxy_failed = False             # True once ENV proxy is confirmed dead
 _proxy_fail_count = 0                 # consecutive failures mid-session
 
 FILE_LOG_QUEUE = "log_queue.json"  # stored in private userdata repo
+FILE_LAST_REPOPULATED = "last_repopulated.json"  # stored in private userdata repo
 
 _log_queue: list[dict] = []  # in-memory queue of serialized embeds
 
@@ -3881,12 +3882,15 @@ async def _sync_admin_flags_in_entries(
 async def _sync_admin_flags_all_community(session: aiohttp.ClientSession, admins: dict):
     users_data, _ = await read_users(session)
     identity_index = _build_identity_index(users_data)
-    for fp in (FILE_ANIME, FILE_MANGA, FILE_SHOWS, FILE_MOVIES):
+
+    async def _sync_one(fp):
         try:
             await _sync_admin_flags_in_entries(session, admins, fp, identity_index)
             print(f"✅ isAdmin sync done for {fp}")
         except Exception as e:
             print(f"⚠️ isAdmin sync failed for {fp}: {e}")
+
+    await asyncio.gather(*[_sync_one(fp) for fp in (FILE_ANIME, FILE_MANGA, FILE_SHOWS, FILE_MOVIES)])
 
 
 def _mark_admin_flag(user_snapshot: dict, admins: dict):
@@ -4856,16 +4860,7 @@ async def on_disconnect():
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     try:
-        # ── 1. Sync slash commands IMMEDIATELY — must happen before anything else ──
-        if not getattr(bot, "_synced", False):
-            try:
-                await bot.tree.sync()
-                bot._synced = True
-                print("✅ Slash commands synced")
-            except Exception as e:
-                print(f"⚠️ Failed to sync slash commands: {e}")
-
-        # ── 2. Flush any logs queued/persisted before bot was ready ──────────────
+        # ── 1. Flush any logs queued/persisted before bot was ready ──────────────
         if LOG_CHANNEL_ID:
             try:
                 ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
@@ -4904,44 +4899,54 @@ async def on_ready():
 
         # ── 5. Heavy init in background — never blocks commands ───────────────────
         async def _bg_init():
-            try:
-                print("🔄 Background init: ensure_json_files...")
-                await ensure_json_files()
-            except Exception as e:
-                print(f"⚠️ ensure_json_files failed: {e}")
+            # ── Slash command sync ────────────────────────────────────────────────
+            # Only sync when FORCE_SYNC=1 is set — commands stay registered between restarts.
+            force_sync = os.environ.get("FORCE_SYNC", "").strip() == "1"
+            if force_sync and not getattr(bot, "_synced", False):
+                try:
+                    await bot.tree.sync()
+                    bot._synced = True
+                    print("✅ Slash commands synced (FORCE_SYNC=1)")
+                except Exception as e:
+                    print(f"⚠️ Failed to sync slash commands: {e}")
+            else:
+                print("ℹ️ Skipping tree.sync() — set FORCE_SYNC=1 to re-sync after adding commands.")
 
+            # ── One-time init: ensure JSON files exist on GitHub ─────────────────
+            # Only runs if INIT_DONE flag is not set in env. After first successful
+            # run, set INIT_DONE=1 in your environment so this never runs again.
+            if os.environ.get("INIT_DONE", "").strip() != "1":
+                try:
+                    print("🔄 First-time init: ensure_json_files...")
+                    await ensure_json_files()
+                    print("✅ ensure_json_files done. Set INIT_DONE=1 in env to skip this on future restarts.")
+                except Exception as e:
+                    print(f"⚠️ ensure_json_files failed: {e}")
+            else:
+                print("ℹ️ Skipping ensure_json_files (INIT_DONE=1)")
+
+            # ── Always: load FAQ into memory (single fast read) ──────────────────
             try:
-                print("🔄 Background init: load_faq_from_github...")
+                print("🔄 Loading FAQ from GitHub...")
                 await load_faq_from_github()
             except Exception as e:
                 print(f"⚠️ load_faq_from_github failed: {e}")
 
+            # ── Repopulator: run if 7 days have passed since last run ─────────────
+            # Checks last_repopulated.json in private repo.
+            # This means deploys/restarts never cause an unnecessary full API sweep.
             try:
-                print("🔄 Background init: startup repopulator...")
-                result = await run_repopulator(triggered_by="bot startup")
-                print(f"✅ Startup repopulator done: {result}")
-                channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
-                if channel:
-                    embed = _build_repopulator_embed(result, "🚀 Startup Profile Sync Complete")
-                    await channel.send(embed=embed)
+                async with aiohttp.ClientSession() as session:
+                    ran = await _maybe_run_repopulator(session, triggered_by="startup check")
+                    if not ran:
+                        print("ℹ️ Repopulator skipped — not 7 days yet")
             except Exception as e:
-                print(f"⚠️ Startup repopulator failed: {e}")
+                print(f"⚠️ Startup repopulator check failed: {e}")
 
+            # ── Start weekly check loop ───────────────────────────────────────────
             if not weekly_repopulator.is_running():
                 weekly_repopulator.start()
                 print("✅ Weekly repopulator loop started")
-
-            try:
-                print("🔄 Background init: isAdmin flags sync...")
-                async with aiohttp.ClientSession() as session:
-                    admins, _ = await read_admins(session)
-                    if admins:
-                        await _sync_admin_flags_all_community(session, admins)
-                        print("✅ Startup isAdmin sync done")
-                    else:
-                        print("ℹ️ No admins to sync")
-            except Exception as e:
-                print(f"⚠️ Startup isAdmin sync failed: {e}")
 
         async def _bg_init_safe():
             try:
@@ -4970,24 +4975,39 @@ async def ensure_json_files():
         FILE_SERVER_CFG: {},
         FILE_VOTES: {},
     }
-    async with aiohttp.ClientSession() as session:
-        for filepath, default in files.items():
-            data, sha = await github_read_json(session, filepath)
-            if sha is None:
-                await github_write_json(
-                    session, filepath, default, None, f"init: create {filepath}"
-                )
-                print(f"✅ Created {filepath} on GitHub")
-            else:
-                print(f"✅ {filepath} already exists")
-        # Load prefixes into cache
-        prefixes, _ = await github_read_json(session, FILE_PREFIXES)
-        _prefix_cache[:] = (
-            prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
-        )
 
-    # Also ensure FILE_USERS and FILE_ADMINS exist in the private userdata repo
+    async def _ensure_one(session, filepath, default):
+        data, sha = await github_read_json(session, filepath)
+        if sha is None:
+            await github_write_json(session, filepath, default, None, f"init: create {filepath}")
+            print(f"✅ Created {filepath} on GitHub")
+        else:
+            print(f"✅ {filepath} already exists")
+        return filepath, data, sha
+
     async with aiohttp.ClientSession() as session:
+        # Read + create all main repo files in parallel
+        results = await asyncio.gather(
+            *[_ensure_one(session, fp, default) for fp, default in files.items()],
+            return_exceptions=True,
+        )
+        # Load prefixes from results (avoid a second read)
+        for r in results:
+            if isinstance(r, tuple) and r[0] == FILE_PREFIXES:
+                prefixes = r[1]
+                _prefix_cache[:] = (
+                    prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
+                )
+                break
+        else:
+            # Fallback: re-fetch if not found in results
+            prefixes, _ = await github_read_json(session, FILE_PREFIXES)
+            _prefix_cache[:] = (
+                prefixes if isinstance(prefixes, list) and prefixes else DEFAULT_PREFIXES[:]
+            )
+
+    # Also ensure FILE_USERS and FILE_ADMINS exist in the private userdata repo (parallel)
+    async def _ensure_users(session):
         users_data, users_sha = await read_users(session)
         if users_sha is None:
             await write_users(session, {}, None, f"init: create {FILE_USERS} in userdata repo")
@@ -4995,12 +5015,16 @@ async def ensure_json_files():
         else:
             print(f"✅ {FILE_USERS} already exists in userdata repo")
 
+    async def _ensure_admins(session):
         admins_data, admins_sha = await read_admins(session)
         if admins_sha is None:
             await write_admins(session, {}, None, f"init: create {FILE_ADMINS} in userdata repo")
             print(f"✅ Created {FILE_ADMINS} in userdata repo")
         else:
             print(f"✅ {FILE_ADMINS} already exists in userdata repo")
+
+    async with aiohttp.ClientSession() as session:
+        await asyncio.gather(_ensure_users(session), _ensure_admins(session), return_exceptions=True)
 
     print(f"✅ Active prefixes: {_prefix_cache}")
 
@@ -7036,6 +7060,57 @@ async def seasonal_anime(
 REPOPULATOR_CHANNEL_ID = int(os.environ.get("REPOPULATOR_CHANNEL_ID", 0))
 
 
+async def _maybe_run_repopulator(session: aiohttp.ClientSession, triggered_by: str = "system") -> bool:
+    """
+    Run the repopulator only if 7 days have passed since the last run.
+    Reads/writes last_repopulated.json in the private repo.
+    Returns True if it ran, False if skipped.
+    """
+    SEVEN_DAYS = 7 * 24 * 3600
+
+    # Read last run time from private repo
+    try:
+        data, sha = await github_read_json(session, FILE_LAST_REPOPULATED, repo=USERDATA_REPO, branch=USERDATA_BRANCH)
+        last_run = data.get("last_run", 0) if isinstance(data, dict) else 0
+    except Exception:
+        last_run = 0
+        sha = None
+
+    now = time.time()
+    elapsed = now - last_run
+    if elapsed < SEVEN_DAYS:
+        remaining_hours = (SEVEN_DAYS - elapsed) / 3600
+        print(f"ℹ️ Repopulator skipped — last run {elapsed/3600:.1f}h ago, next run in {remaining_hours:.1f}h")
+        return False
+
+    # 7 days passed — run it
+    print(f"🔄 Repopulator running ({triggered_by}) — last run {elapsed/3600:.1f}h ago")
+    result = await run_repopulator(triggered_by=triggered_by)
+    print(f"✅ Repopulator done: {result}")
+
+    # Save current time
+    try:
+        payload = {"last_run": now, "triggered_by": triggered_by}
+        await github_write_json(
+            session, FILE_LAST_REPOPULATED, payload, sha,
+            f"chore: update last_repopulated ({triggered_by})",
+            repo=USERDATA_REPO, branch=USERDATA_BRANCH,
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to save last_repopulated.json: {e}")
+
+    # Post result to repopulator channel
+    channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
+    if channel:
+        try:
+            embed = _build_repopulator_embed(result, "🔄 Profile Sync Complete")
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+    return True
+
+
 async def run_repopulator(triggered_by: str = "system") -> dict:
     """
     Re-fetches every user's AniList + MAL + Simkl profile and updates:
@@ -7412,33 +7487,17 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if updated:
                 admins_changed = True
                 result["admins_updated"] += 1
+        # ── Step 6: Write all files in parallel ───────────────────────────────
+        write_tasks = [
+            write_users(session, users, users_sha, f"chore: repopulate user profiles ({triggered_by})"),
+            github_write_json(session, FILE_ANIME, anime_entries, anime_sha, f"chore: sync anime entry usernames ({triggered_by})"),
+            github_write_json(session, FILE_MANGA, manga_entries, manga_sha, f"chore: sync manga entry usernames ({triggered_by})"),
+            github_write_json(session, FILE_SHOWS, show_entries, show_sha, f"chore: sync show entry usernames ({triggered_by})"),
+            github_write_json(session, FILE_MOVIES, movie_entries, movie_sha, f"chore: sync movie entry usernames ({triggered_by})"),
+        ]
         if admins_changed:
-            await write_admins(
-                session, admins, admins_sha,
-                f"chore: sync admin profiles from users.json ({triggered_by})"
-            )
-
-        # ── Step 6: Write all files ────────────────────────────────────────────
-        await write_users(
-            session, users, users_sha,
-            f"chore: repopulate user profiles ({triggered_by})"
-        )
-        await github_write_json(
-            session, FILE_ANIME, anime_entries, anime_sha,
-            f"chore: sync anime entry usernames ({triggered_by})"
-        )
-        await github_write_json(
-            session, FILE_MANGA, manga_entries, manga_sha,
-            f"chore: sync manga entry usernames ({triggered_by})"
-        )
-        await github_write_json(
-            session, FILE_SHOWS, show_entries, show_sha,
-            f"chore: sync show entry usernames ({triggered_by})"
-        )
-        await github_write_json(
-            session, FILE_MOVIES, movie_entries, movie_sha,
-            f"chore: sync movie entry usernames ({triggered_by})"
-        )
+            write_tasks.append(write_admins(session, admins, admins_sha, f"chore: sync admin profiles from users.json ({triggered_by})"))
+        await asyncio.gather(*write_tasks, return_exceptions=True)
 
     return result
 
@@ -7487,21 +7546,19 @@ def _build_repopulator_embed(result: dict, title: str) -> discord.Embed:
 
 # ── Weekly task (runs every Sunday at midnight UTC) ────────────────────────────
 
-@tasks.loop(hours=168)  # 168 hours = 7 days
+@tasks.loop(hours=1)  # Check every hour — actual run gated by 7-day timestamp
 async def weekly_repopulator():
-    print("🔄 Weekly repopulator running...")
-    result = await run_repopulator(triggered_by="weekly scheduler")
-    channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
-    if channel:
-        embed = _build_repopulator_embed(result, "🔄 Weekly Profile Sync Complete")
-        await channel.send(embed=embed)
-    print(f"✅ Weekly repopulator done: {result}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            ran = await _maybe_run_repopulator(session, triggered_by="weekly scheduler")
+            if not ran:
+                pass  # Not time yet — logged inside _maybe_run_repopulator
+    except Exception as e:
+        print(f"⚠️ Weekly repopulator check failed: {e}")
 
 @weekly_repopulator.before_loop
 async def before_weekly_repopulator():
     await bot.wait_until_ready()
-    # Skip the first iteration — startup already runs repopulator in on_ready
-    await asyncio.sleep(168 * 3600)
 
 
 # ── Slash command: /repopulate ─────────────────────────────────────────────────
@@ -7525,7 +7582,22 @@ async def repopulate(interaction: discord.Interaction):
     )
 
     try:
-        result = await run_repopulator(triggered_by=f"{interaction.user.display_name} (manual)")
+        triggered_by = f"{interaction.user.display_name} (manual)"
+        result = await run_repopulator(triggered_by=triggered_by)
+
+        # Update last_repopulated.json so the weekly scheduler knows this counts
+        try:
+            async with aiohttp.ClientSession() as session:
+                _, sha = await github_read_json(session, FILE_LAST_REPOPULATED, repo=USERDATA_REPO, branch=USERDATA_BRANCH)
+                await github_write_json(
+                    session, FILE_LAST_REPOPULATED,
+                    {"last_run": time.time(), "triggered_by": triggered_by},
+                    sha, f"chore: update last_repopulated ({triggered_by})",
+                    repo=USERDATA_REPO, branch=USERDATA_BRANCH,
+                )
+        except Exception as e:
+            print(f"⚠️ Failed to update last_repopulated.json after manual run: {e}")
+
         embed = _build_repopulator_embed(result, "✅ Repopulator Complete")
     except Exception as e:
         embed = discord.Embed(
@@ -8409,12 +8481,15 @@ async def fix_discord_info(interaction: discord.Interaction):
                 _mark_admin_flag(entry["user"], admins)
                 movie_updated += 1
 
-        # Step 4: write all files
-        await write_users(session, users, users_sha, "fix: backfill discord info for all users")
-        await github_write_json(session, FILE_ANIME, anime_entries, anime_sha, "fix: sync discord info in anime entries")
-        await github_write_json(session, FILE_MANGA, manga_entries, manga_sha, "fix: sync discord info in manga entries")
-        await github_write_json(session, FILE_SHOWS, show_entries, show_sha, "fix: sync discord info in show entries")
-        await github_write_json(session, FILE_MOVIES, movie_entries, movie_sha, "fix: sync discord info in movie entries")
+        # Step 4: write all files in parallel
+        await asyncio.gather(
+            write_users(session, users, users_sha, "fix: backfill discord info for all users"),
+            github_write_json(session, FILE_ANIME, anime_entries, anime_sha, "fix: sync discord info in anime entries"),
+            github_write_json(session, FILE_MANGA, manga_entries, manga_sha, "fix: sync discord info in manga entries"),
+            github_write_json(session, FILE_SHOWS, show_entries, show_sha, "fix: sync discord info in show entries"),
+            github_write_json(session, FILE_MOVIES, movie_entries, movie_sha, "fix: sync discord info in movie entries"),
+            return_exceptions=True,
+        )
 
     embed = discord.Embed(title="✅ Discord Info Fixed!", color=0x2EA043)
     embed.add_field(
@@ -8484,7 +8559,8 @@ async def main():
     global _best_proxy_lock
     _best_proxy_lock = asyncio.Lock()  # must be created inside async context
     await start_health_server()
-    await _load_log_queue()  # restore any logs saved before last crash
+    # Load log queue in background — don't delay bot connect for a GitHub call
+    asyncio.create_task(_load_log_queue())
     await start_bot_with_proxy()
 
 
