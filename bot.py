@@ -4793,7 +4793,16 @@ async def on_disconnect():
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
 
-    # ── Flush any logs queued/persisted before bot was ready ─────────────────
+    # ── 1. Sync slash commands IMMEDIATELY — must happen before anything else ──
+    if not getattr(bot, "_synced", False):
+        try:
+            await bot.tree.sync()
+            bot._synced = True
+            print("✅ Slash commands synced")
+        except Exception as e:
+            print(f"⚠️ Failed to sync slash commands: {e}")
+
+    # ── 2. Flush any logs queued/persisted before bot was ready ──────────────
     if _log_queue and LOG_CHANNEL_ID:
         try:
             ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
@@ -4801,30 +4810,20 @@ async def on_ready():
                 print(f"📤 Flushing {len(_log_queue)} queued log embeds...")
                 while _log_queue:
                     await ch.send(embed=_dict_to_embed(_log_queue.pop(0)))
-                await _persist_log_queue()  # clear GitHub queue now that they're sent
+                await _persist_log_queue()
         except Exception as e:
             print(f"⚠️ Failed to flush log queue: {type(e).__name__}: {e}")
 
-    # ── Send startup log FIRST (before GitHub calls that might hang) ──────────
+    # ── 3. Send startup log ───────────────────────────────────────────────────
     import datetime
     if LOG_CHANNEL_ID:
         try:
-            ch = bot.get_channel(LOG_CHANNEL_ID)
-            if not ch:
-                ch = await bot.fetch_channel(LOG_CHANNEL_ID)
+            ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
             if ch:
                 embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
                 embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
-                embed.add_field(
-                    name="Active Proxy",
-                    value=_current_proxy or "None (direct connection)",
-                    inline=False,
-                )
-                embed.add_field(
-                    name="Proxy Pool",
-                    value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool",
-                    inline=False,
-                )
+                embed.add_field(name="Active Proxy", value=_current_proxy or "None (direct connection)", inline=False)
+                embed.add_field(name="Proxy Pool", value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool", inline=False)
                 embed.timestamp = datetime.datetime.utcnow()
                 await ch.send(content="🟢 Bot started!", embed=embed)
         except Exception as e:
@@ -4832,9 +4831,13 @@ async def on_ready():
 
     import asyncio
 
-    # ── Background tasks — nothing blocks on_ready ─────────────────────────────
+    # ── 4. Start proxy tasks ──────────────────────────────────────────────────
+    if not proxy_health_check.is_running():
+        proxy_health_check.start()
+    asyncio.create_task(_background_proxy_finder())
+
+    # ── 5. Heavy init in background — never blocks commands ───────────────────
     async def _bg_init():
-        """Run all heavy startup tasks in background so bot stays responsive."""
         try:
             print("🔄 Background init: ensure_json_files...")
             await ensure_json_files()
@@ -4846,14 +4849,6 @@ async def on_ready():
             await load_faq_from_github()
         except Exception as e:
             print(f"⚠️ load_faq_from_github failed: {e}")
-
-        if not getattr(bot, "_synced", False):
-            try:
-                await bot.tree.sync()
-                bot._synced = True
-                print("✅ Slash commands synced")
-            except Exception as e:
-                print(f"⚠️ Failed to sync slash commands: {e}")
 
         try:
             print("🔄 Background init: startup repopulator...")
@@ -4881,10 +4876,6 @@ async def on_ready():
                     print("ℹ️ No admins to sync")
         except Exception as e:
             print(f"⚠️ Startup isAdmin sync failed: {e}")
-
-    if not proxy_health_check.is_running():
-        proxy_health_check.start()
-    asyncio.create_task(_background_proxy_finder())  # find best free proxy in background
 
     async def _bg_init_safe():
         try:
