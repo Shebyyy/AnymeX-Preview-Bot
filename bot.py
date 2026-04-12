@@ -1102,6 +1102,7 @@ async def _api_add_media(request, media_type: str):
         # Try users.json first for a full enriched snapshot
         users_data, _ = await read_users(session)
         identity_index = _build_identity_index(users_data)
+        admins, _ = await read_admins(session)
         matched_profile = None
         for _discord_id, p in users_data.items():
             if anilist_user_id and p.get("anilist_user_id") == anilist_user_id:
@@ -1140,6 +1141,8 @@ async def _api_add_media(request, media_type: str):
                     "avatar": simkl_avatar,
                 },
             }
+
+        _mark_admin_flag(user_snapshot, admins)
 
         resolved_author = (
             author
@@ -1323,6 +1326,7 @@ async def _api_add_simkl(request, media_type: str):
     async with aiohttp.ClientSession() as session:
         users_data, _ = await read_users(session)
         identity_index = _build_identity_index(users_data)
+        admins, _ = await read_admins(session)
 
     matched_profile = None
     for _discord_id, p in users_data.items():
@@ -1381,6 +1385,8 @@ async def _api_add_simkl(request, media_type: str):
             or discord_username
             or "Unknown"
         )
+
+    _mark_admin_flag(user_snapshot, admins)
 
     new_reason_obj = {
         "discord_id": str(discord_id) if discord_id else None,
@@ -2712,6 +2718,9 @@ async def admin_add(
 
         ok = await write_admins(session, admins, sha, f"admin: add {user.name} as {role_value} by {interaction.user.name}")
 
+        if ok:
+            await _sync_admin_flags_all_community(session, admins)
+
     if ok:
         embed = discord.Embed(title="✅ Bot Admin Added", color=0x2EA043)
         embed.add_field(name="User", value=f"{user.mention} (`{user.name}`)", inline=True)
@@ -2750,6 +2759,9 @@ async def admin_remove(interaction: discord.Interaction, user: discord.User):
 
         removed_record = admins.pop(target_id)
         ok = await write_admins(session, admins, sha, f"admin: remove {user.name} by {interaction.user.name}")
+
+        if ok:
+            await _sync_admin_flags_all_community(session, admins)
 
     if ok:
         embed = discord.Embed(title="✅ Bot Admin Removed", color=0xDA3633)
@@ -2900,6 +2912,7 @@ async def _api_edit_reason(request, media_type: str):
 
     if matched_profile:
         user_snapshot = _build_user_snapshot(matched_profile)
+        _mark_admin_flag(user_snapshot, admins)
         resolved_author = (
             matched_profile.get("author_name")
             or matched_profile.get("anilist_username")
@@ -3475,6 +3488,9 @@ async def api_admin_add(request):
         }
         ok = await write_admins(session, admins, sha, f"admin: add {discord_id} as {role} via API")
 
+        if ok:
+            await _sync_admin_flags_all_community(session, admins)
+
     if ok:
         return web.json_response({"success": True, "discord_id": discord_id, "role": role}, status=201)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
@@ -3498,6 +3514,9 @@ async def api_admin_remove(request):
             return web.json_response({"error": "User is not an admin"}, status=404)
         admins.pop(discord_id)
         ok = await write_admins(session, admins, sha, f"admin: remove {discord_id} via API")
+
+        if ok:
+            await _sync_admin_flags_all_community(session, admins)
 
     if ok:
         return web.json_response({"success": True, "discord_id": discord_id})
@@ -3748,7 +3767,66 @@ def _build_user_snapshot(profile: dict) -> dict:
             "id": profile.get("simkl_user_id"),
             "avatar": profile.get("simkl_avatar"),
         },
+        "isAdmin": False,
     }
+
+
+def _is_user_admin_in(admins: dict, user_snapshot: dict) -> bool:
+    snap_ids = _collect_identity_ids(user_snapshot)
+    for _discord_id, rec in admins.items():
+        admin_ids: set[str] = set()
+        if _discord_id:
+            admin_ids.add(str(_discord_id))
+        for key in ("anilist_user_id", "mal_user_id", "simkl_user_id"):
+            if rec.get(key):
+                admin_ids.add(str(rec[key]))
+        admin_uname = (rec.get("simkl_username") or "").strip().lower()
+        if admin_uname:
+            admin_ids.add(admin_uname)
+        if snap_ids & admin_ids:
+            return True
+    return False
+
+
+async def _sync_admin_flags_in_entries(
+    session: aiohttp.ClientSession,
+    admins: dict,
+    filepath: str,
+    identity_index: dict[str, set[str]] | None = None,
+):
+    entries, sha = await github_read_json(session, filepath)
+    if not isinstance(entries, list) or not entries:
+        return
+    changed = False
+    for entry in entries:
+        if entry.get("user") and isinstance(entry.get("user"), dict):
+            new_val = _is_user_admin_in(admins, entry["user"])
+            if entry["user"].get("isAdmin") != new_val:
+                entry["user"]["isAdmin"] = new_val
+                changed = True
+        for reason in entry.get("reasons", []):
+            if reason.get("user") and isinstance(reason.get("user"), dict):
+                new_val = _is_user_admin_in(admins, reason["user"])
+                if reason["user"].get("isAdmin") != new_val:
+                    reason["user"]["isAdmin"] = new_val
+                    changed = True
+    if changed:
+        await github_write_json(session, filepath, entries, sha, "auto-sync: update isAdmin flags")
+
+
+async def _sync_admin_flags_all_community(session: aiohttp.ClientSession, admins: dict):
+    users_data, _ = await read_users(session)
+    identity_index = _build_identity_index(users_data)
+    for fp in (FILE_ANIME, FILE_MANGA, FILE_SHOWS, FILE_MOVIES):
+        try:
+            await _sync_admin_flags_in_entries(session, admins, fp, identity_index)
+            print(f"✅ isAdmin sync done for {fp}")
+        except Exception as e:
+            print(f"⚠️ isAdmin sync failed for {fp}: {e}")
+
+
+def _mark_admin_flag(user_snapshot: dict, admins: dict):
+    user_snapshot["isAdmin"] = _is_user_admin_in(admins, user_snapshot)
 
 
 # ── Cross-service identity helpers ────────────────────────────────────────────
@@ -4779,6 +4857,18 @@ async def on_ready():
             weekly_repopulator.start()
             print("✅ Weekly repopulator loop started")
 
+        try:
+            print("🔄 Background init: isAdmin flags sync...")
+            async with aiohttp.ClientSession() as session:
+                admins, _ = await read_admins(session)
+                if admins:
+                    await _sync_admin_flags_all_community(session, admins)
+                    print("✅ Startup isAdmin sync done")
+                else:
+                    print("ℹ️ No admins to sync")
+        except Exception as e:
+            print(f"⚠️ Startup isAdmin sync failed: {e}")
+
     asyncio.create_task(_bg_init())
 
 async def ensure_json_files():
@@ -5070,6 +5160,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
 
     async with aiohttp.ClientSession() as session:
         users, _ = await read_users(session)
+        admins, _ = await read_admins(session)
         profile = users.get(str(interaction.user.id))
 
         if not profile:
@@ -5104,6 +5195,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     author = profile.get("author_name") or profile.get("author") or interaction.user.display_name
 
     user_snapshot = _build_user_snapshot(profile)
+    _mark_admin_flag(user_snapshot, admins)
 
     episodes = media.get("episodes")
     duration = media.get("duration")
@@ -5283,6 +5375,7 @@ async def handle_simkl_add(
 
     async with aiohttp.ClientSession() as session:
         users, _ = await read_users(session)
+        admins, _ = await read_admins(session)
 
     profile = users.get(discord_id)
     if not profile:
@@ -5317,6 +5410,7 @@ async def handle_simkl_add(
 
     author = profile.get("author_name") or interaction.user.display_name
     user_snapshot = _build_user_snapshot(profile)
+    _mark_admin_flag(user_snapshot, admins)
 
     filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
     simkl_url = f"https://simkl.com/{media_type}s/{simkl_id}"
@@ -7002,6 +7096,8 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             users[discord_id] = profile
 
         # ── Helper: match a user snapshot by any service ID ───────────────────
+        admins, admins_sha = await read_admins(session)
+
         def _match_profile(u: dict):
             al_uid = u.get("anilist", {}).get("id")
             mal_uid = u.get("mal", {}).get("id")
@@ -7038,6 +7134,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 changed = True
 
             # Update per-reason user snapshots inside reasons[]
@@ -7046,6 +7143,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 r_matched = _match_profile(r_user)
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
+                    _mark_admin_flag(reason["user"], admins)
                     changed = True
 
             media = anime_media_map.get(entry["anilist_id"])
@@ -7083,6 +7181,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 changed = True
 
             for reason in entry.get("reasons", []):
@@ -7090,6 +7189,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 r_matched = _match_profile(r_user)
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
+                    _mark_admin_flag(reason["user"], admins)
                     changed = True
 
             media = manga_media_map.get(entry["anilist_id"])
@@ -7125,6 +7225,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 changed = True
 
             for reason in entry.get("reasons", []):
@@ -7132,6 +7233,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 r_matched = _match_profile(r_user)
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
+                    _mark_admin_flag(reason["user"], admins)
                     changed = True
 
             simkl_id = entry.get("simkl_id")
@@ -7169,6 +7271,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             matched = _match_profile(entry.get("user", {}))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 changed = True
 
             for reason in entry.get("reasons", []):
@@ -7176,6 +7279,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 r_matched = _match_profile(r_user)
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
+                    _mark_admin_flag(reason["user"], admins)
                     changed = True
 
             simkl_id = entry.get("simkl_id")
@@ -8111,6 +8215,7 @@ async def fix_discord_info(interaction: discord.Interaction):
 
     async with aiohttp.ClientSession() as session:
         users, users_sha = await read_users(session)
+        admins, _ = await read_admins(session)
         anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
         manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
         show_entries, show_sha = await github_read_json(session, FILE_SHOWS)
@@ -8162,6 +8267,7 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = mal_id_to_profile[mal_uid]
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 anime_updated += 1
 
         # Step 3: update manga entries
@@ -8177,6 +8283,7 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = mal_id_to_profile[mal_uid]
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 manga_updated += 1
 
         # Step 3b: update show entries
@@ -8195,6 +8302,7 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = simkl_uname_to_profile[simkl_uname.lower()]
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 show_updated += 1
 
         # Step 3c: update movie entries
@@ -8213,6 +8321,7 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = simkl_uname_to_profile[simkl_uname.lower()]
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
+                _mark_admin_flag(entry["user"], admins)
                 movie_updated += 1
 
         # Step 4: write all files
