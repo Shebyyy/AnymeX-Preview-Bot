@@ -388,6 +388,12 @@ def get_proxy() -> str | None:
 async def handle_proxy_failure(reason: str = "unknown"):
     """Called when current proxy fails mid-session. Rotates to next in pool."""
     global _proxy_fail_count, _env_proxy_failed, _proxy_list
+
+    # Guard: if the session is already closed, don't cascade — the bot is
+    # mid-reconnect and will pick up the right proxy when it restarts.
+    if "Session is closed" in reason:
+        return
+
     _proxy_fail_count += 1
     print(f"⚠️ Proxy failure #{_proxy_fail_count} ({reason})")
 
@@ -400,11 +406,11 @@ async def handle_proxy_failure(reason: str = "unknown"):
         _proxy_list.remove(_current_proxy)
 
     new_proxy = get_proxy()
+    # Only update the proxy reference — do NOT close the session here.
+    # Closing the session on every rotation causes an instant cascade of
+    # "Session is closed" failures that burns through the entire pool
+    # before any real connection attempt is made.
     bot.http.proxy = new_proxy
-    try:
-        await bot.http.close()
-    except Exception:
-        pass
 
     print(f"🔄 Rotated to: {new_proxy or 'direct'}")
     embed = discord.Embed(title="⚠️ Proxy Failed — Rotated", color=0xe67e22)
@@ -494,6 +500,11 @@ async def start_bot_with_proxy():
             raise
         except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError,
                 aiohttp.ClientConnectorError, OSError, RuntimeError) as e:
+            # "Session is closed" means the HTTP client is mid-teardown — don't
+            # treat it as a proxy failure or we'll cascade through the entire pool.
+            if "Session is closed" in str(e):
+                await asyncio.sleep(3)
+                continue
             retry_count += 1
             old = _current_proxy
             if retry_count > 20:
@@ -514,10 +525,8 @@ async def start_bot_with_proxy():
                     _current_proxy = None
                 bot.http.proxy = _current_proxy
             print(f"⚠️ Proxy failed ({old}): {e} — rotating to {_current_proxy or 'direct'}")
-            try:
-                await bot.http.close()
-            except Exception:
-                pass
+            # Do NOT close the session here — closing on every rotation is what
+            # triggers the "Session is closed" cascade in the first place.
             await asyncio.sleep(3)
             continue
 
