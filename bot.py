@@ -357,10 +357,8 @@ async def _do_proxy_switch(new_proxy: str, pool: list[str], reason: str = ""):
             return
         _current_proxy = new_proxy
         bot.http.proxy = new_proxy
-        try:
-            await bot.http.close()
-        except Exception:
-            pass
+        # Do NOT close the session — discord.py reads bot.http.proxy per-request.
+        # Closing here is what triggers the "Session is closed" cascade.
         print(f"🚀 Proxy switched: {old or 'ENV/direct'} → {new_proxy} ({reason})")
         embed = discord.Embed(title="🚀 Proxy Switched", color=0x2ecc71)
         embed.add_field(name="Reason", value=reason, inline=False)
@@ -389,9 +387,9 @@ async def handle_proxy_failure(reason: str = "unknown"):
     """Called when current proxy fails mid-session. Rotates to next in pool."""
     global _proxy_fail_count, _env_proxy_failed, _proxy_list
 
-    # Guard: if the session is already closed, don't cascade — the bot is
-    # mid-reconnect and will pick up the right proxy when it restarts.
-    if "Session is closed" in reason:
+    # Guard: "Session is closed" means discord.py is mid-reconnect.
+    # Rotating here just cascades the error through every proxy in the pool.
+    if "Session is closed" in str(reason):
         return
 
     _proxy_fail_count += 1
@@ -406,11 +404,9 @@ async def handle_proxy_failure(reason: str = "unknown"):
         _proxy_list.remove(_current_proxy)
 
     new_proxy = get_proxy()
-    # Only update the proxy reference — do NOT close the session here.
-    # Closing the session on every rotation causes an instant cascade of
-    # "Session is closed" failures that burns through the entire pool
-    # before any real connection attempt is made.
     bot.http.proxy = new_proxy
+    # Do NOT close the session — closing on every rotation causes an instant
+    # "Session is closed" cascade that burns the entire pool in milliseconds.
 
     print(f"🔄 Rotated to: {new_proxy or 'direct'}")
     embed = discord.Embed(title="⚠️ Proxy Failed — Rotated", color=0xe67e22)
@@ -445,12 +441,12 @@ async def proxy_health_check():
         await handle_proxy_failure(reason=f"health check: {type(e).__name__}")
 
 
-# ── Bot startup (always uses ENV proxy, no waiting) ───────────────────────────
+# ── Bot startup ────────────────────────────────────────────────────────────────
 
 async def start_bot_with_proxy():
     global _current_proxy, _env_proxy_failed, _proxy_list
 
-    # Try to load saved proxy from proxies.json first
+    # Try to load saved proxy from proxies.json first; fall back to ENV
     try:
         async with aiohttp.ClientSession() as session:
             saved, _ = await read_proxies(session)
@@ -464,7 +460,6 @@ async def start_bot_with_proxy():
             else:
                 raise ValueError(f"No fresh saved proxies (age={age/60:.0f}min, count={len(saved_proxies)})")
     except Exception as e:
-        # Fall back to ENV proxy
         _current_proxy = ENV_PROXY_URL
         print(f"⚠️ Could not load saved proxy ({e}) — falling back to ENV proxy: {_current_proxy or 'direct'}")
 
@@ -491,17 +486,14 @@ async def start_bot_with_proxy():
                     bot.http.proxy = new_proxy
                     _current_proxy = new_proxy
                     print(f"🔄 Switched proxy after 429: {new_proxy}")
-                try:
-                    await bot.http.close()
-                except Exception:
-                    pass
+                # No bot.http.close() here — not needed and causes cascade
                 await asyncio.sleep(retry_after)
                 continue
             raise
         except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError,
                 aiohttp.ClientConnectorError, OSError, RuntimeError) as e:
-            # "Session is closed" means the HTTP client is mid-teardown — don't
-            # treat it as a proxy failure or we'll cascade through the entire pool.
+            # "Session is closed" = discord.py is mid-reconnect, not a proxy problem.
+            # Treating it as a failure cascades through the entire pool instantly.
             if "Session is closed" in str(e):
                 await asyncio.sleep(3)
                 continue
@@ -525,8 +517,8 @@ async def start_bot_with_proxy():
                     _current_proxy = None
                 bot.http.proxy = _current_proxy
             print(f"⚠️ Proxy failed ({old}): {e} — rotating to {_current_proxy or 'direct'}")
-            # Do NOT close the session here — closing on every rotation is what
-            # triggers the "Session is closed" cascade in the first place.
+            # No bot.http.close() — closing on every rotation is the root cause
+            # of the "Session is closed" cascade that burns through the whole pool.
             await asyncio.sleep(3)
             continue
 
