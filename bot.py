@@ -4469,10 +4469,8 @@ async def on_disconnect():
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    await ensure_json_files()
-    await load_faq_from_github()
 
-    # ── Send startup log to log channel ───────────────────────────────────────
+    # ── Send startup log FIRST (before GitHub calls that might hang) ──────────
     import datetime
     if LOG_CHANNEL_ID:
         try:
@@ -4497,20 +4495,33 @@ async def on_ready():
         except Exception as e:
             print(f"⚠️ Startup log failed: {type(e).__name__}: {e}")
 
+    import asyncio
 
-    # Sync slash commands once to avoid Cloudflare rate limiting on every restart
-    if not getattr(bot, "_synced", False):
+    # ── Background tasks — nothing blocks on_ready ─────────────────────────────
+    async def _bg_init():
+        """Run all heavy startup tasks in background so bot stays responsive."""
         try:
-            await bot.tree.sync()
-            bot._synced = True
-            print("✅ Slash commands synced")
+            print("🔄 Background init: ensure_json_files...")
+            await ensure_json_files()
         except Exception as e:
-            print(f"⚠️ Failed to sync slash commands: {e}")
+            print(f"⚠️ ensure_json_files failed: {e}")
 
-    # ── Run repopulator in background so bot stays responsive ──────────────────
-    async def _startup_repopulator():
-        print("🔄 Running startup repopulator (background)...")
         try:
+            print("🔄 Background init: load_faq_from_github...")
+            await load_faq_from_github()
+        except Exception as e:
+            print(f"⚠️ load_faq_from_github failed: {e}")
+
+        if not getattr(bot, "_synced", False):
+            try:
+                await bot.tree.sync()
+                bot._synced = True
+                print("✅ Slash commands synced")
+            except Exception as e:
+                print(f"⚠️ Failed to sync slash commands: {e}")
+
+        try:
+            print("🔄 Background init: startup repopulator...")
             result = await run_repopulator(triggered_by="bot startup")
             print(f"✅ Startup repopulator done: {result}")
             channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
@@ -4520,13 +4531,11 @@ async def on_ready():
         except Exception as e:
             print(f"⚠️ Startup repopulator failed: {e}")
 
-    import asyncio
-    asyncio.create_task(_startup_repopulator())
+        if not weekly_repopulator.is_running():
+            weekly_repopulator.start()
+            print("✅ Weekly repopulator loop started")
 
-    # ── Start weekly loop if not already running ───────────────────────────────
-    if not weekly_repopulator.is_running():
-        weekly_repopulator.start()
-        print("✅ Weekly repopulator loop started")
+    asyncio.create_task(_bg_init())
 
 async def ensure_json_files():
     """Auto-create all required JSON files on GitHub if they don't exist."""
