@@ -225,10 +225,11 @@ async def _check_proxy_with_latency(session: aiohttp.ClientSession, proxy: str, 
 
 
 async def _find_one_working_proxy() -> str | None:
-    """Fetch proxy lists, validate ALL concurrently, build rotation pool, return first working proxy.
+    """Fetch proxy lists, validate concurrently, return FIRST working proxy ASAP.
 
-    All checks run in parallel (limited by semaphore), so this takes ~8s max.
-    Builds _proxy_cycle so rotation works immediately — no fallback to ENV proxy needed.
+    Uses asyncio.wait(FIRST_COMPLETED) so we return as soon as ANY proxy passes,
+    instead of waiting for all 10,000+ to finish (which took 25+ minutes).
+    The background _background_best_proxy_finder does full validation later.
     """
     global _proxy_list, _proxy_cycle
     print("⚡ Finding working free proxies...")
@@ -239,19 +240,46 @@ async def _find_one_working_proxy() -> str | None:
                 print("⚠️ No proxies fetched from any source")
                 return None
 
-            print(f"⚡ Validating {len(unique)} proxies (concurrency={_PROXY_CHECK_CONCURRENCY})...")
+            print(f"⚡ Validating {len(unique)} proxies (concurrency={_PROXY_CHECK_CONCURRENCY}, early-exit on first success)...")
             sem = asyncio.Semaphore(_PROXY_CHECK_CONCURRENCY)
-            results = await asyncio.gather(
-                *[_check_proxy(session, p, sem) for p in unique],
-                return_exceptions=True,
-            )
-            working = [p for p in results if isinstance(p, str)]
-            if working:
-                _proxy_list = working
-                _proxy_cycle = _itertools.cycle(_proxy_list)
-                print(f"⚡ Proxy pool ready: {len(working)} working free proxies")
-                return working[0]
-            print("⚠️ No free proxies passed validation")
+
+            # Create all tasks — only 50 actually run at a time due to semaphore
+            tasks = {asyncio.ensure_future(_check_proxy(session, p, sem)): p for p in unique}
+            working = []
+            pending = set(tasks.keys())
+
+            try:
+                while pending:
+                    # Wait for at least one task to complete (with overall 15s timeout)
+                    done, pending = await asyncio.wait(
+                        pending,
+                        timeout=15,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for t in done:
+                        try:
+                            r = t.result()
+                            if isinstance(r, str):
+                                working.append(r)
+                        except Exception:
+                            pass
+                    if working:
+                        # Found at least one working proxy — return immediately!
+                        # Cancel remaining tasks (background finder will do full scan later)
+                        for t in pending:
+                            t.cancel()
+                        _proxy_list = working
+                        _proxy_cycle = _itertools.cycle(_proxy_list)
+                        print(f"⚡ Found {len(working)} working proxy(ies) — returning early (cancelled {len(pending)} pending checks)")
+                        return working[0]
+            except Exception:
+                pass
+            finally:
+                # Always cancel any leftover tasks
+                for t in pending:
+                    t.cancel()
+
+            print("⚠️ No free proxies passed validation within timeout")
     except Exception as e:
         print(f"⚠️ _find_one_working_proxy error: {e}")
     return None
