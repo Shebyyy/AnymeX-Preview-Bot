@@ -599,10 +599,10 @@ def _oauth_failure_html(service: str, reason: str = "Authorization failed or was
 
 
 # ── GitHub JSON file paths ──────────────────────────────────────────────────────
-FILE_ANIME = "underrated_anime.json"
-FILE_MANGA = "underrated_manga.json"
-FILE_SHOWS = "underrated_shows.json"
-FILE_MOVIES = "underrated_movies.json"
+FILE_ANIME = "community_anime.json"
+FILE_MANGA = "community_manga.json"
+FILE_SHOWS = "community_shows.json"
+FILE_MOVIES = "community_movies.json"
 FILE_USERS = "users.json"
 FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
@@ -5386,7 +5386,7 @@ class ConfirmView(discord.ui.View):
 
         if ok:
             embed = discord.Embed(
-                title=f"🎉 Added to underrated_{self.media_type}s!", color=0x2EA043
+                title=f"🎉 Added to community_{self.media_type}s!", color=0x2EA043
             )
             embed.add_field(name="Title", value=self.entry["title"], inline=True)
             u = self.entry.get("user", {})
@@ -8996,10 +8996,10 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
     Re-fetches every user's AniList + MAL + Simkl profile and updates:
       - users.json             (full profile refresh)
       - admins.json            (sync service IDs from users.json)
-      - underrated_anime.json  (user snapshots, poster, score, nsfw, format migration)
-      - underrated_manga.json  (same)
-      - underrated_shows.json  (same)
-      - underrated_movies.json (same)
+      - community_anime.json  (user snapshots, poster, score, nsfw, format migration)
+      - community_manga.json  (same)
+      - community_shows.json  (same)
+      - community_movies.json (same)
 
     Returns a result dict with counts for reporting.
     """
