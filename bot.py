@@ -45,6 +45,10 @@ _PROXY_USER = os.environ.get("PROXY_USER")
 _PROXY_PASS = os.environ.get("PROXY_PASS")
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
 
+# ── Private userdata repo ──────────────────────────────────────────────────────
+USERDATA_REPO = "clients-userdata"
+USERDATA_BRANCH = "main"
+
 def _short_reason(text: str, limit: int = 80) -> str:
     """Return a truncated reason for log embeds."""
     if not text:
@@ -510,11 +514,6 @@ GITHUB_REPO = "AnymeX-Preview"
 GITHUB_BRANCH = "beta"
 WORKFLOW_FILE = "beta_manual.yml"
 
-# ── Private userdata repo (tokens + user profiles) ────────────────────────────────
-# users.json is stored in a separate private repo for security (contains encrypted tokens)
-USERDATA_REPO = "clients-userdata"
-USERDATA_BRANCH = "main"
-
 GITHUB_API = "https://api.github.com"
 ANILIST_API = "https://graphql.anilist.co"
 MAL_API = "https://api.myanimelist.net/v2"
@@ -841,12 +840,76 @@ bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None
 @app_commands.default_permissions(administrator=True)
 async def switchproxy_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
+    global _proxy_list
     old = _current_proxy
-    await switch_proxy(reason=f"manual by {interaction.user}")
+
+    # Always pull fresh proxy list from GitHub so manually added proxies are seen
+    try:
+        async with aiohttp.ClientSession() as session:
+            saved, _ = await read_proxies(session)
+            fresh = saved.get("proxies", []) if isinstance(saved, dict) else []
+            if fresh:
+                _proxy_list = fresh
+                print(f"🔄 [switchproxy] Refreshed proxy list from GitHub: {len(fresh)} proxies")
+    except Exception as e:
+        print(f"⚠️ [switchproxy] Could not refresh from GitHub: {e}")
+
+    # Build candidate list — skip current, append ENV as last resort
+    candidates = [p for p in _proxy_list if p != _current_proxy]
+    if ENV_PROXY_URL and ENV_PROXY_URL != _current_proxy and ENV_PROXY_URL not in candidates:
+        candidates.append(ENV_PROXY_URL)
+
+    if not candidates:
+        await interaction.followup.send("⚠️ No other proxy available to switch to.", ephemeral=True)
+        return
+
+    # Test each candidate in order — use same URLs/timeout as health check
+    async def _quick_test(proxy: str) -> bool:
+        try:
+            async with aiohttp.ClientSession() as session:
+                for url in _PROXY_TEST_URLS:
+                    async with session.get(
+                        url,
+                        proxy=proxy,
+                        timeout=aiohttp.ClientTimeout(total=_PROXY_PASS_TIMEOUT),
+                        ssl=False,
+                    ) as resp:
+                        if resp.status not in (200, 401):
+                            return False
+            return True
+        except Exception:
+            return False
+
+    await interaction.followup.send(
+        f"🔍 Testing {len(candidates)} candidate(s)...", ephemeral=True
+    )
+
+    chosen = None
+    failed = 0
+    for proxy in candidates:
+        print(f"🔍 [switchproxy] Testing {proxy}...")
+        if await _quick_test(proxy):
+            chosen = proxy
+            print(f"✅ [switchproxy] {proxy} passed")
+            break
+        else:
+            failed += 1
+            print(f"❌ [switchproxy] {proxy} failed")
+
+    if not chosen:
+        await interaction.followup.send(
+            f"❌ All {failed} candidate(s) failed the test — proxy not switched.", ephemeral=True
+        )
+        return
+
+    await _do_proxy_switch(chosen, _proxy_list, reason=f"manual by {interaction.user}")
+
     new = _current_proxy
     embed = discord.Embed(title="🔄 Proxy Switched", color=0x2ecc71)
     embed.add_field(name="Old", value=old or "None", inline=False)
-    embed.add_field(name="New", value=new or "None (direct)", inline=False)
+    embed.add_field(name="New (tested ✅)", value=new or "None (direct)", inline=False)
+    embed.add_field(name="Skipped (failed)", value=str(failed), inline=True)
+    embed.add_field(name="Pool Size", value=str(len(_proxy_list)), inline=True)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -1239,7 +1302,7 @@ async def _api_add_media(request, media_type: str):
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
-        asyncio.ensure_future(_send_log(log_embed))
+        await _send_log(log_embed)
         status = 200 if upserted else 201
         return web.json_response({"success": True, "upserted": upserted, "entry": entry}, status=status)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
@@ -1471,7 +1534,7 @@ async def _api_add_simkl(request, media_type: str):
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
-        asyncio.ensure_future(_send_log(log_embed))
+        await _send_log(log_embed)
         status = 200 if upserted else 201
         return web.json_response({"success": True, "upserted": upserted, "entry": entry}, status=status)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
@@ -2984,7 +3047,7 @@ async def _api_edit_reason(request, media_type: str):
         log_embed.add_field(name="Old Reason", value=_short_reason(old_reason) or "*(empty)*", inline=False)
         log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
         log_embed.set_footer(text="Source: API")
-        asyncio.ensure_future(_send_log(log_embed))
+        await _send_log(log_embed)
         return web.json_response({
             "success": True,
             "title": entry["title"],
@@ -3197,7 +3260,7 @@ async def _api_delete_reason(request, media_type: str):
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
-        asyncio.ensure_future(_send_log(log_embed))
+        await _send_log(log_embed)
         return web.json_response({
             "success": True,
             "entry_deleted": entry_deleted,
@@ -4792,100 +4855,106 @@ async def on_disconnect():
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+    try:
+        # ── 1. Sync slash commands IMMEDIATELY — must happen before anything else ──
+        if not getattr(bot, "_synced", False):
+            try:
+                await bot.tree.sync()
+                bot._synced = True
+                print("✅ Slash commands synced")
+            except Exception as e:
+                print(f"⚠️ Failed to sync slash commands: {e}")
 
-    # ── 1. Sync slash commands IMMEDIATELY — must happen before anything else ──
-    if not getattr(bot, "_synced", False):
-        try:
-            await bot.tree.sync()
-            bot._synced = True
-            print("✅ Slash commands synced")
-        except Exception as e:
-            print(f"⚠️ Failed to sync slash commands: {e}")
+        # ── 2. Flush any logs queued/persisted before bot was ready ──────────────
+        if LOG_CHANNEL_ID:
+            try:
+                ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
+                if ch and _log_queue:
+                    print(f"📤 Flushing {len(_log_queue)} queued log embeds...")
+                    while _log_queue:
+                        await ch.send(embed=_dict_to_embed(_log_queue.pop(0)))
+                    await _persist_log_queue()
+            except Exception as e:
+                print(f"⚠️ Failed to flush log queue: {type(e).__name__}: {e}")
 
-    # ── 2. Flush any logs queued/persisted before bot was ready ──────────────
-    if _log_queue and LOG_CHANNEL_ID:
-        try:
-            ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
-            if ch:
-                print(f"📤 Flushing {len(_log_queue)} queued log embeds...")
-                while _log_queue:
-                    await ch.send(embed=_dict_to_embed(_log_queue.pop(0)))
-                await _persist_log_queue()
-        except Exception as e:
-            print(f"⚠️ Failed to flush log queue: {type(e).__name__}: {e}")
-
-    # ── 3. Send startup log ───────────────────────────────────────────────────
-    import datetime
-    if LOG_CHANNEL_ID:
-        try:
-            ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
-            if ch:
-                embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
-                embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
-                embed.add_field(name="Active Proxy", value=_current_proxy or "None (direct connection)", inline=False)
-                embed.add_field(name="Proxy Pool", value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool", inline=False)
-                embed.timestamp = datetime.datetime.utcnow()
-                await ch.send(content="🟢 Bot started!", embed=embed)
-        except Exception as e:
-            print(f"⚠️ Startup log failed: {type(e).__name__}: {e}")
-
-    import asyncio
-
-    # ── 4. Start proxy tasks ──────────────────────────────────────────────────
-    if not proxy_health_check.is_running():
-        proxy_health_check.start()
-    asyncio.create_task(_background_proxy_finder())
-
-    # ── 5. Heavy init in background — never blocks commands ───────────────────
-    async def _bg_init():
-        try:
-            print("🔄 Background init: ensure_json_files...")
-            await ensure_json_files()
-        except Exception as e:
-            print(f"⚠️ ensure_json_files failed: {e}")
-
-        try:
-            print("🔄 Background init: load_faq_from_github...")
-            await load_faq_from_github()
-        except Exception as e:
-            print(f"⚠️ load_faq_from_github failed: {e}")
-
-        try:
-            print("🔄 Background init: startup repopulator...")
-            result = await run_repopulator(triggered_by="bot startup")
-            print(f"✅ Startup repopulator done: {result}")
-            channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
-            if channel:
-                embed = _build_repopulator_embed(result, "🚀 Startup Profile Sync Complete")
-                await channel.send(embed=embed)
-        except Exception as e:
-            print(f"⚠️ Startup repopulator failed: {e}")
-
-        if not weekly_repopulator.is_running():
-            weekly_repopulator.start()
-            print("✅ Weekly repopulator loop started")
-
-        try:
-            print("🔄 Background init: isAdmin flags sync...")
-            async with aiohttp.ClientSession() as session:
-                admins, _ = await read_admins(session)
-                if admins:
-                    await _sync_admin_flags_all_community(session, admins)
-                    print("✅ Startup isAdmin sync done")
+        # ── 3. Send startup log ───────────────────────────────────────────────────
+        import datetime
+        if LOG_CHANNEL_ID:
+            try:
+                ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
+                if ch:
+                    embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
+                    embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
+                    embed.add_field(name="Active Proxy", value=_current_proxy or "None (direct connection)", inline=False)
+                    embed.add_field(name="Proxy Pool", value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool", inline=False)
+                    embed.timestamp = datetime.datetime.utcnow()
+                    await ch.send(content="🟢 Bot started!", embed=embed)
+                    print("✅ Startup log sent")
                 else:
-                    print("ℹ️ No admins to sync")
-        except Exception as e:
-            print(f"⚠️ Startup isAdmin sync failed: {e}")
+                    print(f"⚠️ Startup log: could not find channel {LOG_CHANNEL_ID}")
+            except Exception as e:
+                print(f"⚠️ Startup log failed: {type(e).__name__}: {e}")
 
-    async def _bg_init_safe():
-        try:
-            await asyncio.wait_for(_bg_init(), timeout=120)
-        except asyncio.TimeoutError:
-            print("⚠️ _bg_init timed out after 120s — bot is still running normally")
-        except Exception as e:
-            print(f"⚠️ _bg_init crashed: {e}")
+        import asyncio
 
-    asyncio.create_task(_bg_init_safe())
+        # ── 4. Start proxy tasks ──────────────────────────────────────────────────
+        if not proxy_health_check.is_running():
+            proxy_health_check.start()
+        asyncio.create_task(_background_proxy_finder())
+
+        # ── 5. Heavy init in background — never blocks commands ───────────────────
+        async def _bg_init():
+            try:
+                print("🔄 Background init: ensure_json_files...")
+                await ensure_json_files()
+            except Exception as e:
+                print(f"⚠️ ensure_json_files failed: {e}")
+
+            try:
+                print("🔄 Background init: load_faq_from_github...")
+                await load_faq_from_github()
+            except Exception as e:
+                print(f"⚠️ load_faq_from_github failed: {e}")
+
+            try:
+                print("🔄 Background init: startup repopulator...")
+                result = await run_repopulator(triggered_by="bot startup")
+                print(f"✅ Startup repopulator done: {result}")
+                channel = bot.get_channel(REPOPULATOR_CHANNEL_ID)
+                if channel:
+                    embed = _build_repopulator_embed(result, "🚀 Startup Profile Sync Complete")
+                    await channel.send(embed=embed)
+            except Exception as e:
+                print(f"⚠️ Startup repopulator failed: {e}")
+
+            if not weekly_repopulator.is_running():
+                weekly_repopulator.start()
+                print("✅ Weekly repopulator loop started")
+
+            try:
+                print("🔄 Background init: isAdmin flags sync...")
+                async with aiohttp.ClientSession() as session:
+                    admins, _ = await read_admins(session)
+                    if admins:
+                        await _sync_admin_flags_all_community(session, admins)
+                        print("✅ Startup isAdmin sync done")
+                    else:
+                        print("ℹ️ No admins to sync")
+            except Exception as e:
+                print(f"⚠️ Startup isAdmin sync failed: {e}")
+
+        async def _bg_init_safe():
+            try:
+                await asyncio.wait_for(_bg_init(), timeout=120)
+            except asyncio.TimeoutError:
+                print("⚠️ _bg_init timed out after 120s — bot is still running normally")
+            except Exception as e:
+                print(f"⚠️ _bg_init crashed: {e}")
+
+        asyncio.create_task(_bg_init_safe())
+
+    except Exception as e:
+        print(f"❌ on_ready crashed: {type(e).__name__}: {e}")
 
 async def ensure_json_files():
     """Auto-create all required JSON files on GitHub if they don't exist."""
