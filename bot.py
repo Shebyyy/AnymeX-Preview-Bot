@@ -230,7 +230,16 @@ async def _find_one_working_proxy() -> str | None:
     Uses asyncio.wait(FIRST_COMPLETED) so we return as soon as ANY proxy passes,
     instead of waiting for all 10,000+ to finish (which took 25+ minutes).
     The background _background_best_proxy_finder does full validation later.
+    Hard capped at 60 seconds total so startup is never blocked indefinitely.
     """
+    try:
+        return await asyncio.wait_for(_find_one_working_proxy_inner(), timeout=60)
+    except asyncio.TimeoutError:
+        print("⚡ Proxy search timed out after 60s — starting bot directly")
+        return None
+
+
+async def _find_one_working_proxy_inner() -> str | None:
     global _proxy_list, _proxy_cycle
     print("⚡ Finding working free proxies...")
     try:
@@ -326,7 +335,7 @@ async def _find_best_proxy() -> tuple[list[str], str | None] | None:
         return None
 
 
-_best_proxy_lock = asyncio.Lock()  # prevent concurrent best-proxy switches
+_best_proxy_lock: asyncio.Lock | None = None  # initialized inside main() after event loop starts
 
 
 async def _background_best_proxy_finder():
@@ -495,6 +504,14 @@ async def start_bot_with_proxy(fast_proxy: str | None = None):
         except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError, aiohttp.ClientConnectorError, OSError, RuntimeError) as e:
             # Current proxy failed — rotate to next one
             old_proxy = _current_proxy
+            retry_count += 1
+            if retry_count > 20:
+                print("❌ Too many proxy failures — connecting directly without proxy")
+                bot.http.proxy = None
+                _current_proxy = None
+                retry_count = 0
+                await asyncio.sleep(3)
+                continue
             if _proxy_cycle:
                 new_proxy = get_proxy()
             else:
@@ -4893,6 +4910,13 @@ async def on_ready():
         except Exception as e:
             print(f"⚠️ Startup isAdmin sync failed: {e}")
 
+    if not auto_rotate_proxy.is_running():
+        auto_rotate_proxy.start()
+    if not refresh_proxy_pool.is_running():
+        refresh_proxy_pool.start()
+    if not proxy_health_check.is_running():
+        proxy_health_check.start()
+
     asyncio.create_task(_bg_init())
 
 async def ensure_json_files():
@@ -8420,6 +8444,8 @@ async def on_message(message: discord.Message):
 
 
 async def main():
+    global _best_proxy_lock
+    _best_proxy_lock = asyncio.Lock()  # must be created inside async context
     await start_health_server()
 
     # Step 1: Fast — find ONE working free proxy to start immediately
@@ -8435,9 +8461,6 @@ async def main():
         print("⚠️ No proxy found at all — starting bot directly")
 
     # Step 2: Start bot immediately with whatever proxy we have
-    auto_rotate_proxy.start()
-    refresh_proxy_pool.start()
-    proxy_health_check.start()
     asyncio.create_task(_background_best_proxy_finder())  # bg: finds best proxy and switches
     await start_bot_with_proxy(fast_proxy=fast_proxy)
 
