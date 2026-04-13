@@ -6370,70 +6370,77 @@ async def build(
             value=f"`{tag_override}`" if tag_override else "Auto-detect",
             inline=True,
         )
+        embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
+        embed.description = "Build started — fetching run link…"
+
+        # Retry loop: GitHub takes a few seconds to register the new run
+        run_id = None
+        run_url = None
+        async with aiohttp.ClientSession() as session:
+            for _ in range(6):  # try up to ~12 seconds
+                await asyncio.sleep(2)
+                async with session.get(
+                    f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/runs?per_page=1&branch={GITHUB_BRANCH}",
+                    headers=gh_headers(),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        runs = data.get("workflow_runs", [])
+                        if runs and runs[0].get("status") in ("queued", "in_progress"):
+                            run_id = runs[0]["id"]
+                            run_url = runs[0]["html_url"]
+                            break
+
         embed.add_field(
             name="View Run",
-            value=f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)",
+            value=f"[Open Run]({run_url})" if run_url else f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)",
             inline=False,
         )
-        embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
-        embed.description = "Build started - use button below to cancel if needed"
 
+        if run_id:
+            embed.description = "Build started — click below to cancel if needed"
 
-        # Fetch latest run to get run ID for cancel button
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/runs?per_page=1&branch={GITHUB_BRANCH}",
-                headers=gh_headers(),
-            ) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("workflow_runs"):
-                        run_id = data["workflow_runs"][0]["id"]
+            class CancelView(discord.ui.View):
+                def __init__(self, run_id):
+                    super().__init__()
+                    self.run_id = run_id
 
-                        class CancelView(discord.ui.View):
-                            def __init__(self, run_id):
-                                super().__init__()
-                                self.run_id = run_id
+                @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red)
+                async def cancel_button(
+                    self,
+                    button_interaction: discord.Interaction,
+                    button: discord.ui.Button,
+                ):
+                    await button_interaction.response.defer()
+                    button.disabled = True
+                    button.label = "Cancelling…"
+                    await button_interaction.message.edit(view=self)
 
-                            @discord.ui.button(
-                                label="Cancel Build", style=discord.ButtonStyle.red
-                            )
-                            async def cancel_button(
-                                self,
-                                button_interaction: discord.Interaction,
-                                button: discord.ui.Button,
-                            ):
-                                await button_interaction.response.defer()
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
+                            headers=gh_headers(),
+                        ) as r:
+                            if r.status == 202:
+                                button.label = "Cancelled"
+                                await button_interaction.message.edit(view=self)
+                                await button_interaction.followup.send(
+                                    embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
+                                    ephemeral=True,
+                                )
+                            else:
+                                button.disabled = False
+                                button.label = "Cancel Build"
+                                await button_interaction.message.edit(view=self)
+                                await button_interaction.followup.send(
+                                    embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
+                                    ephemeral=True,
+                                )
 
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(
-                                        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
-                                        headers=gh_headers(),
-                                    ) as r:
-                                        if r.status == 202:
-                                            await button_interaction.followup.send(
-                                                embed=discord.Embed(
-                                                    title="✅ Build cancelled",
-                                                    color=0x2EA043,
-                                                ),
-                                                ephemeral=True,
-                                            )
-                                        else:
-                                            await button_interaction.followup.send(
-                                                embed=discord.Embed(
-                                                    title="❌ Failed to cancel build",
-                                                    color=0xDA3633,
-                                                ),
-                                                ephemeral=True,
-                                            )
-
-                        await interaction.followup.send(
-                            embed=embed, view=CancelView(run_id)
-                        )
-                        return
-
-        # Fallback if we can't get run ID
-        await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, view=CancelView(run_id))
+        else:
+            embed.description = "Build started"
+            await interaction.followup.send(embed=embed)
     else:
         embed = discord.Embed(
             title="❌ Failed to Trigger Build",
@@ -6646,7 +6653,7 @@ async def create_tag(interaction: discord.Interaction, tag: str, message: str = 
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@bot.tree.command(name="delete_tag", description="Delete a Git tag and its release")
+@bot.tree.command(name="delete_tag", description="Delete a Git tag, its release, and cancel any running build.yml")
 @app_commands.describe(tag="Tag name to delete")
 @has_allowed_role()
 async def delete_tag(interaction: discord.Interaction, tag: str):
@@ -6667,17 +6674,38 @@ async def delete_tag(interaction: discord.Interaction, tag: str):
             ) as r:
                 release_status = r.status
 
+        # Cancel any running build.yml on the beta branch
+        cancel_status = None
+        async with session.get(
+            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/build.yml/runs?per_page=1&branch={GITHUB_BRANCH}&status=in_progress",
+            headers=gh_headers(),
+        ) as r:
+            if r.status == 200:
+                runs_data = await r.json()
+                runs = runs_data.get("workflow_runs", [])
+                if runs:
+                    run_id = runs[0]["id"]
+                    async with session.post(
+                        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run_id}/cancel",
+                        headers=gh_headers(),
+                    ) as cr:
+                        cancel_status = cr.status
+
     if tag_status in (200, 204):
-        embed = discord.Embed(title="Tag Deleted!", color=0x2EA043)
+        embed = discord.Embed(title="🗑️ Beta Tag Deleted!", color=0x2EA043)
         embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
         embed.add_field(
             name="Release",
             value="Deleted" if release_status in (200, 204) else "Not found",
             inline=True,
         )
+        if cancel_status == 202:
+            embed.add_field(name="Build", value="✅ Cancelled running build.yml", inline=False)
+        elif cancel_status is not None:
+            embed.add_field(name="Build", value="⚠️ No running build found", inline=False)
     else:
         embed = discord.Embed(
-            title="Failed to Delete",
+            title="❌ Failed to Delete",
             description=f"Tag `{tag}` not found",
             color=0xDA3633,
         )
@@ -6846,7 +6874,7 @@ async def _delete_stable_tag_autocomplete(
     return choices[:25]
 
 
-@bot.tree.command(name="delete_stable_tag", description="Delete a stable Git tag and its release from RyanYuuki/AnymeX")
+@bot.tree.command(name="delete_stable_tag", description="Delete a stable Git tag, its release, and cancel any running build.yml")
 @app_commands.describe(tag="Tag name to delete")
 @app_commands.autocomplete(tag=_delete_stable_tag_autocomplete)
 @has_allowed_role()
@@ -6868,6 +6896,23 @@ async def delete_stable_tag(interaction: discord.Interaction, tag: str):
             ) as r:
                 release_status = r.status
 
+        # Cancel any running build.yml on the stable branch
+        cancel_status = None
+        async with session.get(
+            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/actions/workflows/build.yml/runs?per_page=1&branch={STABLE_BRANCH}&status=in_progress",
+            headers=gh_headers(),
+        ) as r:
+            if r.status == 200:
+                runs_data = await r.json()
+                runs = runs_data.get("workflow_runs", [])
+                if runs:
+                    run_id = runs[0]["id"]
+                    async with session.post(
+                        f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/actions/runs/{run_id}/cancel",
+                        headers=gh_headers(),
+                    ) as cr:
+                        cancel_status = cr.status
+
     if tag_status in (200, 204):
         embed = discord.Embed(title="🗑️ Stable Tag Deleted!", color=0x2EA043)
         embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
@@ -6877,6 +6922,10 @@ async def delete_stable_tag(interaction: discord.Interaction, tag: str):
             value="Deleted" if release_status in (200, 204) else "Not found",
             inline=True,
         )
+        if cancel_status == 202:
+            embed.add_field(name="Build", value="✅ Cancelled running build.yml", inline=False)
+        elif cancel_status is not None:
+            embed.add_field(name="Build", value="⚠️ No running build found", inline=False)
     else:
         embed = discord.Embed(
             title="❌ Failed to Delete",
@@ -6956,6 +7005,9 @@ async def latest_run(interaction: discord.Interaction):
                 self, button_interaction: discord.Interaction, button: discord.ui.Button
             ):
                 await button_interaction.response.defer()
+                button.disabled = True
+                button.label = "Cancelling…"
+                await button_interaction.message.edit(view=self)
 
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -6963,17 +7015,18 @@ async def latest_run(interaction: discord.Interaction):
                         headers=gh_headers(),
                     ) as r:
                         if r.status == 202:
+                            button.label = "Cancelled"
+                            await button_interaction.message.edit(view=self)
                             await button_interaction.followup.send(
-                                embed=discord.Embed(
-                                    title="✅ Run cancelled", color=0x2EA043
-                                ),
+                                embed=discord.Embed(title="✅ Run cancelled", color=0x2EA043),
                                 ephemeral=True,
                             )
                         else:
+                            button.disabled = False
+                            button.label = "Cancel Run"
+                            await button_interaction.message.edit(view=self)
                             await button_interaction.followup.send(
-                                embed=discord.Embed(
-                                    title="❌ Failed to cancel", color=0xDA3633
-                                ),
+                                embed=discord.Embed(title="❌ Failed to cancel", color=0xDA3633),
                                 ephemeral=True,
                             )
 
