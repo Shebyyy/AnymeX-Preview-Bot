@@ -6436,14 +6436,140 @@ async def build(
 # /create_tag
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── Tag suggestion helpers ────────────────────────────────────────────────────
+
+def _parse_beta_tag(tag: str) -> tuple[tuple[int, int, int], int | None] | None:
+    """
+    Parse a beta tag like v3.0.6-beta or v3.0.6+12-beta.
+    Returns ((major, minor, patch), build_number_or_None) or None if not parseable.
+    """
+    m = re.match(r"^v(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?-beta$", tag)
+    if not m:
+        return None
+    major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    build = int(m.group(4)) if m.group(4) is not None else None
+    return (major, minor, patch), build
+
+
+def _parse_stable_tag(tag: str) -> tuple[int, int, int] | None:
+    """
+    Parse a stable tag like v3.0.6.
+    Returns (major, minor, patch) or None if not parseable.
+    """
+    m = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", tag)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+async def _fetch_latest_release_tag(session: aiohttp.ClientSession, owner: str, repo: str) -> str | None:
+    """Fetch the tag name of the latest GitHub release for owner/repo."""
+    try:
+        async with session.get(
+            f"{GITHUB_API}/repos/{owner}/{repo}/releases/latest",
+            headers=gh_headers(),
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as r:
+            if r.status != 200:
+                return None
+            data = await r.json()
+            return data.get("tag_name")
+    except Exception:
+        return None
+
+
+def _suggest_next_beta_tag(stable_tag: str | None, beta_tag: str | None) -> str | None:
+    """
+    Given the latest stable tag (Ryan's repo) and latest beta tag (Sheby's repo),
+    return the suggested next beta tag.
+
+    Rules:
+    - Ryan ahead of beta base  → ryan_version-beta          (e.g. v3.0.7-beta)
+    - Ryan == beta base, no build number on beta → version+1-beta (e.g. v3.0.7+1-beta)
+    - Ryan == beta base, beta has build number   → increment build (e.g. v3.0.6+13-beta)
+    - Beta base ahead of Ryan  → increment beta build number  (e.g. v3.0.8+16-beta)
+    """
+    stable = _parse_stable_tag(stable_tag) if stable_tag else None
+    beta_parsed = _parse_beta_tag(beta_tag) if beta_tag else None
+
+    # No stable tag available — just increment beta if possible
+    if stable is None:
+        if beta_parsed is None:
+            return None
+        (ma, mi, pa), build = beta_parsed
+        next_build = (build or 0) + 1
+        return f"v{ma}.{mi}.{pa}+{next_build}-beta"
+
+    # No beta tag yet — use stable version as base
+    if beta_parsed is None:
+        ma, mi, pa = stable
+        return f"v{ma}.{mi}.{pa}-beta"
+
+    (b_ma, b_mi, b_pa), build = beta_parsed
+    s_ma, s_mi, s_pa = stable
+
+    stable_ver = (s_ma, s_mi, s_pa)
+    beta_base  = (b_ma, b_mi, b_pa)
+
+    if stable_ver > beta_base:
+        # Ryan is ahead — start fresh beta on stable version
+        return f"v{s_ma}.{s_mi}.{s_pa}-beta"
+
+    if stable_ver == beta_base:
+        if build is None:
+            # Beta is at e.g. v3.0.7-beta → suggest v3.0.7+1-beta
+            return f"v{b_ma}.{b_mi}.{b_pa}+1-beta"
+        else:
+            # Beta is at e.g. v3.0.6+12-beta → suggest v3.0.6+13-beta
+            return f"v{b_ma}.{b_mi}.{b_pa}+{build + 1}-beta"
+
+    # Beta base is ahead of stable — just increment build
+    next_build = (build or 0) + 1
+    return f"v{b_ma}.{b_mi}.{b_pa}+{next_build}-beta"
+
+
+async def _create_tag_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for the tag parameter of /create_tag."""
+    async with aiohttp.ClientSession() as session:
+        stable_tag, beta_tag = await asyncio.gather(
+            _fetch_latest_release_tag(session, "RyanYuuki", "AnymeX"),
+            _fetch_latest_release_tag(session, GITHUB_OWNER, GITHUB_REPO),
+        )
+
+    suggestion = _suggest_next_beta_tag(stable_tag, beta_tag)
+    choices: list[app_commands.Choice[str]] = []
+
+    if suggestion:
+        label = suggestion
+        if stable_tag or beta_tag:
+            parts = []
+            if stable_tag:
+                parts.append(f"stable: {stable_tag}")
+            if beta_tag:
+                parts.append(f"beta: {beta_tag}")
+            label = f"{suggestion}  ({', '.join(parts)})"
+        choices.append(app_commands.Choice(name=label, value=suggestion))
+
+    # If the user is typing something, also offer what they've typed so far
+    if current and current != suggestion:
+        choices.append(app_commands.Choice(name=current, value=current))
+
+    return choices[:25]
+
 
 @bot.tree.command(
     name="create_tag", description="Create a new Git tag on the beta branch"
 )
-@app_commands.describe(tag="Tag name (e.g. v3.0.4-alpha)", message="Tag message")
+@app_commands.describe(tag="Tag name — autocomplete will suggest the next beta version", message="Tag message (optional, defaults to tag name)")
+@app_commands.autocomplete(tag=_create_tag_autocomplete)
 @has_allowed_role()
-async def create_tag(interaction: discord.Interaction, tag: str, message: str):
+async def create_tag(interaction: discord.Interaction, tag: str, message: str = ""):
     await interaction.response.defer()
+    if not message:
+        message = tag
 
     async with aiohttp.ClientSession() as session:
         async with session.get(
