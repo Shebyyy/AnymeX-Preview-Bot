@@ -933,6 +933,7 @@ FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
 FILE_FAQ = "faq.json"
 FILE_ADMINS = "admins.json"  # stored in private userdata repo alongside users.json
+FILE_BANNED = "banned.json"  # stored in private userdata repo alongside users.json
 
 
 DEFAULT_PREFIXES = ["?"]
@@ -5128,6 +5129,10 @@ async def on_ready():
                 weekly_repopulator.start()
                 print("✅ Weekly repopulator loop started")
 
+            # ── Start mute/timeout expiry task ────────────────────────────────
+            asyncio.create_task(_mute_expiry_task())
+            print("✅ Mute/timeout expiry task started")
+
         async def _bg_init_safe():
             try:
                 await asyncio.wait_for(_bg_init(), timeout=120)
@@ -5203,8 +5208,16 @@ async def ensure_json_files():
         else:
             print(f"✅ {FILE_ADMINS} already exists in userdata repo")
 
+    async def _ensure_banned(session):
+        banned_data, banned_sha = await read_banned(session)
+        if banned_sha is None:
+            await write_banned(session, {}, None, f"init: create {FILE_BANNED} in userdata repo")
+            print(f"✅ Created {FILE_BANNED} in userdata repo")
+        else:
+            print(f"✅ {FILE_BANNED} already exists in userdata repo")
+
     async with aiohttp.ClientSession() as session:
-        await asyncio.gather(_ensure_users(session), _ensure_admins(session), return_exceptions=True)
+        await asyncio.gather(_ensure_users(session), _ensure_admins(session), _ensure_banned(session), return_exceptions=True)
 
     print(f"✅ Active prefixes: {_prefix_cache}")
 
@@ -9136,6 +9149,8 @@ async def main():
     asyncio.create_task(_load_log_queue())
     await start_bot_with_proxy()
 
+
+from moderation import *
 
 if __name__ == "__main__":
     asyncio.run(main())
