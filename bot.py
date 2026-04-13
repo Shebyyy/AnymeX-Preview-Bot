@@ -9166,3 +9166,183 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /sheby_build  — trigger sheby_alpha_manual.yml (clones Shebyyy/AnymeX)
+# ══════════════════════════════════════════════════════════════════════════════
+
+SHEBY_WORKFLOW_FILE = "sheby_alpha_manual.yml"
+SHEBY_SOURCE_REPO   = "Shebyyy/AnymeX"         # repo whose branches are listed
+
+
+async def _fetch_sheby_branches() -> list[str]:
+    """Return all branch names from Shebyyy/AnymeX via GitHub API."""
+    branches: list[str] = []
+    page = 1
+    async with aiohttp.ClientSession() as session:
+        while True:
+            async with session.get(
+                f"{GITHUB_API}/repos/{SHEBY_SOURCE_REPO}/branches?per_page=100&page={page}",
+                headers=gh_headers(),
+            ) as r:
+                if r.status != 200:
+                    break
+                data = await r.json()
+                if not data:
+                    break
+                branches.extend(b["name"] for b in data)
+                if len(data) < 100:
+                    break
+                page += 1
+    return branches
+
+
+async def _sheby_branch_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    try:
+        all_branches = await _fetch_sheby_branches()
+    except Exception:
+        all_branches = ["main"]
+
+    filtered = [b for b in all_branches if current.lower() in b.lower()]
+    # Discord allows max 25 choices
+    return [app_commands.Choice(name=b, value=b) for b in filtered[:25]]
+
+
+@bot.tree.command(name="sheby_build", description="Trigger a build from Shebyyy/AnymeX on a chosen branch")
+@app_commands.describe(
+    source_branch="Branch to clone from Shebyyy/AnymeX",
+    platforms="Platforms to build",
+    build_type="Build type",
+    pr_numbers="PR numbers (comma-separated)",
+    tag_override="Version tag override",
+)
+@app_commands.autocomplete(source_branch=_sheby_branch_autocomplete)
+@app_commands.choices(platforms=PLATFORM_CHOICES, build_type=BUILD_TYPE_CHOICES)
+@has_allowed_role()
+async def sheby_build(
+    interaction: discord.Interaction,
+    source_branch: str,
+    platforms: app_commands.Choice[str],
+    build_type: app_commands.Choice[str],
+    pr_numbers: str = "",
+    tag_override: str = "",
+):
+    await interaction.response.defer()
+
+    discord_user_id = str(interaction.user.id)
+
+    payload = {
+        "ref": GITHUB_BRANCH,
+        "inputs": {
+            "source_branch": source_branch,
+            "platforms": platforms.value,
+            "build_type": build_type.value,
+            "pr_numbers": pr_numbers,
+            "tag_override": tag_override,
+            "triggered_by": discord_user_id,
+        },
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{SHEBY_WORKFLOW_FILE}/dispatches",
+            headers=gh_headers(),
+            json=payload,
+        ) as r:
+            status = r.status
+            body = await r.text()
+
+    if status == 204:
+        embed = discord.Embed(title="🔨 Sheby Build Triggered!", color=0x2EA043)
+        embed.add_field(name="Source Repo",   value=f"`{SHEBY_SOURCE_REPO}`",   inline=True)
+        embed.add_field(name="Branch",        value=f"`{source_branch}`",       inline=True)
+        embed.add_field(name="Build Type",    value=f"`{build_type.value}`",    inline=True)
+        embed.add_field(name="Platforms",     value=f"`{platforms.value}`",     inline=True)
+        if pr_numbers:
+            embed.add_field(name="PRs", value=pr_numbers, inline=True)
+        embed.add_field(
+            name="Tag",
+            value=f"`{tag_override}`" if tag_override else "Auto-detect",
+            inline=True,
+        )
+        embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
+        embed.description = "Build started — fetching run link…"
+
+        run_id = None
+        run_url = None
+        async with aiohttp.ClientSession() as session:
+            for _ in range(6):
+                await asyncio.sleep(2)
+                async with session.get(
+                    f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{SHEBY_WORKFLOW_FILE}/runs?per_page=1&branch={GITHUB_BRANCH}",
+                    headers=gh_headers(),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        runs = data.get("workflow_runs", [])
+                        if runs and runs[0].get("status") in ("queued", "in_progress"):
+                            run_id = runs[0]["id"]
+                            run_url = runs[0]["html_url"]
+                            break
+
+        embed.add_field(
+            name="View Run",
+            value=f"[Open Run]({run_url})" if run_url else f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)",
+            inline=False,
+        )
+
+        if run_id:
+            embed.description = "Build started — click below to cancel if needed"
+
+            class ShebyBuildCancelView(discord.ui.View):
+                def __init__(self, run_id):
+                    super().__init__()
+                    self.run_id = run_id
+
+                @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red)
+                async def cancel_button(
+                    self,
+                    button_interaction: discord.Interaction,
+                    button: discord.ui.Button,
+                ):
+                    await button_interaction.response.defer()
+                    button.disabled = True
+                    button.label = "Cancelling…"
+                    await button_interaction.message.edit(view=self)
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
+                            headers=gh_headers(),
+                        ) as r:
+                            if r.status == 202:
+                                button.label = "Cancelled"
+                                await button_interaction.message.edit(view=self)
+                                await button_interaction.followup.send(
+                                    embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
+                                    ephemeral=True,
+                                )
+                            else:
+                                button.disabled = False
+                                button.label = "Cancel Build"
+                                await button_interaction.message.edit(view=self)
+                                await button_interaction.followup.send(
+                                    embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
+                                    ephemeral=True,
+                                )
+
+            await interaction.followup.send(embed=embed, view=ShebyBuildCancelView(run_id))
+        else:
+            embed.description = "Build started"
+            await interaction.followup.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            title="❌ Failed to Trigger Sheby Build",
+            description=f"**Status:** `{status}`\n```{body[:1000]}```",
+            color=0xDA3633,
+        )
+        await interaction.followup.send(embed=embed)
