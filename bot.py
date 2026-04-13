@@ -174,35 +174,15 @@ async def _load_log_queue():
 
 
 async def _send_log(embed: discord.Embed):
-    """
-    Send a log embed to LOG_CHANNEL_ID (if set).
-    - If bot is not ready yet, queues to GitHub so nothing is lost.
-    - Flushes any queued embeds before sending the new one.
-    - Never blocks the caller — all Discord sends are fire-and-forget via create_task.
-    """
+    """Send a log embed to LOG_CHANNEL_ID. Fire-and-forget, never blocks the caller."""
     if not LOG_CHANNEL_ID:
         return
 
     async def _do_send():
-        if not bot.is_ready():
-            _log_queue.append(_embed_to_dict(embed))
-            print(f"📥 Log queued (bot not ready) — queue size: {len(_log_queue)}")
-            await _persist_log_queue()
-            return
         try:
             ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
-            if not ch:
-                return
-            # Flush queued embeds first
-            while _log_queue:
-                try:
-                    await ch.send(embed=_dict_to_embed(_log_queue.pop(0)))
-                except Exception as eq:
-                    print(f"⚠️ Failed to flush queued log: {eq}")
-                    break
-            await _persist_log_queue()
-            # Send current embed
-            await ch.send(embed=embed)
+            if ch:
+                await ch.send(embed=embed)
         except Exception as e:
             print(f"⚠️ Failed to send log embed: {type(e).__name__}: {e}")
 
