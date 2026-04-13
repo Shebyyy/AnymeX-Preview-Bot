@@ -44,6 +44,7 @@ _PROXY_PORT = os.environ.get("PROXY_PORT")
 _PROXY_USER = os.environ.get("PROXY_USER")
 _PROXY_PASS = os.environ.get("PROXY_PASS")
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
+OWNER_ID = 612532963938271232  # receives proxy startup/switch DMs
 
 # ── Private userdata repo ──────────────────────────────────────────────────────
 USERDATA_REPO = "clients-userdata"
@@ -84,12 +85,22 @@ ENV_PROXY_URL = (
 #   4. Once best free proxy confirmed → switch to it + save to GitHub
 #   5. On next restart: load saved proxies from GitHub, skip slow fetch if fresh
 #
-_FREE_PROXY_SOURCES = [
-    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-    "https://vakhov.github.io/fresh-proxy-list/http.txt",
-    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+# ProxyScrape v4 JSON API — returns rich metadata (alive, uptime, timeout, protocol)
+_PROXYSCRAPE_URL = (
+    "https://api.proxyscrape.com/v4/free-proxy-list/get"
+    "?request=display_proxies&proxy_format=protocolipport&format=json"
+)
+
+# ProxyDB — HTML table scrape for HTTP/HTTPS proxies (fallback/supplement source)
+_PROXYDB_URLS = [
+    "https://proxydb.net/?protocol=http&anonlvl=1&anonlvl=2&anonlvl=3",   # HTTP
+    "https://proxydb.net/?protocol=https&anonlvl=1&anonlvl=2&anonlvl=3",  # HTTPS
 ]
+
+# Minimum quality thresholds for a proxy to be stored/used
+_PROXY_MIN_UPTIME    = 80.0   # % uptime required
+_PROXY_MAX_TIMEOUT   = 2000   # ms average timeout allowed
+_PROXY_PROTOCOLS     = {"http", "https"}
 
 FILE_PROXIES = "proxies.json"          # stored in private userdata repo
 _PROXY_TEST_URLS = [
@@ -97,9 +108,9 @@ _PROXY_TEST_URLS = [
     "https://cdn.discordapp.com/embed/avatars/0.png", # Discord CDN
 ]
 _PROXY_CHECK_CONCURRENCY = 50          # concurrent validation workers
-_PROXY_PASSES = 3                      # rounds — proxy must pass ALL test URLs each round
+_PROXY_PASSES = 2                      # rounds — proxy must pass ALL test URLs each round
 _PROXY_PASS_TIMEOUT = 6               # seconds per individual test
-_PROXY_CACHE_MAX_AGE = 1800           # treat cache stale after 30 min
+_PROXY_CACHE_MAX_AGE = 300            # treat cache stale after 5 min
 
 _proxy_list: list[str] = []           # current working pool, sorted fastest-first
 _current_proxy: str | None = None     # proxy actively in use
@@ -161,30 +172,41 @@ async def _load_log_queue():
         print(f"⚠️ Failed to load log queue: {e}")
 
 
+
 async def _send_log(embed: discord.Embed):
+    """
+    Send a log embed to LOG_CHANNEL_ID (if set).
+    - If bot is not ready yet, queues to GitHub so nothing is lost.
+    - Flushes any queued embeds before sending the new one.
+    - Never blocks the caller — all Discord sends are fire-and-forget via create_task.
+    """
     if not LOG_CHANNEL_ID:
         return
-    if not bot.is_ready():
-        _log_queue.append(_embed_to_dict(embed))
-        print(f"📥 Log queued to GitHub (bot not ready) — queue size: {len(_log_queue)}")
-        await _persist_log_queue()
-        return
-    # Flush any queued embeds first
-    if _log_queue:
+
+    async def _do_send():
+        if not bot.is_ready():
+            _log_queue.append(_embed_to_dict(embed))
+            print(f"📥 Log queued (bot not ready) — queue size: {len(_log_queue)}")
+            await _persist_log_queue()
+            return
         try:
             ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
-            if ch:
-                while _log_queue:
+            if not ch:
+                return
+            # Flush queued embeds first
+            while _log_queue:
+                try:
                     await ch.send(embed=_dict_to_embed(_log_queue.pop(0)))
-                await _persist_log_queue()  # clear the saved queue too
-        except Exception as e:
-            print(f"⚠️ Failed to flush queued log: {type(e).__name__}: {e}")
-    try:
-        ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
-        if ch:
+                except Exception as eq:
+                    print(f"⚠️ Failed to flush queued log: {eq}")
+                    break
+            await _persist_log_queue()
+            # Send current embed
             await ch.send(embed=embed)
-    except Exception as e:
-        print(f"⚠️ Failed to send log embed: {type(e).__name__}: {e}")
+        except Exception as e:
+            print(f"⚠️ Failed to send log embed: {type(e).__name__}: {e}")
+
+    asyncio.create_task(_do_send())
 
 
 # ── GitHub proxy store helpers ─────────────────────────────────────────────────
@@ -200,30 +222,138 @@ async def write_proxies(session: aiohttp.ClientSession, data: dict, sha, msg: st
     return await github_write_json(session, FILE_PROXIES, data, sha, msg, repo=USERDATA_REPO, branch=USERDATA_BRANCH)
 
 
-# ── Low-level proxy testing ────────────────────────────────────────────────────
+# ── Proxy fetching, filtering and testing ─────────────────────────────────────
 
-async def _fetch_proxy_source(session: aiohttp.ClientSession, url: str) -> list[str]:
-    """Fetch raw proxy list from one source. Returns list of http://ip:port strings."""
+async def _fetch_proxyscrape(session: aiohttp.ClientSession) -> list[str]:
+    """
+    Fetch from ProxyScrape v4 JSON API and pre-filter by quality metadata.
+    Only keeps proxies that are alive, have high uptime, and low avg timeout.
+    Returns list of proxy URL strings sorted by timeout (fastest first).
+    """
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            if resp.status == 200:
-                text = await resp.text()
-                proxies = []
-                for line in text.splitlines():
-                    line = line.strip()
-                    if line and ":" in line and not line.startswith("#"):
-                        proxy = line if line.startswith("http") else f"http://{line}"
-                        proxies.append(proxy)
-                print(f"  ✅ {url.split('/')[2]}: {len(proxies)} proxies fetched")
-                return proxies
+        async with session.get(_PROXYSCRAPE_URL, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status != 200:
+                print(f"⚠️ [ProxyScrape] Bad status {resp.status}")
+                return []
+            data = await resp.json(content_type=None)
     except Exception as e:
-        print(f"  ⚠️ Failed {url.split('/')[2]}: {e}")
-    return []
+        print(f"⚠️ [ProxyScrape] Failed to fetch: {e}")
+        return []
+
+    proxies_data = data.get("proxies", [])
+    filtered = [
+        p for p in proxies_data
+        if p.get("alive")
+        and p.get("uptime", 0) >= _PROXY_MIN_UPTIME
+        and p.get("average_timeout", 99999) <= _PROXY_MAX_TIMEOUT
+        and p.get("protocol", "").lower() in _PROXY_PROTOCOLS
+    ]
+    filtered.sort(key=lambda p: p.get("average_timeout", 99999))
+    result = [p["proxy"] for p in filtered if p.get("proxy")]
+    print(f"✅ [ProxyScrape] {len(proxies_data)} total → {len(result)} passed filter (alive, uptime≥{_PROXY_MIN_UPTIME}%, timeout≤{_PROXY_MAX_TIMEOUT}ms)")
+    return result
+
+
+async def _fetch_proxydb(session: aiohttp.ClientSession) -> list[str]:
+    """
+    Scrape ProxyDB HTML table for HTTP/HTTPS proxies.
+    Parses the IP:port table rows and returns proxy URL strings.
+    Only fetches the first page (~30 proxies per protocol) as a supplement.
+    """
+    result: list[str] = []
+    for url in _PROXYDB_URLS:
+        protocol = "https" if "protocol=https" in url else "http"
+        try:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=20),
+                headers={"User-Agent": "Mozilla/5.0"},
+            ) as resp:
+                if resp.status != 200:
+                    print(f"⚠️ [ProxyDB] Bad status {resp.status} for {url}")
+                    continue
+                html = await resp.text()
+        except Exception as e:
+            print(f"⚠️ [ProxyDB] Fetch error for {url}: {e}")
+            continue
+
+        # Each proxy row has IP and port inside <td>...<a>...</a>...</td> cells
+        td_values = re.findall(r'<td[^>]*>\s*<a[^>]*>\s*([^<]+?)\s*</a>', html)
+        proxies_found = 0
+        i = 0
+        while i + 1 < len(td_values):
+            ip_candidate = td_values[i].strip()
+            port_candidate = td_values[i + 1].strip()
+            if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', ip_candidate) and port_candidate.isdigit():
+                result.append(f"{protocol}://{ip_candidate}:{port_candidate}")
+                proxies_found += 1
+                i += 2
+            else:
+                i += 1
+        print(f"✅ [ProxyDB] Scraped {proxies_found} {protocol.upper()} proxies")
+
+    return result
+
+
+async def _fetch_and_filter_proxies(session: aiohttp.ClientSession) -> list[str]:
+    """
+    Fetch from ProxyScrape (JSON) + ProxyDB (HTML scrape), merge, deduplicate.
+    ProxyScrape results come first (pre-sorted by speed/metadata).
+    ProxyDB results are appended as supplemental candidates.
+    All proxies then go through multi-pass Discord validation in _background_proxy_finder.
+    """
+    # Run both sources concurrently
+    proxyscrape_result, proxydb_result = await asyncio.gather(
+        _fetch_proxyscrape(session),
+        _fetch_proxydb(session),
+        return_exceptions=True,
+    )
+
+    ps_proxies: list[str] = proxyscrape_result if isinstance(proxyscrape_result, list) else []
+    pd_proxies: list[str] = proxydb_result if isinstance(proxydb_result, list) else []
+
+    # Merge: ProxyDB first (priority), ProxyScrape after, deduplicated
+    seen: set[str] = set()
+    combined: list[str] = []
+    for p in pd_proxies + ps_proxies:
+        if p not in seen:
+            seen.add(p)
+            combined.append(p)
+
+    print(f"✅ [ProxyFetch] Combined: {len(pd_proxies)} ProxyDB (priority) + {len(ps_proxies)} ProxyScrape = {len(combined)} unique candidates")
+    return combined
+
+
+async def _verify_proxy(proxy: str | None) -> tuple[bool, float]:
+    """
+    Ping a proxy against both Discord URLs.
+    Returns (is_alive, avg_latency_seconds).
+    Called before rotating to confirm a proxy is actually dead, not a false alarm.
+    """
+    if not proxy:
+        return False, 0.0
+    try:
+        latencies = []
+        async with aiohttp.ClientSession() as session:
+            for _ in range(_PROXY_PASSES):
+                for url in _PROXY_TEST_URLS:
+                    t = time.monotonic()
+                    async with session.get(
+                        url, proxy=proxy,
+                        timeout=aiohttp.ClientTimeout(total=_PROXY_PASS_TIMEOUT),
+                        ssl=False,
+                    ) as resp:
+                        if resp.status not in (200, 401):
+                            return False, 0.0
+                        latencies.append(time.monotonic() - t)
+        avg = sum(latencies) / len(latencies) if latencies else 0.0
+        return True, avg
+    except Exception:
+        return False, 0.0
 
 
 async def _test_proxy_passes(session: aiohttp.ClientSession, proxy: str, sem: asyncio.Semaphore) -> tuple[str, float] | None:
-    """Test a proxy _PROXY_PASSES rounds against ALL Discord test URLs.
-    Returns (proxy, avg_latency) only if every single test passes."""
+    """Validate a single proxy with multi-pass testing. Returns (proxy, avg_latency) or None."""
     async with sem:
         latencies = []
         for _ in range(_PROXY_PASSES):
@@ -231,21 +361,20 @@ async def _test_proxy_passes(session: aiohttp.ClientSession, proxy: str, sem: as
                 try:
                     t = time.monotonic()
                     async with session.get(
-                        url,
-                        proxy=proxy,
+                        url, proxy=proxy,
                         timeout=aiohttp.ClientTimeout(total=_PROXY_PASS_TIMEOUT),
                         ssl=False,
                     ) as resp:
-                        if resp.status not in (200, 401, 200):
-                            return None  # unexpected — reject
+                        if resp.status not in (200, 401):
+                            return None
                         latencies.append(time.monotonic() - t)
                 except Exception:
-                    return None  # any failure = proxy rejected
+                    return None
         avg = sum(latencies) / len(latencies)
         return (proxy, avg)
 
 
-# ── Background proxy finder (runs after bot is already connected) ──────────────
+# ── Background proxy finder (runs every 5 min, updates GitHub repo) ──────────────
 
 _best_proxy_lock: asyncio.Lock | None = None  # initialized in main()
 
@@ -253,103 +382,93 @@ _best_proxy_lock: asyncio.Lock | None = None  # initialized in main()
 async def _background_proxy_finder():
     """
     Runs entirely in the background after bot is online.
-    1. Load saved proxies from GitHub — use best one immediately if cache is fresh
-    2. Fetch fresh proxy lists from all sources
-    3. Validate with multi-pass testing (only keeps proxies that pass every time)
-    4. Sort by speed, switch bot to fastest, save pool to GitHub
-    5. Repeat every 6 hours
+    Every 5 minutes:
+      1. Fetch ProxyDB + ProxyScrape concurrently and merge candidates (ProxyDB prioritised)
+      2. Multi-pass validate the merged list against Discord
+      3. Save top 50 to proxies.json in private GitHub repo
+      4. Switch bot to fastest proxy only if current one is confirmed dead
     """
     global _proxy_list, _current_proxy
 
     while True:
         try:
-            print("🔍 [ProxyFinder] Starting background proxy search...")
+            print("🔍 [ProxyFinder] Fetching fresh proxy list...")
             async with aiohttp.ClientSession() as session:
 
-                # Step 1: Check if we have a fresh saved pool on GitHub
-                saved, saved_sha = await read_proxies(session)
-                saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
-                saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
-                age = time.time() - saved_at
+                # Step 1: Fetch + pre-filter by metadata
+                candidates = await _fetch_and_filter_proxies(session)
+                if not candidates:
+                    print("⚠️ [ProxyFinder] No candidates after filtering — retrying in 5 min")
+                    await asyncio.sleep(300)
+                    continue
 
-                if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
-                    best = saved_proxies[0]
-                    print(f"✅ [ProxyFinder] Using cached proxy pool ({len(saved_proxies)} proxies, {age/60:.0f}min old). Best: {best}")
-                    _proxy_list = saved_proxies
-                    if best != _current_proxy:
-                        await _do_proxy_switch(best, saved_proxies, reason="cached pool loaded")
-                    # Still refresh in background after using cache
-                else:
-                    print(f"🔄 [ProxyFinder] Cache missing or stale ({age/60:.0f}min old) — fetching fresh...")
-
-                # Step 2: Fetch raw proxy lists from all sources
-                results = await asyncio.gather(
-                    *[_fetch_proxy_source(session, url) for url in _FREE_PROXY_SOURCES],
-                    return_exceptions=True,
-                )
-                merged = []
-                for r in results:
-                    if isinstance(r, list):
-                        merged.extend(r)
-                seen = set()
-                unique = [p for p in merged if not (p in seen or seen.add(p))]
-                print(f"🔍 [ProxyFinder] {len(unique)} unique proxies fetched — running multi-pass validation ({_PROXY_PASSES}x each)...")
-
-                # Step 3: Multi-pass validate all proxies concurrently
+                # Step 2: Multi-pass validate against Discord
                 sem = asyncio.Semaphore(_PROXY_CHECK_CONCURRENCY)
                 test_results = await asyncio.gather(
-                    *[_test_proxy_passes(session, p, sem) for p in unique],
+                    *[_test_proxy_passes(session, p, sem) for p in candidates],
                     return_exceptions=True,
                 )
 
-            # Step 4: Keep only proxies that passed all rounds, sort fastest-first
             working = [(p, lat) for r in test_results if isinstance(r, tuple) for p, lat in [r]]
             if not working:
-                print("⚠️ [ProxyFinder] No proxies survived multi-pass validation — keeping current proxy")
-                await asyncio.sleep(3600)
+                print("⚠️ [ProxyFinder] No proxies passed Discord validation — keeping current")
+                await asyncio.sleep(300)
                 continue
 
             working.sort(key=lambda x: x[1])
             sorted_proxies = [p for p, _ in working]
             best_proxy, best_latency = working[0]
-            print(f"✅ [ProxyFinder] {len(sorted_proxies)} proxies passed. Best: {best_proxy} ({best_latency:.2f}s avg)")
-            print(f"   Top 5: {[f'{p} ({l:.2f}s)' for p, l in working[:5]]}")
+            print(f"✅ [ProxyFinder] {len(sorted_proxies)} proxies validated. Best: {best_proxy} ({best_latency:.2f}s)")
 
             _proxy_list = sorted_proxies
 
-            # Step 5: Switch to best proxy if it's different from current
-            if best_proxy != _current_proxy:
-                await _do_proxy_switch(best_proxy, sorted_proxies, reason=f"new best ({best_latency:.2f}s avg)")
-
-            # Step 6: Save pool to GitHub for next restart
+            # Step 3: Save to GitHub
             try:
                 async with aiohttp.ClientSession() as session:
                     _, sha = await read_proxies(session)
                     payload = {
-                        "proxies": sorted_proxies[:50],  # store top 50 to keep file small
+                        "proxies": sorted_proxies[:50],
                         "best": best_proxy,
                         "best_latency": round(best_latency, 3),
                         "count": len(sorted_proxies),
                         "saved_at": time.time(),
                     }
-                    ok = await write_proxies(session, payload, sha, f"proxy: update pool ({len(sorted_proxies)} working)")
+                    ok = await write_proxies(session, payload, sha, f"proxy: refresh pool ({len(sorted_proxies)} working)")
                     if ok:
-                        print(f"✅ [ProxyFinder] Saved {len(sorted_proxies)} proxies to GitHub (proxies.json)")
+                        print(f"✅ [ProxyFinder] Saved {len(sorted_proxies)} proxies to GitHub")
                     else:
-                        print("⚠️ [ProxyFinder] Failed to save proxies to GitHub")
+                        print("⚠️ [ProxyFinder] Failed to save to GitHub")
             except Exception as e:
                 print(f"⚠️ [ProxyFinder] GitHub save error: {e}")
+
+            # Step 4: Only switch if current proxy is confirmed dead
+            if best_proxy != _current_proxy:
+                alive, _ = await _verify_proxy(_current_proxy)
+                if not alive:
+                    print(f"🔄 [ProxyFinder] Current proxy dead — switching to {best_proxy}")
+                    await _do_proxy_switch(best_proxy, sorted_proxies, reason="current proxy dead, switching to best")
+                else:
+                    print(f"✅ [ProxyFinder] Current proxy still alive — not switching")
 
         except Exception as e:
             print(f"⚠️ [ProxyFinder] Error: {e}")
 
-        # Re-run every 30 minutes — keeps pool fresh in background
-        print("⏳ [ProxyFinder] Next run in 30 minutes")
-        await asyncio.sleep(30 * 60)
+        print("⏳ [ProxyFinder] Next run in 5 minutes")
+        await asyncio.sleep(300)
+
+
+async def _dm_owner(embed: discord.Embed):
+    """Send an embed to the owner's DM. Silently ignores failures."""
+    try:
+        user = bot.get_user(OWNER_ID) or await bot.fetch_user(OWNER_ID)
+        dm = user.dm_channel or await user.create_dm()
+        await dm.send(embed=embed)
+    except Exception as e:
+        print(f"⚠️ [OwnerDM] Failed to send DM: {e}")
 
 
 async def _do_proxy_switch(new_proxy: str, pool: list[str], reason: str = ""):
-    """Switch the bot to a new proxy cleanly and log it."""
+    """Switch the bot to a new proxy and log it. Does NOT close the session."""
     global _current_proxy
     async with _best_proxy_lock:
         old = _current_proxy
@@ -357,24 +476,19 @@ async def _do_proxy_switch(new_proxy: str, pool: list[str], reason: str = ""):
             return
         _current_proxy = new_proxy
         bot.http.proxy = new_proxy
-        # Do NOT close the session — discord.py reads bot.http.proxy per-request.
-        # Closing here is what triggers the "Session is closed" cascade.
         print(f"🚀 Proxy switched: {old or 'ENV/direct'} → {new_proxy} ({reason})")
         embed = discord.Embed(title="🚀 Proxy Switched", color=0x2ecc71)
         embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Old", value=old or "ENV / direct", inline=False)
-        embed.add_field(name="New (Fastest)", value=new_proxy, inline=False)
+        embed.add_field(name="New", value=new_proxy, inline=False)
         embed.add_field(name="Pool Size", value=str(len(pool)), inline=True)
-        await _send_log(embed)
-
-
-# ── Proxy failure handling ─────────────────────────────────────────────────────
+        asyncio.create_task(_dm_owner(embed))
 
 def get_proxy() -> str | None:
-    """Return the best available proxy. Free pool first, ENV as fallback."""
+    """Return the best available proxy. Pool first, ENV as fallback."""
     global _current_proxy, _env_proxy_failed
     if _proxy_list:
-        _current_proxy = _proxy_list[0]  # always use the fastest known proxy
+        _current_proxy = _proxy_list[0]
         return _current_proxy
     if ENV_PROXY_URL and not _env_proxy_failed:
         _current_proxy = ENV_PROXY_URL
@@ -384,86 +498,147 @@ def get_proxy() -> str | None:
 
 
 async def handle_proxy_failure(reason: str = "unknown"):
-    """Called when current proxy fails mid-session. Rotates to next in pool."""
+    """Called when current proxy may have failed. Verifies before rotating."""
     global _proxy_fail_count, _env_proxy_failed, _proxy_list
 
-    # Guard: "Session is closed" means discord.py is mid-reconnect.
-    # Rotating here just cascades the error through every proxy in the pool.
+    # Session closed = discord.py is mid-reconnect, not a real proxy failure
     if "Session is closed" in str(reason):
         return
 
     _proxy_fail_count += 1
-    print(f"⚠️ Proxy failure #{_proxy_fail_count} ({reason})")
+    print(f"⚠️ Proxy failure #{_proxy_fail_count} ({reason}) — verifying proxy before rotating...")
 
+    # Confirm the proxy is actually dead before dumping it
+    alive, _ = await _verify_proxy(_current_proxy)
+    if alive:
+        print(f"✅ Proxy verified still alive — ignoring false alarm ({reason})")
+        return
+
+    print(f"❌ Proxy confirmed dead — rotating")
     if ENV_PROXY_URL and _current_proxy == ENV_PROXY_URL and not _env_proxy_failed:
         _env_proxy_failed = True
         print("⚠️ ENV proxy marked as failed")
 
-    # Drop the failed proxy from the pool so we don't retry it
     if _current_proxy and _current_proxy in _proxy_list:
         _proxy_list.remove(_current_proxy)
 
     new_proxy = get_proxy()
     bot.http.proxy = new_proxy
-    # Do NOT close the session — closing on every rotation causes an instant
-    # "Session is closed" cascade that burns the entire pool in milliseconds.
+    # No bot.http.close() — causes Session is closed cascade
 
     print(f"🔄 Rotated to: {new_proxy or 'direct'}")
     embed = discord.Embed(title="⚠️ Proxy Failed — Rotated", color=0xe67e22)
     embed.add_field(name="Reason", value=reason, inline=False)
     embed.add_field(name="New Proxy", value=new_proxy or "direct", inline=False)
     embed.add_field(name="Pool Remaining", value=str(len(_proxy_list)), inline=True)
-    await _send_log(embed)
+    asyncio.create_task(_dm_owner(embed))
 
 
 # ── Health check task ──────────────────────────────────────────────────────────
 
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=1)
 async def proxy_health_check():
-    """Ping both Discord gateway and CDN every 10 min through current proxy."""
+    """Ping current proxy every 1 min. Verify + rotate if dead."""
     if not _current_proxy:
         return
-    try:
-        async with aiohttp.ClientSession() as session:
-            for url in _PROXY_TEST_URLS:
-                async with session.get(
-                    url,
-                    proxy=_current_proxy,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                    ssl=False,
-                ) as resp:
-                    if resp.status not in (200, 401):
-                        print(f"⚠️ Proxy health check bad status {resp.status} for {url}")
-                        await handle_proxy_failure(reason=f"health check bad status {resp.status}")
-                        return
-    except Exception as e:
-        print(f"⚠️ Proxy health check failed: {e}")
-        await handle_proxy_failure(reason=f"health check: {type(e).__name__}")
-
-
+    alive, latency = await _verify_proxy(_current_proxy)
+    if alive:
+        print(f"✅ [HealthCheck] Proxy alive ({latency:.2f}s): {_current_proxy}")
+    else:
+        print(f"❌ [HealthCheck] Proxy dead: {_current_proxy} — rotating")
+        await handle_proxy_failure(reason="health check: proxy dead")
 # ── Bot startup ────────────────────────────────────────────────────────────────
 
 async def start_bot_with_proxy():
     global _current_proxy, _env_proxy_failed, _proxy_list
 
-    # Try to load saved proxy from proxies.json first; fall back to ENV
+    # Startup proxy priority:
+    #   1. ProxyDB — fetch a fresh page and verify the first working proxy
+    #   2. ENV proxy — if ProxyDB returns nothing usable
+    #   3. Saved proxies.json (GitHub cache) — last resort if both above fail
+
+    # ── Step 1: Try ProxyDB ────────────────────────────────────────────────────
     try:
         async with aiohttp.ClientSession() as session:
-            saved, _ = await read_proxies(session)
-            saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
-            saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
-            age = time.time() - saved_at
-            if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
-                _proxy_list = saved_proxies
-                _current_proxy = saved_proxies[0]
-                print(f"✅ Starting bot with saved proxy from JSON: {_current_proxy} ({age/60:.0f}min old)")
+            proxydb_candidates = await _fetch_proxydb(session)
+        if proxydb_candidates:
+            print(f"🔍 [Startup] Verifying ProxyDB candidates ({len(proxydb_candidates)} found)...")
+            for p in proxydb_candidates:
+                alive, lat = await _verify_proxy(p)
+                if alive:
+                    _proxy_list = proxydb_candidates
+                    _current_proxy = p
+                    print(f"✅ [Startup] Using ProxyDB proxy: {_current_proxy} ({lat:.2f}s)")
+                    break
             else:
-                raise ValueError(f"No fresh saved proxies (age={age/60:.0f}min, count={len(saved_proxies)})")
+                raise ValueError("No ProxyDB proxy passed verification")
+        else:
+            raise ValueError("ProxyDB returned no candidates")
     except Exception as e:
-        _current_proxy = ENV_PROXY_URL
-        print(f"⚠️ Could not load saved proxy ({e}) — falling back to ENV proxy: {_current_proxy or 'direct'}")
+        print(f"⚠️ [Startup] ProxyDB failed ({e}) — trying ENV proxy...")
+
+        # ── Step 2: Try ENV proxy ──────────────────────────────────────────────
+        if ENV_PROXY_URL:
+            alive, lat = await _verify_proxy(ENV_PROXY_URL)
+            if alive:
+                _current_proxy = ENV_PROXY_URL
+                print(f"✅ [Startup] Using ENV proxy: {_current_proxy} ({lat:.2f}s)")
+            else:
+                _env_proxy_failed = True
+                print(f"⚠️ [Startup] ENV proxy is dead — trying saved proxies...")
+
+                # ── Step 3: Fall back to saved proxies.json ────────────────────
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        saved, _ = await read_proxies(session)
+                        saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
+                        saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
+                        age = time.time() - saved_at
+                        if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
+                            for p in saved_proxies:
+                                alive, lat = await _verify_proxy(p)
+                                if alive:
+                                    _proxy_list = saved_proxies
+                                    _current_proxy = p
+                                    print(f"✅ [Startup] Using saved proxy: {_current_proxy} ({lat:.2f}s, {age/60:.0f}min old)")
+                                    break
+                            else:
+                                raise ValueError("All saved proxies are dead")
+                        else:
+                            raise ValueError(f"Cache stale or empty (age={age/60:.0f}min)")
+                except Exception as e2:
+                    _current_proxy = None
+                    print(f"⚠️ [Startup] All proxy sources failed ({e2}) — running direct (no proxy)")
+        else:
+            # No ENV proxy configured at all — go straight to saved
+            try:
+                async with aiohttp.ClientSession() as session:
+                    saved, _ = await read_proxies(session)
+                    saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
+                    saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
+                    age = time.time() - saved_at
+                    if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
+                        for p in saved_proxies:
+                            alive, lat = await _verify_proxy(p)
+                            if alive:
+                                _proxy_list = saved_proxies
+                                _current_proxy = p
+                                print(f"✅ [Startup] Using saved proxy: {_current_proxy} ({lat:.2f}s)")
+                                break
+                        else:
+                            raise ValueError("All saved proxies are dead")
+                    else:
+                        raise ValueError(f"Cache stale or empty (age={age/60:.0f}min)")
+            except Exception as e2:
+                _current_proxy = None
+                print(f"⚠️ [Startup] All proxy sources failed ({e2}) — running direct (no proxy)")
 
     bot.http.proxy = _current_proxy
+
+    # DM owner with startup proxy info
+    startup_embed = discord.Embed(title="🟢 Bot Starting", color=0x3498db)
+    startup_embed.add_field(name="Proxy", value=_current_proxy or "direct (no proxy)", inline=False)
+    asyncio.create_task(_dm_owner(startup_embed))
 
     retry_count = 0
     while True:
@@ -480,20 +655,22 @@ async def start_bot_with_proxy():
                 retry_after = retry_after or min(60 * (2 ** retry_count), 600)
                 retry_count += 1
                 print(f"⚠️ Rate limited (attempt {retry_count}). Waiting {retry_after:.0f}s...")
-                # On 429, try next proxy from pool if available
                 if _proxy_list:
                     new_proxy = _proxy_list[0]
                     bot.http.proxy = new_proxy
                     _current_proxy = new_proxy
                     print(f"🔄 Switched proxy after 429: {new_proxy}")
-                # No bot.http.close() here — not needed and causes cascade
+                    rl_embed = discord.Embed(title="⚠️ Rate Limited — Proxy Switched", color=0xe74c3c)
+                    rl_embed.add_field(name="Wait", value=f"{retry_after:.0f}s", inline=True)
+                    rl_embed.add_field(name="Attempt", value=str(retry_count), inline=True)
+                    rl_embed.add_field(name="New Proxy", value=new_proxy, inline=False)
+                    asyncio.create_task(_dm_owner(rl_embed))
                 await asyncio.sleep(retry_after)
                 continue
             raise
         except (aiohttp.ClientHttpProxyError, aiohttp.ClientProxyConnectionError,
                 aiohttp.ClientConnectorError, OSError, RuntimeError) as e:
-            # "Session is closed" = discord.py is mid-reconnect, not a proxy problem.
-            # Treating it as a failure cascades through the entire pool instantly.
+            # Session is closed = discord.py mid-reconnect, not a proxy failure
             if "Session is closed" in str(e):
                 await asyncio.sleep(3)
                 continue
@@ -505,7 +682,6 @@ async def start_bot_with_proxy():
                 _current_proxy = None
                 retry_count = 0
             else:
-                # Try next from pool, else mark ENV dead and go direct
                 if _proxy_list and _current_proxy in _proxy_list:
                     _proxy_list.remove(_current_proxy)
                 if _proxy_list:
@@ -517,11 +693,9 @@ async def start_bot_with_proxy():
                     _current_proxy = None
                 bot.http.proxy = _current_proxy
             print(f"⚠️ Proxy failed ({old}): {e} — rotating to {_current_proxy or 'direct'}")
-            # No bot.http.close() — closing on every rotation is the root cause
-            # of the "Session is closed" cascade that burns through the whole pool.
+            # No bot.http.close() here
             await asyncio.sleep(3)
             continue
-
 GITHUB_OWNER = "Shebyyy"
 GITHUB_REPO = "AnymeX-Preview"
 GITHUB_BRANCH = "beta"
@@ -4884,23 +5058,18 @@ async def on_ready():
             except Exception as e:
                 print(f"⚠️ Failed to flush log queue: {type(e).__name__}: {e}")
 
-        # ── 3. Send startup log ───────────────────────────────────────────────────
+        # ── 3. Send startup log to owner DM ──────────────────────────────────────
         import datetime
-        if LOG_CHANNEL_ID:
-            try:
-                ch = bot.get_channel(LOG_CHANNEL_ID) or await bot.fetch_channel(LOG_CHANNEL_ID)
-                if ch:
-                    embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
-                    embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
-                    embed.add_field(name="Active Proxy", value=_current_proxy or "None (direct connection)", inline=False)
-                    embed.add_field(name="Proxy Pool", value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool", inline=False)
-                    embed.timestamp = datetime.datetime.utcnow()
-                    await ch.send(content="🟢 Bot started!", embed=embed)
-                    print("✅ Startup log sent")
-                else:
-                    print(f"⚠️ Startup log: could not find channel {LOG_CHANNEL_ID}")
-            except Exception as e:
-                print(f"⚠️ Startup log failed: {type(e).__name__}: {e}")
+        try:
+            embed = discord.Embed(title="🟢 Bot Started", color=0x2ecc71)
+            embed.add_field(name="Logged in as", value=str(bot.user), inline=False)
+            embed.add_field(name="Active Proxy", value=_current_proxy or "None (direct connection)", inline=False)
+            embed.add_field(name="Proxy Pool", value=f"{len(_proxy_list)} proxies loaded" if _proxy_list else "No proxy pool", inline=False)
+            embed.timestamp = datetime.datetime.utcnow()
+            asyncio.create_task(_dm_owner(embed))
+            print("✅ Startup DM queued to owner")
+        except Exception as e:
+            print(f"⚠️ Startup DM failed: {type(e).__name__}: {e}")
 
         import asyncio
 
