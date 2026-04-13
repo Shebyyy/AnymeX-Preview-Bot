@@ -681,6 +681,10 @@ GITHUB_REPO = "AnymeX-Preview"
 GITHUB_BRANCH = "beta"
 WORKFLOW_FILE = "beta_manual.yml"
 
+STABLE_OWNER = "RyanYuuki"
+STABLE_REPO = "AnymeX"
+STABLE_BRANCH = "main"
+
 GITHUB_API = "https://api.github.com"
 ANILIST_API = "https://graphql.anilist.co"
 MAL_API = "https://api.myanimelist.net/v2"
@@ -6668,6 +6672,208 @@ async def delete_tag(interaction: discord.Interaction, tag: str):
         embed = discord.Embed(
             title="Failed to Delete",
             description=f"Tag `{tag}` not found",
+            color=0xDA3633,
+        )
+
+    await interaction.followup.send(embed=embed)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /create_stable_tag + /delete_stable_tag — Stable release tagging (RyanYuuki/AnymeX)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _suggest_stable_tags(latest: str | None) -> list[tuple[str, str]]:
+    """
+    Given the latest stable tag (e.g. v3.0.9), return up to 4 suggestions:
+      - major bump:  v(X+1).0.0
+      - minor bump:  vX.(Y+1).0
+      - patch bump:  vX.Y.(Z+1)
+      - hotfix:      vX.Y.Z-hotfix
+    Returns list of (value, label) tuples.
+    """
+    if not latest:
+        return [("v1.0.0", "v1.0.0  (first release)")]
+
+    parsed = _parse_stable_tag(latest)
+    if not parsed:
+        return []
+
+    ma, mi, pa = parsed
+    return [
+        (f"v{ma+1}.0.0",        f"v{ma+1}.0.0  (major bump)"),
+        (f"v{ma}.{mi+1}.0",     f"v{ma}.{mi+1}.0  (minor bump)"),
+        (f"v{ma}.{mi}.{pa+1}",  f"v{ma}.{mi}.{pa+1}  (patch bump)"),
+        (f"v{ma}.{mi}.{pa}-hotfix", f"v{ma}.{mi}.{pa}-hotfix  (hotfix)"),
+    ]
+
+
+async def _create_stable_tag_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for /create_stable_tag — suggests major/minor/patch/hotfix."""
+    async with aiohttp.ClientSession() as session:
+        latest = await _fetch_latest_release_tag(session, STABLE_OWNER, STABLE_REPO)
+
+    suggestions = _suggest_stable_tags(latest)
+    choices: list[app_commands.Choice[str]] = []
+
+    for value, label in suggestions:
+        if not current or current.lower() in value.lower():
+            choices.append(app_commands.Choice(name=label, value=value))
+
+    # Always include what the user is typing if it doesn't match any suggestion
+    if current and not any(s[0] == current for s in suggestions):
+        choices.append(app_commands.Choice(name=current, value=current))
+
+    return choices[:25]
+
+
+@bot.tree.command(
+    name="create_stable_tag", description="Create a new stable release tag on RyanYuuki/AnymeX"
+)
+@app_commands.describe(
+    tag="Tag name — autocomplete suggests next version",
+    message="Tag message (optional, defaults to tag name)",
+)
+@app_commands.autocomplete(tag=_create_stable_tag_autocomplete)
+@has_allowed_role()
+async def create_stable_tag(interaction: discord.Interaction, tag: str, message: str = ""):
+    await interaction.response.defer()
+    if not message:
+        message = tag
+
+    async with aiohttp.ClientSession() as session:
+        # Get latest commit SHA on stable branch
+        async with session.get(
+            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/git/ref/heads/{STABLE_BRANCH}",
+            headers=gh_headers(),
+        ) as r:
+            status = r.status
+            ref_data = await r.json()
+        if status != 200:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="❌ Branch not found",
+                    description=ref_data.get("message"),
+                    color=0xDA3633,
+                )
+            )
+            return
+
+        sha = ref_data["object"]["sha"]
+
+        # Create annotated tag object
+        async with session.post(
+            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/git/tags",
+            headers=gh_headers(),
+            json={"tag": tag, "message": message, "object": sha, "type": "commit"},
+        ) as r:
+            status = r.status
+            tag_data = await r.json()
+        if status not in (200, 201):
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="❌ Tag creation failed",
+                    description=tag_data.get("message"),
+                    color=0xDA3633,
+                )
+            )
+            return
+
+        # Create the ref pointing to the tag object
+        async with session.post(
+            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/git/refs",
+            headers=gh_headers(),
+            json={"ref": f"refs/tags/{tag}", "sha": tag_data["sha"]},
+        ) as r:
+            status = r.status
+            ref_result = await r.json()
+
+    if status in (200, 201):
+        embed = discord.Embed(title="🏷️ Stable Tag Created!", color=0x2EA043)
+        embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
+        embed.add_field(name="Repo", value=f"`{STABLE_OWNER}/{STABLE_REPO}`", inline=True)
+        embed.add_field(name="Branch", value=f"`{STABLE_BRANCH}`", inline=True)
+        embed.add_field(name="SHA", value=f"`{sha[:7]}`", inline=True)
+        embed.add_field(name="Message", value=message, inline=False)
+        embed.set_footer(text=f"Created by {interaction.user.display_name}")
+    else:
+        embed = discord.Embed(
+            title="❌ Ref creation failed",
+            description=ref_result.get("message"),
+            color=0xDA3633,
+        )
+    await interaction.followup.send(embed=embed)
+
+
+# ── Stable tag autocomplete for delete ────────────────────────────────────────
+
+async def _delete_stable_tag_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for /delete_stable_tag — lists recent stable tags."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/tags?per_page=10",
+                headers=gh_headers(),
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    return []
+                tags = await r.json()
+        except Exception:
+            return []
+
+    choices = []
+    for t in tags:
+        name = t.get("name", "")
+        if not current or current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+
+    if current and not any(c.value == current for c in choices):
+        choices.append(app_commands.Choice(name=current, value=current))
+
+    return choices[:25]
+
+
+@bot.tree.command(name="delete_stable_tag", description="Delete a stable Git tag and its release from RyanYuuki/AnymeX")
+@app_commands.describe(tag="Tag name to delete")
+@app_commands.autocomplete(tag=_delete_stable_tag_autocomplete)
+@has_allowed_role()
+async def delete_stable_tag(interaction: discord.Interaction, tag: str):
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(
+            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/git/refs/tags/{tag}",
+            headers=gh_headers(),
+        ) as r:
+            tag_status = r.status
+
+        release_status = 404
+        if tag_status in (200, 204):
+            async with session.delete(
+                f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/releases/tags/{tag}",
+                headers=gh_headers(),
+            ) as r:
+                release_status = r.status
+
+    if tag_status in (200, 204):
+        embed = discord.Embed(title="🗑️ Stable Tag Deleted!", color=0x2EA043)
+        embed.add_field(name="Tag", value=f"`{tag}`", inline=True)
+        embed.add_field(name="Repo", value=f"`{STABLE_OWNER}/{STABLE_REPO}`", inline=True)
+        embed.add_field(
+            name="Release",
+            value="Deleted" if release_status in (200, 204) else "Not found",
+            inline=True,
+        )
+    else:
+        embed = discord.Embed(
+            title="❌ Failed to Delete",
+            description=f"Tag `{tag}` not found in `{STABLE_OWNER}/{STABLE_REPO}`",
             color=0xDA3633,
         )
 
