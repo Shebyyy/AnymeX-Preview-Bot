@@ -9141,34 +9141,7 @@ async def on_message(message: discord.Message):
             return  # skip process_commands for this message
 
 
-async def main():
-    global _best_proxy_lock
-    _best_proxy_lock = asyncio.Lock()  # must be created inside async context
 
-    # Register moderation commands AFTER all referenced functions are defined
-    import moderation
-    moderation.setup(
-        bot,
-        github_read_json_fn=github_read_json,
-        github_write_json_fn=github_write_json,
-        userdata_repo=USERDATA_REPO,
-        userdata_branch=USERDATA_BRANCH,
-        read_users_fn=read_users,
-        is_bot_admin_fn=is_bot_admin,
-        send_log_fn=_send_log,
-    )
-
-    await start_health_server()
-    # Load log queue in background — don't delay bot connect for a GitHub call
-    asyncio.create_task(_load_log_queue())
-    await start_bot_with_proxy()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # /sheby_build  — trigger sheby_alpha_manual.yml (clones Shebyyy/AnymeX)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -9346,3 +9319,32 @@ async def sheby_build(
             color=0xDA3633,
         )
         await interaction.followup.send(embed=embed)
+
+async def main():
+    global _best_proxy_lock
+    _best_proxy_lock = asyncio.Lock()  # must be created inside async context
+
+    # Register moderation commands AFTER all referenced functions are defined
+    import moderation
+    moderation.setup(
+        bot,
+        github_read_json_fn=github_read_json,
+        github_write_json_fn=github_write_json,
+        userdata_repo=USERDATA_REPO,
+        userdata_branch=USERDATA_BRANCH,
+        read_users_fn=read_users,
+        is_bot_admin_fn=is_bot_admin,
+        send_log_fn=_send_log,
+    )
+
+    await start_health_server()
+    # Load log queue in background — don't delay bot connect for a GitHub call
+    asyncio.create_task(_load_log_queue())
+    await start_bot_with_proxy()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
