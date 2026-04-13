@@ -10,6 +10,15 @@ import discord
 from discord import app_commands
 from datetime import datetime, timezone
 
+# Import names from bot.py — safe because bot.py defines `bot` on line 999
+# *before* `from moderation import *` on line 1001, so the `bot` module is
+# already partially loaded in sys.modules when this runs.
+from bot import (
+    bot, github_read_json, github_write_json,
+    USERDATA_REPO, USERDATA_BRANCH, read_users,
+    is_bot_admin, _send_log,
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
