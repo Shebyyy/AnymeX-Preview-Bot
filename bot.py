@@ -998,6 +998,8 @@ async def get_prefix(bot, message):
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
+from moderation import *
+
 # ── /config_role ───────────────────────────────────────────────────────────────
 
 
@@ -9149,8 +9151,6 @@ async def main():
     asyncio.create_task(_load_log_queue())
     await start_bot_with_proxy()
 
-
-from moderation import *
 
 if __name__ == "__main__":
     asyncio.run(main())
