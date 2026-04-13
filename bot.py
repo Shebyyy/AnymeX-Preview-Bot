@@ -998,7 +998,8 @@ async def get_prefix(bot, message):
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
-from moderation import *
+import moderation
+moderation.setup(bot)
 
 # ── /config_role ───────────────────────────────────────────────────────────────
 
@@ -5132,7 +5133,7 @@ async def on_ready():
                 print("✅ Weekly repopulator loop started")
 
             # ── Start mute/timeout expiry task ────────────────────────────────
-            asyncio.create_task(_mute_expiry_task())
+            asyncio.create_task(moderation._mute_expiry_task())
             print("✅ Mute/timeout expiry task started")
 
         async def _bg_init_safe():
@@ -5211,9 +5212,9 @@ async def ensure_json_files():
             print(f"✅ {FILE_ADMINS} already exists in userdata repo")
 
     async def _ensure_banned(session):
-        banned_data, banned_sha = await read_banned(session)
+        banned_data, banned_sha = await moderation.read_banned(session)
         if banned_sha is None:
-            await write_banned(session, {}, None, f"init: create {FILE_BANNED} in userdata repo")
+            await moderation.write_banned(session, {}, None, f"init: create {FILE_BANNED} in userdata repo")
             print(f"✅ Created {FILE_BANNED} in userdata repo")
         else:
             print(f"✅ {FILE_BANNED} already exists in userdata repo")

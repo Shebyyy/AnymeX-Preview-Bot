@@ -1,6 +1,19 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # moderation.py  —  Ban / Unban / Mute / Unmute / Timeout / Untimeout
 # ══════════════════════════════════════════════════════════════════════════════
+#
+# Uses a setup(bot) pattern to avoid circular imports with bot.py.
+# bot.py must change line 1001 from:
+#     from moderation import *
+# to:
+#     import moderation
+#     moderation.setup(bot)
+#     from moderation import read_banned, write_banned
+# And line 5135 from:
+#     asyncio.create_task(_mute_expiry_task())
+# to:
+#     asyncio.create_task(moderation._mute_expiry_task())
+# ══════════════════════════════════════════════════════════════════════════════
 
 import re
 import time
@@ -10,14 +23,18 @@ import discord
 from discord import app_commands
 from datetime import datetime, timezone
 
-# Import names from bot.py — safe because bot.py defines `bot` on line 999
-# *before* `from moderation import *` on line 1001, so the `bot` module is
-# already partially loaded in sys.modules when this runs.
-from bot import (
-    bot, github_read_json, github_write_json,
-    USERDATA_REPO, USERDATA_BRANCH, read_users,
-    is_bot_admin, _send_log,
-)
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level stubs — populated by setup() from bot.py references
+# ─────────────────────────────────────────────────────────────────────────────
+
+_bot = None
+_github_read_json = None
+_github_write_json = None
+_USERDATA_REPO = None
+_USERDATA_BRANCH = None
+_read_users = None
+_is_bot_admin = None
+_send_log = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,9 +104,8 @@ def _fmt_duration(seconds: float) -> str:
 
 async def read_banned(session: aiohttp.ClientSession) -> tuple[dict, str | None]:
     """Read banned.json from private userdata repo. Returns (data, sha)."""
-    # github_read_json / USERDATA_REPO / USERDATA_BRANCH come from bot.py scope
-    data, sha = await github_read_json(
-        session, FILE_BANNED, repo=USERDATA_REPO, branch=USERDATA_BRANCH
+    data, sha = await _github_read_json(
+        session, FILE_BANNED, repo=_USERDATA_REPO, branch=_USERDATA_BRANCH
     )
     if not isinstance(data, dict):
         data = {}
@@ -102,9 +118,9 @@ async def write_banned(
     sha: str | None,
     message: str,
 ) -> bool:
-    return await github_write_json(
+    return await _github_write_json(
         session, FILE_BANNED, data, sha, message,
-        repo=USERDATA_REPO, branch=USERDATA_BRANCH,
+        repo=_USERDATA_REPO, branch=_USERDATA_BRANCH,
     )
 
 
@@ -160,7 +176,7 @@ async def _search_users_for_mod(query: str) -> list[dict]:
     Returns up to 25 matches.
     """
     async with aiohttp.ClientSession() as session:
-        users, _ = await read_users(session)  # read_users from bot.py
+        users, _ = await _read_users(session)
 
     q = query.lower().strip()
     results = []
@@ -411,7 +427,7 @@ class ModerationConfirmView(discord.ui.View):
         # For removals (unban/unmute/untimeout), ban_record holds the old record
         if dm_discord_id:
             try:
-                target_user = await bot.fetch_user(int(dm_discord_id))
+                target_user = await _bot.fetch_user(int(dm_discord_id))
                 dm_messages = {
                     "ban":       "🔨 You have been **banned** from accessing community recommendations, including all related slash commands on our Discord server and the community features within the AnymeX app.",
                     "unban":     "✅ Your ban has been **lifted**. You can now access community recommendations, including all related slash commands on our Discord server and the community features within the AnymeX app.",
@@ -457,7 +473,7 @@ class ModerationConfirmView(discord.ui.View):
                 else:
                     log.add_field(name="Duration", value="Permanent", inline=True)
 
-        await _send_log(log)  # _send_log from bot.py
+        await _send_log(log)
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -475,19 +491,13 @@ class ModerationConfirmView(discord.ui.View):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /ban_user
+# Command functions (registered by setup() below)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@bot.tree.command(name="ban_user", description="Ban a user from community recommendations")
-@app_commands.describe(
-    user="Search and select the user to ban",
-    reason="Reason for the ban",
-)
-@app_commands.autocomplete(user=mod_user_autocomplete)
-async def ban_user(interaction: discord.Interaction, user: str, reason: str):
+async def _cmd_ban_user(interaction: discord.Interaction, user: str, reason: str):
     await interaction.response.defer(ephemeral=True)
 
-    if not await is_bot_admin(interaction.user.id):
+    if not await _is_bot_admin(interaction.user.id):
         await interaction.followup.send("❌ Only bot admins can use this command.", ephemeral=True)
         return
 
@@ -559,17 +569,10 @@ async def ban_user(interaction: discord.Interaction, user: str, reason: str):
     await interaction.followup.send(embed=preview, view=view, ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /unban_user
-# ─────────────────────────────────────────────────────────────────────────────
-
-@bot.tree.command(name="unban_user", description="Unban a user from community recommendations")
-@app_commands.describe(user="Search and select the user to unban")
-@app_commands.autocomplete(user=mod_user_autocomplete)
-async def unban_user(interaction: discord.Interaction, user: str):
+async def _cmd_unban_user(interaction: discord.Interaction, user: str):
     await interaction.response.defer(ephemeral=True)
 
-    if not await is_bot_admin(interaction.user.id):
+    if not await _is_bot_admin(interaction.user.id):
         await interaction.followup.send("❌ Only bot admins can use this command.", ephemeral=True)
         return
 
@@ -619,20 +622,7 @@ async def unban_user(interaction: discord.Interaction, user: str):
     await interaction.followup.send(embed=preview, view=view, ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /mute_user
-# ─────────────────────────────────────────────────────────────────────────────
-
-@bot.tree.command(name="mute_user", description="Mute a user from community recommendations (temporary or permanent)")
-@app_commands.describe(
-    user="Search and select the user to mute",
-    reason="Reason for the mute",
-    duration_preset="Pick a preset duration",
-    duration_custom="Or type a custom duration: e.g. 90m, 2h30m, 3d (overrides preset)",
-)
-@app_commands.autocomplete(user=mod_user_autocomplete)
-@app_commands.choices(duration_preset=_DURATION_PRESETS)
-async def mute_user(
+async def _cmd_mute_user(
     interaction: discord.Interaction,
     user: str,
     reason: str,
@@ -641,7 +631,7 @@ async def mute_user(
 ):
     await interaction.response.defer(ephemeral=True)
 
-    if not await is_bot_admin(interaction.user.id):
+    if not await _is_bot_admin(interaction.user.id):
         await interaction.followup.send("❌ Only bot admins can use this command.", ephemeral=True)
         return
 
@@ -728,17 +718,10 @@ async def mute_user(
     await interaction.followup.send(embed=preview, view=view, ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /unmute_user
-# ─────────────────────────────────────────────────────────────────────────────
-
-@bot.tree.command(name="unmute_user", description="Unmute a user from community recommendations")
-@app_commands.describe(user="Search and select the user to unmute")
-@app_commands.autocomplete(user=mod_user_autocomplete)
-async def unmute_user(interaction: discord.Interaction, user: str):
+async def _cmd_unmute_user(interaction: discord.Interaction, user: str):
     await interaction.response.defer(ephemeral=True)
 
-    if not await is_bot_admin(interaction.user.id):
+    if not await _is_bot_admin(interaction.user.id):
         await interaction.followup.send("❌ Only bot admins can use this command.", ephemeral=True)
         return
 
@@ -788,20 +771,7 @@ async def unmute_user(interaction: discord.Interaction, user: str):
     await interaction.followup.send(embed=preview, view=view, ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /timeout_user  (bot/API timeout only — does NOT apply Discord server timeout)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@bot.tree.command(name="timeout_user", description="Timeout a user from community recommendations (temporary)")
-@app_commands.describe(
-    user="Search and select the user to timeout",
-    reason="Reason for the timeout",
-    duration_preset="Pick a preset duration",
-    duration_custom="Or type a custom duration: e.g. 90m, 2h30m, 3d",
-)
-@app_commands.autocomplete(user=mod_user_autocomplete)
-@app_commands.choices(duration_preset=_DURATION_PRESETS)
-async def timeout_user(
+async def _cmd_timeout_user(
     interaction: discord.Interaction,
     user: str,
     reason: str,
@@ -810,7 +780,7 @@ async def timeout_user(
 ):
     await interaction.response.defer(ephemeral=True)
 
-    if not await is_bot_admin(interaction.user.id):
+    if not await _is_bot_admin(interaction.user.id):
         await interaction.followup.send("❌ Only bot admins can use this command.", ephemeral=True)
         return
 
@@ -887,17 +857,10 @@ async def timeout_user(
     await interaction.followup.send(embed=preview, view=view, ephemeral=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /untimeout_user
-# ─────────────────────────────────────────────────────────────────────────────
-
-@bot.tree.command(name="untimeout_user", description="Lift a timeout from a user for community recommendations")
-@app_commands.describe(user="Search and select the user to remove timeout from")
-@app_commands.autocomplete(user=mod_user_autocomplete)
-async def untimeout_user(interaction: discord.Interaction, user: str):
+async def _cmd_untimeout_user(interaction: discord.Interaction, user: str):
     await interaction.response.defer(ephemeral=True)
 
-    if not await is_bot_admin(interaction.user.id):
+    if not await _is_bot_admin(interaction.user.id):
         await interaction.followup.send("❌ Only bot admins can use this command.", ephemeral=True)
         return
 
@@ -959,8 +922,6 @@ async def untimeout_user(interaction: discord.Interaction, user: str):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auto-expiry background task
-# Start this in on_ready inside _bg_init() with:
-#   asyncio.create_task(_mute_expiry_task())
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _mute_expiry_task():
@@ -969,8 +930,8 @@ async def _mute_expiry_task():
     Finds expired mute/timeout records in banned.json, removes them,
     and sends a log embed for each.
     """
-    await bot.wait_until_ready()
-    while not bot.is_closed():
+    await _bot.wait_until_ready()
+    while not _bot.is_closed():
         await asyncio.sleep(60)
         try:
             now = time.time()
@@ -1034,3 +995,98 @@ async def _mute_expiry_task():
 
         except Exception as e:
             print(f"⚠️ [MuteExpiry] Error: {type(e).__name__}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# setup() — Call this from bot.py after bot is created
+# ─────────────────────────────────────────────────────────────────────────────
+
+def setup(bot_instance):
+    """
+    Wire up bot.py references and register all slash commands.
+    Call from bot.py after `bot = commands.Bot(...)`:
+
+        import moderation
+        moderation.setup(bot)
+        from moderation import read_banned, write_banned
+    """
+    global _bot, _github_read_json, _github_write_json, _USERDATA_REPO, _USERDATA_BRANCH
+    global _read_users, _is_bot_admin, _send_log
+
+    _bot               = bot_instance
+    _github_read_json  = bot_instance.__class__.__module__ and __import__('bot').github_read_json
+    _github_write_json = __import__('bot').github_write_json
+    _USERDATA_REPO     = __import__('bot').USERDATA_REPO
+    _USERDATA_BRANCH   = __import__('bot').USERDATA_BRANCH
+    _read_users        = __import__('bot').read_users
+    _is_bot_admin      = __import__('bot').is_bot_admin
+    _send_log          = __import__('bot')._send_log
+
+    # ── /ban_user ──────────────────────────────────────────────────────────
+    @bot_instance.tree.command(name="ban_user", description="Ban a user from community recommendations")
+    @app_commands.describe(
+        user="Search and select the user to ban",
+        reason="Reason for the ban",
+    )
+    @app_commands.autocomplete(user=mod_user_autocomplete)
+    async def ban_user(interaction: discord.Interaction, user: str, reason: str):
+        await _cmd_ban_user(interaction, user, reason)
+
+    # ── /unban_user ────────────────────────────────────────────────────────
+    @bot_instance.tree.command(name="unban_user", description="Unban a user from community recommendations")
+    @app_commands.describe(user="Search and select the user to unban")
+    @app_commands.autocomplete(user=mod_user_autocomplete)
+    async def unban_user(interaction: discord.Interaction, user: str):
+        await _cmd_unban_user(interaction, user)
+
+    # ── /mute_user ────────────────────────────────────────────────────────
+    @bot_instance.tree.command(name="mute_user", description="Mute a user from community recommendations (temporary or permanent)")
+    @app_commands.describe(
+        user="Search and select the user to mute",
+        reason="Reason for the mute",
+        duration_preset="Pick a preset duration",
+        duration_custom="Or type a custom duration: e.g. 90m, 2h30m, 3d (overrides preset)",
+    )
+    @app_commands.autocomplete(user=mod_user_autocomplete)
+    @app_commands.choices(duration_preset=_DURATION_PRESETS)
+    async def mute_user(
+        interaction: discord.Interaction,
+        user: str,
+        reason: str,
+        duration_preset: app_commands.Choice[str] = None,
+        duration_custom: str = None,
+    ):
+        await _cmd_mute_user(interaction, user, reason, duration_preset, duration_custom)
+
+    # ── /unmute_user ──────────────────────────────────────────────────────
+    @bot_instance.tree.command(name="unmute_user", description="Unmute a user from community recommendations")
+    @app_commands.describe(user="Search and select the user to unmute")
+    @app_commands.autocomplete(user=mod_user_autocomplete)
+    async def unmute_user(interaction: discord.Interaction, user: str):
+        await _cmd_unmute_user(interaction, user)
+
+    # ── /timeout_user ─────────────────────────────────────────────────────
+    @bot_instance.tree.command(name="timeout_user", description="Timeout a user from community recommendations (temporary)")
+    @app_commands.describe(
+        user="Search and select the user to timeout",
+        reason="Reason for the timeout",
+        duration_preset="Pick a preset duration",
+        duration_custom="Or type a custom duration: e.g. 90m, 2h30m, 3d",
+    )
+    @app_commands.autocomplete(user=mod_user_autocomplete)
+    @app_commands.choices(duration_preset=_DURATION_PRESETS)
+    async def timeout_user(
+        interaction: discord.Interaction,
+        user: str,
+        reason: str,
+        duration_preset: app_commands.Choice[str] = None,
+        duration_custom: str = None,
+    ):
+        await _cmd_timeout_user(interaction, user, reason, duration_preset, duration_custom)
+
+    # ── /untimeout_user ───────────────────────────────────────────────────
+    @bot_instance.tree.command(name="untimeout_user", description="Lift a timeout from a user for community recommendations")
+    @app_commands.describe(user="Search and select the user to remove timeout from")
+    @app_commands.autocomplete(user=mod_user_autocomplete)
+    async def untimeout_user(interaction: discord.Interaction, user: str):
+        await _cmd_untimeout_user(interaction, user)
