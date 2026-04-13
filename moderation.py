@@ -2,17 +2,13 @@
 # moderation.py  —  Ban / Unban / Mute / Unmute / Timeout / Untimeout
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Uses a setup(bot) pattern to avoid circular imports with bot.py.
+# Uses a setup(bot, **refs) pattern to avoid circular imports with bot.py.
 # bot.py must change line 1001 from:
 #     from moderation import *
 # to:
 #     import moderation
-#     moderation.setup(bot)
-#     from moderation import read_banned, write_banned
-# And line 5135 from:
-#     asyncio.create_task(_mute_expiry_task())
-# to:
-#     asyncio.create_task(moderation._mute_expiry_task())
+#     moderation.setup(bot, github_read_json_fn=github_read_json, ...)
+# And use moderation.xxx for read_banned, write_banned, _mute_expiry_task etc.
 # ══════════════════════════════════════════════════════════════════════════════
 
 import re
@@ -1001,26 +997,44 @@ async def _mute_expiry_task():
 # setup() — Call this from bot.py after bot is created
 # ─────────────────────────────────────────────────────────────────────────────
 
-def setup(bot_instance):
+def setup(
+    bot_instance,
+    *,
+    github_read_json_fn,
+    github_write_json_fn,
+    userdata_repo,
+    userdata_branch,
+    read_users_fn,
+    is_bot_admin_fn,
+    send_log_fn,
+):
     """
     Wire up bot.py references and register all slash commands.
     Call from bot.py after `bot = commands.Bot(...)`:
 
         import moderation
-        moderation.setup(bot)
-        from moderation import read_banned, write_banned
+        moderation.setup(
+            bot,
+            github_read_json_fn=github_read_json,
+            github_write_json_fn=github_write_json,
+            userdata_repo=USERDATA_REPO,
+            userdata_branch=USERDATA_BRANCH,
+            read_users_fn=read_users,
+            is_bot_admin_fn=is_bot_admin,
+            send_log_fn=_send_log,
+        )
     """
     global _bot, _github_read_json, _github_write_json, _USERDATA_REPO, _USERDATA_BRANCH
     global _read_users, _is_bot_admin, _send_log
 
     _bot               = bot_instance
-    _github_read_json  = bot_instance.__class__.__module__ and __import__('bot').github_read_json
-    _github_write_json = __import__('bot').github_write_json
-    _USERDATA_REPO     = __import__('bot').USERDATA_REPO
-    _USERDATA_BRANCH   = __import__('bot').USERDATA_BRANCH
-    _read_users        = __import__('bot').read_users
-    _is_bot_admin      = __import__('bot').is_bot_admin
-    _send_log          = __import__('bot')._send_log
+    _github_read_json  = github_read_json_fn
+    _github_write_json = github_write_json_fn
+    _USERDATA_REPO     = userdata_repo
+    _USERDATA_BRANCH   = userdata_branch
+    _read_users        = read_users_fn
+    _is_bot_admin      = is_bot_admin_fn
+    _send_log          = send_log_fn
 
     # ── /ban_user ──────────────────────────────────────────────────────────
     @bot_instance.tree.command(name="ban_user", description="Ban a user from community recommendations")

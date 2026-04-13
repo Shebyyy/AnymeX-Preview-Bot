@@ -999,7 +999,16 @@ async def get_prefix(bot, message):
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
 
 import moderation
-moderation.setup(bot)
+moderation.setup(
+    bot,
+    github_read_json_fn=github_read_json,
+    github_write_json_fn=github_write_json,
+    userdata_repo=USERDATA_REPO,
+    userdata_branch=USERDATA_BRANCH,
+    read_users_fn=read_users,
+    is_bot_admin_fn=is_bot_admin,
+    send_log_fn=_send_log,
+)
 
 # ── /config_role ───────────────────────────────────────────────────────────────
 
