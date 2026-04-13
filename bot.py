@@ -3721,6 +3721,11 @@ async def api_admin_add(request):
             await _sync_admin_flags_all_community(session, admins)
 
     if ok:
+        log_embed = discord.Embed(title="🛡️ Admin Added (API)", color=0x2EA043)
+        log_embed.add_field(name="User", value=f"`{username or discord_username}` (`{discord_id}`)", inline=True)
+        log_embed.add_field(name="Role", value=f"`{role}`", inline=True)
+        log_embed.add_field(name="Added by", value=added_by, inline=True)
+        await _send_log(log_embed)
         return web.json_response({"success": True, "discord_id": discord_id, "role": role}, status=201)
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
@@ -3748,6 +3753,9 @@ async def api_admin_remove(request):
             await _sync_admin_flags_all_community(session, admins)
 
     if ok:
+        log_embed = discord.Embed(title="🗑️ Admin Removed (API)", color=0xDA3633)
+        log_embed.add_field(name="Discord ID", value=f"`{discord_id}`", inline=True)
+        await _send_log(log_embed)
         return web.json_response({"success": True, "discord_id": discord_id})
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
@@ -8370,6 +8378,18 @@ async def api_vote_handler(request, media_type: str):
         return web.json_response({"error": result["error"]}, status=status)
 
     _stamp_vote_rate_limit(voter_id, vote_key)
+
+    action_text = _vote_action_text(result["action"])
+    color = 0x2EA043 if "up" in result["action"] else (0xDA3633 if "down" in result["action"] else 0x888888)
+    log_embed = discord.Embed(title=f"🗳️ Vote (API) — {media_type.title()}", color=color)
+    log_embed.add_field(name="User", value=f"`{display_name}` (`{voter_id}`)", inline=True)
+    log_embed.add_field(name="Action", value=action_text, inline=True)
+    log_embed.add_field(name="Title", value=result["title"], inline=True)
+    log_embed.add_field(name="👍 Up", value=str(result["upvotes"]), inline=True)
+    log_embed.add_field(name="👎 Down", value=str(result["downvotes"]), inline=True)
+    log_embed.add_field(name="📊 Net", value=f"{result['net']:+d}", inline=True)
+    await _send_log(log_embed)
+
     return web.json_response(result, status=200)
 
 
