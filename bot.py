@@ -2909,6 +2909,10 @@ async def admin_add(
 ):
     await interaction.response.defer(ephemeral=True)
 
+    if interaction.user.id != OWNER_ID:
+        await interaction.followup.send("❌ Only the bot owner can add admins.", ephemeral=True)
+        return
+
     role_value = role.value if role else "admin"
     target_id = str(user.id)
 
@@ -2981,6 +2985,10 @@ async def admin_add(
 async def admin_remove(interaction: discord.Interaction, user: discord.User):
     await interaction.response.defer(ephemeral=True)
 
+    if interaction.user.id != OWNER_ID:
+        await interaction.followup.send("❌ Only the bot owner can remove admins.", ephemeral=True)
+        return
+
     target_id = str(user.id)
 
     async with aiohttp.ClientSession() as session:
@@ -3014,8 +3022,7 @@ async def admin_remove(interaction: discord.Interaction, user: discord.User):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="admin_list", description="List all bot admins (Discord admin only)")
-@app_commands.default_permissions(administrator=True)
+@bot.tree.command(name="admin_list", description="List all bot admins")
 async def admin_list(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
