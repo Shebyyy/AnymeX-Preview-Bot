@@ -378,7 +378,19 @@ async def _background_proxy_finder():
                 # Step 1: Fetch + pre-filter by metadata
                 candidates = await _fetch_and_filter_proxies(session)
                 if not candidates:
-                    print("⚠️ [ProxyFinder] No candidates after filtering — retrying in 5 min")
+                    print("⚠️ [ProxyFinder] No candidates after filtering — reloading GitHub pool as fallback")
+                    # Bug fix: don't just sleep with an empty pool; reload saved proxies
+                    # so the pool stays populated even during fetch blips.
+                    try:
+                        fb_saved, _ = await read_proxies(session)
+                        fb_proxies: list[str] = fb_saved.get("proxies", []) if isinstance(fb_saved, dict) else []
+                        if fb_proxies:
+                            _proxy_list = fb_proxies
+                            print(f"✅ [ProxyFinder] Reloaded {len(_proxy_list)} proxies from GitHub as fallback")
+                        else:
+                            print("⚠️ [ProxyFinder] GitHub pool also empty — pool stays as-is")
+                    except Exception as fb_e:
+                        print(f"⚠️ [ProxyFinder] GitHub fallback reload failed: {fb_e}")
                     await asyncio.sleep(300)
                     continue
 
@@ -465,9 +477,16 @@ async def _do_proxy_switch(new_proxy: str, pool: list[str], reason: str = ""):
         asyncio.create_task(_dm_owner(embed))
 
 def get_proxy() -> str | None:
-    """Return the best available proxy. Pool first, ENV as fallback."""
+    """Return the best available proxy. Pool first (skipping current dead proxy), ENV as fallback."""
     global _current_proxy, _env_proxy_failed
     if _proxy_list:
+        # Bug fix: skip _current_proxy itself in case the dead proxy hasn't been removed
+        # from the list yet (e.g. startup retry loop calls get_proxy before removal).
+        for candidate in _proxy_list:
+            if candidate != _current_proxy:
+                _current_proxy = candidate
+                return _current_proxy
+        # All pool entries are the same as current — just return first
         _current_proxy = _proxy_list[0]
         return _current_proxy
     if ENV_PROXY_URL and not _env_proxy_failed:
@@ -533,9 +552,29 @@ async def start_bot_with_proxy():
     global _current_proxy, _env_proxy_failed, _proxy_list
 
     # Startup proxy priority:
-    #   1. ProxyDB — fetch a fresh page and verify the first working proxy
-    #   2. ENV proxy — if ProxyDB returns nothing usable
-    #   3. Saved proxies.json (GitHub cache) — last resort if both above fail
+    #   0. ALWAYS seed _proxy_list from proxies.json (GitHub) first — so the full
+    #      validated pool of up to 50 proxies is available from the very first moment,
+    #      regardless of which source ends up being used for _current_proxy.
+    #      (Bug fix: previously pool was only populated on the fallback path, leaving
+    #       it at whatever ProxyDB scraped (often 1–5 entries) when ProxyDB succeeded.)
+    #   1. ProxyDB — pick a fresh active proxy for _current_proxy.
+    #   2. ENV proxy — fallback if ProxyDB finds nothing.
+    #   3. First alive proxy from the already-seeded pool — last resort.
+
+    # ── Step 0: Seed the full pool from GitHub ─────────────────────────────────
+    try:
+        async with aiohttp.ClientSession() as session:
+            saved, _ = await read_proxies(session)
+            saved_proxies_boot: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
+            saved_at_boot: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
+            age_boot = time.time() - saved_at_boot
+            if saved_proxies_boot:
+                _proxy_list = saved_proxies_boot
+                print(f"✅ [Startup] Seeded pool from GitHub: {len(_proxy_list)} proxies ({age_boot/60:.0f}min old)")
+            else:
+                print("⚠️ [Startup] proxies.json empty or missing — pool starts empty")
+    except Exception as e:
+        print(f"⚠️ [Startup] Could not load proxies.json for pool seed: {e}")
 
     # ── Step 1: Try ProxyDB ────────────────────────────────────────────────────
     try:
@@ -546,9 +585,12 @@ async def start_bot_with_proxy():
             for p in proxydb_candidates:
                 alive, lat = await _verify_proxy(p)
                 if alive:
-                    _proxy_list = proxydb_candidates
                     _current_proxy = p
-                    print(f"✅ [Startup] Using ProxyDB proxy: {_current_proxy} ({lat:.2f}s)")
+                    # Merge ProxyDB candidates into the front of the pool (deduplicated)
+                    existing = set(_proxy_list)
+                    new_entries = [x for x in proxydb_candidates if x not in existing]
+                    _proxy_list = new_entries + _proxy_list
+                    print(f"✅ [Startup] Using ProxyDB proxy: {_current_proxy} ({lat:.2f}s) | pool={len(_proxy_list)}")
                     break
             else:
                 raise ValueError("No ProxyDB proxy passed verification")
@@ -562,56 +604,34 @@ async def start_bot_with_proxy():
             alive, lat = await _verify_proxy(ENV_PROXY_URL)
             if alive:
                 _current_proxy = ENV_PROXY_URL
-                print(f"✅ [Startup] Using ENV proxy: {_current_proxy} ({lat:.2f}s)")
+                print(f"✅ [Startup] Using ENV proxy: {_current_proxy} ({lat:.2f}s) | pool={len(_proxy_list)}")
             else:
                 _env_proxy_failed = True
-                print(f"⚠️ [Startup] ENV proxy is dead — trying saved proxies...")
-
-                # ── Step 3: Fall back to saved proxies.json ────────────────────
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        saved, _ = await read_proxies(session)
-                        saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
-                        saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
-                        age = time.time() - saved_at
-                        if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
-                            for p in saved_proxies:
-                                alive, lat = await _verify_proxy(p)
-                                if alive:
-                                    _proxy_list = saved_proxies
-                                    _current_proxy = p
-                                    print(f"✅ [Startup] Using saved proxy: {_current_proxy} ({lat:.2f}s, {age/60:.0f}min old)")
-                                    break
-                            else:
-                                raise ValueError("All saved proxies are dead")
-                        else:
-                            raise ValueError(f"Cache stale or empty (age={age/60:.0f}min)")
-                except Exception as e2:
+                print(f"⚠️ [Startup] ENV proxy is dead — picking from saved pool...")
+                picked = False
+                for p in _proxy_list:
+                    alive, lat = await _verify_proxy(p)
+                    if alive:
+                        _current_proxy = p
+                        print(f"✅ [Startup] Using saved proxy: {_current_proxy} ({lat:.2f}s) | pool={len(_proxy_list)}")
+                        picked = True
+                        break
+                if not picked:
                     _current_proxy = None
-                    print(f"⚠️ [Startup] All proxy sources failed ({e2}) — running direct (no proxy)")
+                    print("⚠️ [Startup] All proxy sources failed — running direct (no proxy)")
         else:
-            # No ENV proxy configured at all — go straight to saved
-            try:
-                async with aiohttp.ClientSession() as session:
-                    saved, _ = await read_proxies(session)
-                    saved_proxies: list[str] = saved.get("proxies", []) if isinstance(saved, dict) else []
-                    saved_at: float = saved.get("saved_at", 0) if isinstance(saved, dict) else 0
-                    age = time.time() - saved_at
-                    if saved_proxies and age < _PROXY_CACHE_MAX_AGE:
-                        for p in saved_proxies:
-                            alive, lat = await _verify_proxy(p)
-                            if alive:
-                                _proxy_list = saved_proxies
-                                _current_proxy = p
-                                print(f"✅ [Startup] Using saved proxy: {_current_proxy} ({lat:.2f}s)")
-                                break
-                        else:
-                            raise ValueError("All saved proxies are dead")
-                    else:
-                        raise ValueError(f"Cache stale or empty (age={age/60:.0f}min)")
-            except Exception as e2:
+            # No ENV proxy configured — pick from saved pool
+            picked = False
+            for p in _proxy_list:
+                alive, lat = await _verify_proxy(p)
+                if alive:
+                    _current_proxy = p
+                    print(f"✅ [Startup] Using saved proxy: {_current_proxy} ({lat:.2f}s) | pool={len(_proxy_list)}")
+                    picked = True
+                    break
+            if not picked:
                 _current_proxy = None
-                print(f"⚠️ [Startup] All proxy sources failed ({e2}) — running direct (no proxy)")
+                print("⚠️ [Startup] All proxy sources failed — running direct (no proxy)")
 
     bot.http.proxy = _current_proxy
 
@@ -1082,6 +1102,154 @@ async def switchproxy_cmd(interaction: discord.Interaction):
     embed.add_field(name="New (tested ✅)", value=new or "None (direct)", inline=False)
     embed.add_field(name="Skipped (failed)", value=str(failed), inline=True)
     embed.add_field(name="Pool Size", value=str(len(_proxy_list)), inline=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ── /proxyscan ───────────────────────────────────────────────────────────────────
+
+
+@bot.tree.command(
+    name="proxyscan",
+    description="Fetch, test all free proxies and save the best ones to GitHub (Admin only)",
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    save="Save valid proxies to GitHub after scanning (default: True)",
+    switch="Switch to the fastest proxy found if current is dead (default: True)",
+)
+async def proxyscan_cmd(
+    interaction: discord.Interaction,
+    save: bool = True,
+    switch: bool = True,
+):
+    """
+    Admin command: manually trigger a full free-proxy scan.
+    1. Fetches candidates from ProxyScrape + ProxyDB concurrently.
+    2. Multi-pass validates every candidate against Discord URLs.
+    3. Optionally saves top-50 results to proxies.json in GitHub.
+    4. Optionally switches the bot to the fastest found proxy (only if current is dead).
+    Responds ephemerally with a live progress update, then a final results embed.
+    """
+    await interaction.response.defer(ephemeral=True)
+
+    # ── Step 1: Fetch candidates ──────────────────────────────────────────────
+    await interaction.followup.send(
+        "🔍 **Step 1/3** — Fetching proxy candidates from ProxyScrape + ProxyDB…",
+        ephemeral=True,
+    )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            candidates = await _fetch_and_filter_proxies(session)
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Failed to fetch proxy candidates: `{e}`", ephemeral=True
+        )
+        return
+
+    if not candidates:
+        await interaction.followup.send(
+            "⚠️ No proxy candidates survived the metadata filter. Try again later.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
+        f"✅ **{len(candidates)}** candidates fetched.\n"
+        f"🧪 **Step 2/3** — Running multi-pass Discord validation "
+        f"({_PROXY_CHECK_CONCURRENCY} concurrent workers, {_PROXY_PASSES} pass(es), "
+        f"{_PROXY_PASS_TIMEOUT}s timeout each)…",
+        ephemeral=True,
+    )
+
+    # ── Step 2: Validate candidates ───────────────────────────────────────────
+    sem = asyncio.Semaphore(_PROXY_CHECK_CONCURRENCY)
+    tasks = [
+        asyncio.create_task(_test_proxy_passes(session, p, sem))
+        for p in candidates
+    ]
+    # Use a fresh session for all validation tasks
+    async with aiohttp.ClientSession() as session:
+        sem = asyncio.Semaphore(_PROXY_CHECK_CONCURRENCY)
+        tasks = [
+            asyncio.create_task(_test_proxy_passes(session, p, sem))
+            for p in candidates
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    valid: list[tuple[str, float]] = [
+        r for r in results if isinstance(r, tuple)
+    ]
+    valid.sort(key=lambda x: x[1])  # fastest first
+
+    if not valid:
+        await interaction.followup.send(
+            f"❌ None of the {len(candidates)} candidates passed Discord validation.",
+            ephemeral=True,
+        )
+        return
+
+    sorted_proxies = [p for p, _ in valid]
+    best_proxy, best_lat = valid[0]
+    top5_lines = "\n".join(
+        f"`{i+1}.` `{p}` — {lat*1000:.0f} ms"
+        for i, (p, lat) in enumerate(valid[:5])
+    )
+
+    # ── Step 3: Save to GitHub ────────────────────────────────────────────────
+    save_status = "⏭️ Skipped (save=False)"
+    if save:
+        await interaction.followup.send(
+            f"💾 **Step 3/3** — Saving top {min(50, len(sorted_proxies))} proxies to GitHub…",
+            ephemeral=True,
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                _, sha = await read_proxies(session)
+                payload = {
+                    "proxies": sorted_proxies[:50],
+                    "saved_at": time.time(),
+                    "saved_by": str(interaction.user),
+                }
+                ok = await write_proxies(
+                    session, payload, sha,
+                    f"proxyscan: {len(valid)} valid proxies by {interaction.user}",
+                )
+            if ok:
+                save_status = f"✅ Saved top {min(50, len(sorted_proxies))} to GitHub"
+                # Update the in-memory pool too
+                global _proxy_list
+                _proxy_list = sorted_proxies[:50]
+            else:
+                save_status = "⚠️ GitHub write returned False — not saved"
+        except Exception as e:
+            save_status = f"❌ GitHub save failed: `{_short_reason(str(e))}`"
+    else:
+        save_status = "⏭️ Skipped (save=False)"
+
+    # ── Step 4: Optionally switch proxy ───────────────────────────────────────
+    switch_status = "⏭️ Skipped (switch=False)"
+    if switch:
+        alive, _ = await _verify_proxy(_current_proxy)
+        if not alive:
+            await _do_proxy_switch(
+                best_proxy, sorted_proxies,
+                reason=f"proxyscan by {interaction.user}",
+            )
+            switch_status = f"✅ Switched to fastest: `{best_proxy}`"
+        else:
+            switch_status = f"✅ Current proxy still alive — not switching"
+
+    # ── Final results embed ───────────────────────────────────────────────────
+    embed = discord.Embed(title="🔎 Proxy Scan Complete", color=0x2ecc71)
+    embed.add_field(name="Candidates Fetched", value=str(len(candidates)), inline=True)
+    embed.add_field(name="Passed Validation", value=str(len(valid)), inline=True)
+    embed.add_field(name="Failed", value=str(len(candidates) - len(valid)), inline=True)
+    embed.add_field(name="Fastest Proxy", value=f"`{best_proxy}` — {best_lat*1000:.0f} ms", inline=False)
+    embed.add_field(name="Top 5", value=top5_lines, inline=False)
+    embed.add_field(name="GitHub Save", value=save_status, inline=False)
+    embed.add_field(name="Proxy Switch", value=switch_status, inline=False)
+    embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
