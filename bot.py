@@ -46,6 +46,11 @@ _PROXY_PASS = os.environ.get("PROXY_PASS")
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
 OWNER_ID = 612532963938271232  # receives proxy startup/switch DMs
 
+# ── Commentum server monitor ───────────────────────────────────────────────────
+COMMENTUM_PING_URL = os.environ.get("COMMENTUM_PING_URL", "https://anymex.duckdns.org/functions/v1/ping")
+COMMENTUM_CHECK_INTERVAL = int(os.environ.get("COMMENTUM_CHECK_INTERVAL", 5))  # minutes
+_commentum_was_up: bool | None = None  # None = unknown (first check)
+
 # ── Private userdata repo ──────────────────────────────────────────────────────
 USERDATA_REPO = "clients-userdata"
 USERDATA_BRANCH = "main"
@@ -534,6 +539,67 @@ async def handle_proxy_failure(reason: str = "unknown"):
 
 
 # ── Health check task ──────────────────────────────────────────────────────────
+
+@tasks.loop(minutes=COMMENTUM_CHECK_INTERVAL)
+async def commentum_monitor():
+    """Ping the Commentum backend and log status changes to the log channel + owner DM."""
+    global _commentum_was_up
+    import datetime
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(COMMENTUM_PING_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                is_up = resp.status == 200
+                try:
+                    body = await resp.json()
+                    server_msg = body.get("message", "ok")
+                    server_ts  = body.get("timestamp", "")
+                except Exception:
+                    server_msg = await resp.text()
+                    server_ts  = ""
+    except Exception as e:
+        is_up = False
+        server_msg = str(e)
+        server_ts  = ""
+
+    # ── First run: always log current status ─────────────────────────────────
+    first_run = _commentum_was_up is None
+    status_changed = first_run or (is_up != _commentum_was_up)
+    _commentum_was_up = is_up
+
+    if not status_changed:
+        return  # no change — stay quiet
+
+    # ── Build embed ──────────────────────────────────────────────────────────
+    if is_up:
+        embed = discord.Embed(
+            title="🟢 Commentum Server is UP",
+            description=f"The backend responded successfully.",
+            color=0x2ecc71,
+        )
+        embed.add_field(name="URL",      value=f"`{COMMENTUM_PING_URL}`", inline=False)
+        embed.add_field(name="Response", value=f"`{server_msg}`",         inline=True)
+        if server_ts:
+            embed.add_field(name="Server Time", value=f"`{server_ts}`",   inline=True)
+    else:
+        embed = discord.Embed(
+            title="🔴 Commentum Server is DOWN",
+            description=f"The backend did not respond or returned an error.",
+            color=0xe74c3c,
+        )
+        embed.add_field(name="URL",    value=f"`{COMMENTUM_PING_URL}`", inline=False)
+        embed.add_field(name="Reason", value=f"`{server_msg[:200]}`",   inline=False)
+
+    embed.set_footer(text=f"Checked every {COMMENTUM_CHECK_INTERVAL} min")
+    embed.timestamp = datetime.datetime.utcnow()
+
+    # ── Send to log channel ──────────────────────────────────────────────────
+    await _send_log(embed)
+
+    # ── DM owner on DOWN or first check ─────────────────────────────────────
+    if not is_up or first_run:
+        asyncio.create_task(_dm_owner(embed))
+
 
 @tasks.loop(minutes=1)
 async def proxy_health_check():
@@ -5244,6 +5310,9 @@ async def on_ready():
         # ── 4. Start proxy tasks ──────────────────────────────────────────────────
         if not proxy_health_check.is_running():
             proxy_health_check.start()
+        if not commentum_monitor.is_running():
+            commentum_monitor.start()
+            print(f"✅ Commentum monitor started (interval: {COMMENTUM_CHECK_INTERVAL}min, url: {COMMENTUM_PING_URL})")
         asyncio.create_task(_background_proxy_finder())
 
         # ── 5. Heavy init in background — never blocks commands ───────────────────
