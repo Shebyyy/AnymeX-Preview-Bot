@@ -103,9 +103,8 @@ async def _translate_reason(session: aiohttp.ClientSession, text: str) -> str:
             if resp.status != 200:
                 return text
             data = await resp.json(content_type=None)
-            detected_lang = data[2] if len(data) > 2 and data[2] else "en"
-            if detected_lang == "en":
-                return text
+            detected_lang = data[2] if len(data) > 2 and data[2] else None
+
             # Collect translated segments
             translated_parts = []
             if data and data[0]:
@@ -113,9 +112,18 @@ async def _translate_reason(session: aiohttp.ClientSession, text: str) -> str:
                     if segment and segment[0]:
                         translated_parts.append(segment[0])
             translated = "".join(translated_parts).strip()
-            if not translated or translated.lower() == text.lower():
+
+            # If no translation segments were returned, return original
+            if not translated:
                 return text
-            lang_name = _LANG_NAMES.get(detected_lang, detected_lang.upper())
+
+            # If translation result is identical to original, it was already English
+            if translated.lower() == text.lower():
+                return text
+
+            # If detected as English but translation differs (e.g. mixed-language text),
+            # still apply the translation
+            lang_name = _LANG_NAMES.get(detected_lang, detected_lang.upper()) if detected_lang else "Unknown"
             return f"Translated: {translated}\nOriginal ({lang_name}): {text}"
     except Exception:
         return text
@@ -9763,8 +9771,10 @@ async def translate_cmd(interaction: discord.Interaction):
 
                     # _translate_reason returns the original unchanged if already English
                     if translated_text == original_text:
+                        print(f"  ⏭️ [{list_name}] Skipped (already English or translation identical): {original_text[:60]}...")
                         continue
 
+                    print(f"  ✅ [{list_name}] Translated: {original_text[:60]}... → {translated_text[:60]}...")
                     reason_obj["text"] = translated_text
                     reason_obj["translated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     dirty = True
