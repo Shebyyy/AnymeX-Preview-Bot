@@ -620,11 +620,19 @@ async def handle_proxy_failure(reason: str = "unknown"):
 
 # ── Health check task ──────────────────────────────────────────────────────────
 
+FILE_MOMENTUM_STATUS = "momentum_status.json"  # stored in private userdata repo
+
 @tasks.loop(minutes=COMMENTUM_CHECK_INTERVAL)
 async def commentum_monitor():
-    """Ping the Commentum backend and log status changes to the log channel + owner DM."""
+    """Ping the Commentum backend and log status changes to the log channel + owner DM.
+    Also writes current status + timestamps to momentum_status.json in the private repo
+    so external tools can poll it without hitting the backend directly.
+    """
     global _commentum_was_up
     import datetime
+
+    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_ts  = time.time()
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -647,8 +655,51 @@ async def commentum_monitor():
     status_changed = first_run or (is_up != _commentum_was_up)
     _commentum_was_up = is_up
 
+    # ── Persist to momentum_status.json in private repo (every check) ────────
+    async def _save_momentum():
+        try:
+            async with aiohttp.ClientSession() as _s:
+                try:
+                    existing, sha = await github_read_json(
+                        _s, FILE_MOMENTUM_STATUS,
+                        repo=USERDATA_REPO, branch=USERDATA_BRANCH,
+                    )
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except Exception:
+                    existing, sha = {}, None
+
+                history: list = existing.get("history", [])
+                history.append({
+                    "checked_at": now_iso,
+                    "status": "up" if is_up else "down",
+                    "message": server_msg[:200],
+                })
+                history = history[-50:]  # keep last 50 entries
+
+                payload = {
+                    "status":             "up" if is_up else "down",
+                    "last_checked_at":    now_iso,
+                    "last_checked_ts":    now_ts,
+                    "check_interval_min": COMMENTUM_CHECK_INTERVAL,
+                    "ping_url":           COMMENTUM_PING_URL,
+                    "last_up_at":         now_iso if is_up else existing.get("last_up_at", ""),
+                    "last_down_at":       existing.get("last_down_at", "") if is_up else now_iso,
+                    "server_ts":          server_ts,
+                    "history":            history,
+                }
+                await github_write_json(
+                    _s, FILE_MOMENTUM_STATUS, payload, sha,
+                    f"monitor: commentum {'up' if is_up else 'down'} @ {now_iso}",
+                    repo=USERDATA_REPO, branch=USERDATA_BRANCH,
+                )
+        except Exception as e:
+            print(f"⚠️ [CommentumMonitor] Failed to save momentum_status.json: {e}")
+
+    asyncio.create_task(_save_momentum())
+
     if not status_changed:
-        return  # no change — stay quiet
+        return  # no Discord noise if nothing changed
 
     # ── Build embed ──────────────────────────────────────────────────────────
     if is_up:
@@ -9655,6 +9706,95 @@ async def sheby_build(
             color=0xDA3633,
         )
         await interaction.followup.send(embed=embed)
+
+# ── /translate command ────────────────────────────────────────────────────────
+# Scans all 4 community JSONs in the repo, finds any reason text that hasn't
+# been translated yet, runs _translate_reason on each one, and writes it back
+# to GitHub — exactly the same as how edit_reason updates entries.
+
+@bot.tree.command(
+    name="translate",
+    description="Scan all community lists and auto-translate any untranslated reasons to English",
+)
+@has_allowed_role()
+async def translate_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    filepath_map = {
+        "anime": FILE_ANIME,
+        "manga": FILE_MANGA,
+        "show":  FILE_SHOWS,
+        "movie": FILE_MOVIES,
+    }
+
+    total_updated = 0
+    summary_lines = []
+
+    async with aiohttp.ClientSession() as session:
+        for list_name, filepath in filepath_map.items():
+            try:
+                entries, sha = await github_read_json(session, filepath)
+            except Exception as e:
+                summary_lines.append(f"⚠️ Could not read `{filepath}`: {e}")
+                continue
+
+            if not isinstance(entries, list) or not entries:
+                continue
+
+            dirty = False  # only write back if something actually changed
+
+            for entry in entries:
+                reasons = entry.get("reasons", [])
+
+                # Also handle legacy entries that only have a top-level "reason" string
+                if not reasons and entry.get("reason"):
+                    reasons = [{"text": entry["reason"]}]
+                    entry["reasons"] = reasons
+
+                for reason_obj in reasons:
+                    original_text = reason_obj.get("text", "")
+                    if not original_text:
+                        continue
+                    # Skip if already translated
+                    if original_text.startswith("Translated: "):
+                        continue
+
+                    translated_text = await _translate_reason(session, original_text)
+
+                    # _translate_reason returns the original unchanged if already English
+                    if translated_text == original_text:
+                        continue
+
+                    reason_obj["text"] = translated_text
+                    reason_obj["translated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    dirty = True
+                    total_updated += 1
+
+                # Keep top-level "reason" field in sync with first reason (same as edit_reason)
+                if dirty and entry.get("reasons"):
+                    entry["reason"] = entry["reasons"][0].get("text", "")
+
+            if dirty:
+                ok = await github_write_json(
+                    session, filepath, entries, sha,
+                    f"translate: auto-translate untranslated reasons in {list_name}",
+                )
+                if ok:
+                    summary_lines.append(f"✅ `{list_name}` — updated")
+                else:
+                    summary_lines.append(f"❌ `{list_name}` — write failed")
+            else:
+                summary_lines.append(f"☑️ `{list_name}` — nothing to translate")
+
+    embed = discord.Embed(
+        title="🌐 Auto-Translate Complete",
+        description="\n".join(summary_lines) or "Nothing processed.",
+        color=0x2EA043 if total_updated > 0 else 0x95a5a6,
+    )
+    embed.add_field(name="Reasons Updated", value=str(total_updated), inline=True)
+    embed.set_footer(text=f"Run by {interaction.user.display_name}")
+    await interaction.followup.send(embed=embed)
+
 
 async def main():
     global _best_proxy_lock
