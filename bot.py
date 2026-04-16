@@ -62,6 +62,86 @@ def _short_reason(text: str, limit: int = 80) -> str:
     text = text.strip()
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
 
+# ── Language name map (ISO 639-1 → readable name) ────────────────────────────
+_LANG_NAMES = {
+    "af":"Afrikaans","sq":"Albanian","am":"Amharic","ar":"Arabic","hy":"Armenian",
+    "az":"Azerbaijani","eu":"Basque","be":"Belarusian","bn":"Bengali","bs":"Bosnian",
+    "bg":"Bulgarian","ca":"Catalan","zh":"Chinese","hr":"Croatian","cs":"Czech",
+    "da":"Danish","nl":"Dutch","eo":"Esperanto","et":"Estonian","fi":"Finnish",
+    "fr":"French","gl":"Galician","ka":"Georgian","de":"German","el":"Greek",
+    "gu":"Gujarati","ht":"Haitian Creole","he":"Hebrew","hi":"Hindi","hu":"Hungarian",
+    "is":"Icelandic","id":"Indonesian","ga":"Irish","it":"Italian","ja":"Japanese",
+    "kn":"Kannada","kk":"Kazakh","km":"Khmer","ko":"Korean","ku":"Kurdish",
+    "ky":"Kyrgyz","lo":"Lao","lv":"Latvian","lt":"Lithuanian","mk":"Macedonian",
+    "ms":"Malay","ml":"Malayalam","mt":"Maltese","mr":"Marathi","mn":"Mongolian",
+    "ne":"Nepali","no":"Norwegian","fa":"Persian","pl":"Polish","pt":"Portuguese",
+    "pa":"Punjabi","ro":"Romanian","ru":"Russian","sr":"Serbian","si":"Sinhala",
+    "sk":"Slovak","sl":"Slovenian","so":"Somali","es":"Spanish","sw":"Swahili",
+    "sv":"Swedish","tl":"Filipino","tg":"Tajik","ta":"Tamil","te":"Telugu",
+    "th":"Thai","tr":"Turkish","uk":"Ukrainian","ur":"Urdu","uz":"Uzbek",
+    "vi":"Vietnamese","cy":"Welsh","xh":"Xhosa","yi":"Yiddish","zu":"Zulu",
+}
+
+async def _translate_reason(session: aiohttp.ClientSession, text: str) -> str:
+    """
+    Translate reason to English using Google Translate (free endpoint).
+    If already English or translation fails, returns the original text unchanged.
+    Stores as:
+        Translated: <english text>
+        Original (<Language>): <original text>
+    If already English, returns the original text as-is (no labels).
+    """
+    if not text or not text.strip():
+        return text
+    try:
+        detect_url = (
+            "https://translate.googleapis.com/translate_a/single"
+            "?client=gtx&sl=auto&tl=en&dt=t&q=" +
+            aiohttp.helpers.requote_uri(text)
+        )
+        async with session.get(detect_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status != 200:
+                return text
+            data = await resp.json(content_type=None)
+            detected_lang = data[2] if len(data) > 2 and data[2] else "en"
+            if detected_lang == "en":
+                return text
+            # Collect translated segments
+            translated_parts = []
+            if data and data[0]:
+                for segment in data[0]:
+                    if segment and segment[0]:
+                        translated_parts.append(segment[0])
+            translated = "".join(translated_parts).strip()
+            if not translated or translated.lower() == text.lower():
+                return text
+            lang_name = _LANG_NAMES.get(detected_lang, detected_lang.upper())
+            return f"Translated: {translated}\nOriginal ({lang_name}): {text}"
+    except Exception:
+        return text
+
+
+
+
+def _log_reason_fields(embed, stored_reason: str, label: str = "Reason") -> None:
+    """
+    Add reason field(s) to a Discord embed.
+    If the stored_reason contains translated + original parts, splits them
+    into two separate embed fields for clarity.
+    Otherwise adds a single field with the full reason (up to 1024 chars).
+    """
+    if not stored_reason:
+        embed.add_field(name=label, value="N/A", inline=False)
+        return
+    if stored_reason.startswith("Translated: ") and "\nOriginal (" in stored_reason:
+        parts = stored_reason.split("\nOriginal (", 1)
+        translated_part = parts[0]  # "Translated: <text>"
+        original_part = "Original (" + parts[1]  # "Original (Language): <text>"
+        embed.add_field(name=f"{label} (Translated)", value=translated_part[:1024], inline=False)
+        embed.add_field(name=f"{label} (Original)", value=original_part[:1024], inline=False)
+    else:
+        embed.add_field(name=label, value=stored_reason[:1024], inline=False)
+
 
 def _ids_line(**kwargs) -> str:
     """Build a compact IDs string from keyword args, skipping None/falsy values.
@@ -1621,12 +1701,14 @@ async def _api_add_media(request, media_type: str):
             or "Unknown"
         )
 
+        stored_reason = await _translate_reason(session, reason)
+
         new_reason_obj = {
             "discord_id": str(discord_id) if discord_id else None,
             "discord_username": discord_username,
             "user": user_snapshot,
             "author": resolved_author,
-            "text": reason,
+            "text": stored_reason,
             "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -1680,7 +1762,7 @@ async def _api_add_media(request, media_type: str):
                 "mal_id": mal_id,
                 "title": title,
                 "author": resolved_author,
-                "reason": reason,
+                "reason": stored_reason,
                 "reasons": [new_reason_obj],
                 "user": user_snapshot,
                 "added_by_discord_id": str(discord_id) if discord_id else None,
@@ -1704,7 +1786,7 @@ async def _api_add_media(request, media_type: str):
         log_embed.add_field(name="Score", value=str(entry.get("score", "N/A")), inline=True)
         log_embed.add_field(name="Author", value=resolved_author, inline=True)
         log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), DC=entry.get("added_by_discord_id")), inline=False)
-        log_embed.add_field(name="Reason", value=_short_reason(reason), inline=False)
+        _log_reason_fields(log_embed, stored_reason)
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
@@ -1856,12 +1938,15 @@ async def _api_add_simkl(request, media_type: str):
 
     _mark_admin_flag(user_snapshot, admins)
 
+    async with aiohttp.ClientSession() as _tr_session:
+        stored_reason = await _translate_reason(_tr_session, reason)
+
     new_reason_obj = {
         "discord_id": str(discord_id) if discord_id else None,
         "discord_username": discord_username,
         "user": user_snapshot,
         "author": resolved_author,
-        "text": reason,
+        "text": stored_reason,
         "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -1910,7 +1995,7 @@ async def _api_add_simkl(request, media_type: str):
                 "title": title,
                 "year": year,
                 "author": resolved_author,
-                "reason": reason,
+                "reason": stored_reason,
                 "reasons": [new_reason_obj],
                 "user": user_snapshot,
                 "added_by_discord_id": str(discord_id) if discord_id else None,
@@ -1936,7 +2021,7 @@ async def _api_add_simkl(request, media_type: str):
         log_embed.add_field(name="Score", value=str(entry.get("score", "N/A")), inline=True)
         log_embed.add_field(name="Author", value=resolved_author, inline=True)
         log_embed.add_field(name="IDs", value=_ids_line(Simkl=entry.get("simkl_id"), DC=entry.get("added_by_discord_id")), inline=False)
-        log_embed.add_field(name="Reason", value=_short_reason(reason), inline=False)
+        _log_reason_fields(log_embed, stored_reason)
         if entry.get("poster"):
             log_embed.set_thumbnail(url=entry["poster"])
         log_embed.set_footer(text="Source: API")
@@ -2752,10 +2837,14 @@ async def _handle_edit_reason(
         return
 
     old_reason = reasons[reason_idx].get("text", "")
-    entries[idx]["reasons"][reason_idx]["text"] = new_reason
+
+    async with aiohttp.ClientSession() as _tr_session:
+        stored_new_reason = await _translate_reason(_tr_session, new_reason)
+
+    entries[idx]["reasons"][reason_idx]["text"] = stored_new_reason
     entries[idx]["reasons"][reason_idx]["edited_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if reason_idx == 0:
-        entries[idx]["reason"] = new_reason
+        entries[idx]["reason"] = stored_new_reason
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
@@ -2766,16 +2855,16 @@ async def _handle_edit_reason(
     if ok:
         embed = discord.Embed(title="✅ Reason Updated", color=0x2EA043)
         embed.add_field(name="Entry", value=entry["title"], inline=False)
-        embed.add_field(name="Old Reason", value=old_reason[:300] or "*(empty)*", inline=False)
-        embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
+        embed.add_field(name="Old Reason", value=old_reason[:1024] or "*(empty)*", inline=False)
+        _log_reason_fields(embed, stored_new_reason, label="New Reason")
         if admin and not _entry_owned_by(entry, discord_id, profile):
             embed.set_footer(text="✏️ Edited as bot admin")
         log_embed = discord.Embed(title="✏️ Reason Edited", color=0xF1C40F)
         log_embed.add_field(name="Entry", value=entry["title"], inline=True)
         log_embed.add_field(name="Edited by", value=f"{interaction.user.mention} (`{interaction.user}`) — {'admin' if admin else 'owner'}", inline=True)
         log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=interaction.user.id), inline=False)
-        log_embed.add_field(name="Old Reason", value=_short_reason(old_reason) or "*(empty)*", inline=False)
-        log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
+        log_embed.add_field(name="Old Reason", value=old_reason[:1024] or "*(empty)*", inline=False)
+        _log_reason_fields(log_embed, stored_new_reason, label="New Reason")
         await _send_log(log_embed)
     else:
         embed = discord.Embed(title="❌ Failed to save to GitHub", color=0xDA3633)
@@ -3440,11 +3529,15 @@ async def _api_edit_reason(request, media_type: str):
         return web.json_response({"error": "You don't have a reason on this entry."}, status=404)
 
     old_reason = reasons[reason_idx].get("text", "")
-    entries[idx]["reasons"][reason_idx]["text"] = new_reason
+
+    async with aiohttp.ClientSession() as _tr_session:
+        stored_new_reason = await _translate_reason(_tr_session, new_reason)
+
+    entries[idx]["reasons"][reason_idx]["text"] = stored_new_reason
     entries[idx]["reasons"][reason_idx]["edited_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     # Sync top-level reason field with first slot
     if reason_idx == 0:
-        entries[idx]["reason"] = new_reason
+        entries[idx]["reason"] = stored_new_reason
 
     async with aiohttp.ClientSession() as session:
         ok = await github_write_json(
@@ -3457,15 +3550,15 @@ async def _api_edit_reason(request, media_type: str):
         log_embed.add_field(name="Title", value=entry["title"], inline=True)
         log_embed.add_field(name="Editor", value=f"<@{req_discord_id}> (`{req_discord_id}`)" if req_discord_id else resolved_author, inline=True)
         log_embed.add_field(name="IDs", value=_ids_line(AL=entry.get("anilist_id"), MAL=entry.get("mal_id"), Simkl=entry.get("simkl_id"), DC=req_discord_id), inline=False)
-        log_embed.add_field(name="Old Reason", value=_short_reason(old_reason) or "*(empty)*", inline=False)
-        log_embed.add_field(name="New Reason", value=_short_reason(new_reason), inline=False)
+        log_embed.add_field(name="Old Reason", value=old_reason[:1024] or "*(empty)*", inline=False)
+        _log_reason_fields(log_embed, stored_new_reason, label="New Reason")
         log_embed.set_footer(text="Source: API")
         await _send_log(log_embed)
         return web.json_response({
             "success": True,
             "title": entry["title"],
             "old_reason": old_reason,
-            "new_reason": new_reason,
+            "new_reason": stored_new_reason,
         })
     return web.json_response({"error": "Failed to write to GitHub"}, status=500)
 
@@ -5645,7 +5738,7 @@ class ConfirmView(discord.ui.View):
             log_embed.add_field(name="Score", value=str(self.entry.get("score", "N/A")), inline=True)
             log_embed.add_field(name="Added by", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=True)
             log_embed.add_field(name="IDs", value=_ids_line(AL=self.entry.get("anilist_id"), MAL=self.entry.get("mal_id"), DC=interaction.user.id), inline=False)
-            log_embed.add_field(name="Reason", value=_short_reason(self.entry.get("reason")), inline=False)
+            _log_reason_fields(log_embed, self.entry.get("reason", ""))
             if self.cover_url:
                 log_embed.set_thumbnail(url=self.cover_url)
             await _send_log(log_embed)
@@ -5747,12 +5840,15 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     description = (media.get("description") or "")[:500]
     studios = [s["name"] for s in (media.get("studios", {}).get("nodes") or [])]
 
+    async with aiohttp.ClientSession() as _tr_session:
+        stored_reason = await _translate_reason(_tr_session, reason)
+
     reason_obj = {
         "discord_id": str(interaction.user.id),
         "discord_username": interaction.user.name,
         "user": user_snapshot,
         "author": author,
-        "text": reason,
+        "text": stored_reason,
         "added_at": datetime.utcnow().isoformat() + "Z",
         "edited_at": None,
     }
@@ -5762,7 +5858,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
         "mal_id": mal_id,
         "title": title,
         "author": author,
-        "reason": reason,
+        "reason": stored_reason,
         "reasons": [reason_obj],
         "user": user_snapshot,
         "added_by_discord_id": str(interaction.user.id),
@@ -5825,7 +5921,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     preview.add_field(name="Author", value=author, inline=True)
     preview.add_field(name="AniList Profile", value=al_profile_link, inline=True)
     preview.add_field(name="MAL Profile", value=mal_profile_link, inline=True)
-    preview.add_field(name="Reason", value=reason, inline=False)
+    preview.add_field(name="Reason", value=stored_reason, inline=False)
     if cover_url:
         preview.set_thumbnail(url=cover_url)
     preview.set_footer(text="You have 2 minutes to confirm.")
@@ -5954,12 +6050,15 @@ async def handle_simkl_add(
     filepath = FILE_SHOWS if media_type == "show" else FILE_MOVIES
     simkl_url = f"https://simkl.com/{media_type}s/{simkl_id}"
 
+    async with aiohttp.ClientSession() as _tr_session:
+        stored_reason = await _translate_reason(_tr_session, reason)
+
     reason_obj = {
         "discord_id": str(interaction.user.id),
         "discord_username": interaction.user.name,
         "user": user_snapshot,
         "author": author,
-        "text": reason,
+        "text": stored_reason,
         "added_at": datetime.utcnow().isoformat() + "Z",
         "edited_at": None,
     }
@@ -5969,7 +6068,7 @@ async def handle_simkl_add(
         "title": title,
         "year": year,
         "author": author,
-        "reason": reason,
+        "reason": stored_reason,
         "reasons": [reason_obj],
         "user": user_snapshot,
         "added_by_discord_id": str(interaction.user.id),
@@ -5990,7 +6089,7 @@ async def handle_simkl_add(
     preview.add_field(name="Score", value=f"`{score}`", inline=True)
     preview.add_field(name="Genres", value=genres, inline=True)
     preview.add_field(name="Author", value=author, inline=True)
-    preview.add_field(name="Reason", value=reason, inline=False)
+    preview.add_field(name="Reason", value=stored_reason, inline=False)
     if poster_url:
         preview.set_thumbnail(url=poster_url)
     preview.set_footer(text="You have 2 minutes to confirm.")
@@ -6085,7 +6184,7 @@ class SimklConfirmView(discord.ui.View):
             log_embed.add_field(name="Score", value=str(self.entry.get("score", "N/A")), inline=True)
             log_embed.add_field(name="Added by", value=f"{interaction.user.mention} (`{interaction.user}`)", inline=True)
             log_embed.add_field(name="IDs", value=_ids_line(Simkl=self.entry.get("simkl_id"), DC=interaction.user.id), inline=False)
-            log_embed.add_field(name="Reason", value=_short_reason(self.entry.get("reason")), inline=False)
+            _log_reason_fields(log_embed, self.entry.get("reason", ""))
             if self.poster_url:
                 log_embed.set_thumbnail(url=self.poster_url)
             await _send_log(log_embed)
