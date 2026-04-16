@@ -99,8 +99,13 @@ async def _translate_reason(session: aiohttp.ClientSession, text: str) -> str:
             "?client=gtx&sl=auto&tl=en&dt=t&q=" +
             aiohttp.helpers.requote_uri(text)
         )
-        async with session.get(detect_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+        async with session.get(
+            detect_url,
+            timeout=aiohttp.ClientTimeout(total=15),
+            proxy=None,  # Don't use proxy for Google Translate — avoid proxy failures
+        ) as resp:
             if resp.status != 200:
+                print(f"⚠️ [Translate] API returned status {resp.status} for: {text[:80]}...")
                 return text
             data = await resp.json(content_type=None)
             detected_lang = data[2] if len(data) > 2 and data[2] else None
@@ -124,8 +129,10 @@ async def _translate_reason(session: aiohttp.ClientSession, text: str) -> str:
             # If detected as English but translation differs (e.g. mixed-language text),
             # still apply the translation
             lang_name = _LANG_NAMES.get(detected_lang, detected_lang.upper()) if detected_lang else "Unknown"
+            print(f"✅ [Translate] {detected_lang or '?'} → en: {translated[:80]}...")
             return f"Translated: {translated}\nOriginal ({lang_name}): {text}"
-    except Exception:
+    except Exception as e:
+        print(f"❌ [Translate] Failed for \"{text[:80]}...\": {type(e).__name__}: {e}")
         return text
 
 
