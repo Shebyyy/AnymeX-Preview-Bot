@@ -12,6 +12,7 @@ import time
 import json
 import re
 import threading
+import urllib.parse
 from cryptography.fernet import Fernet
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ async def _translate_reason(session: aiohttp.ClientSession, text: str) -> str:
         detect_url = (
             "https://translate.googleapis.com/translate_a/single"
             "?client=gtx&sl=auto&tl=en&dt=t&q=" +
-            aiohttp.helpers.requote_uri(text)
+            urllib.parse.quote(text, safe='')
         )
         async with session.get(
             detect_url,
