@@ -9723,6 +9723,215 @@ async def sheby_build(
         )
         await interaction.followup.send(embed=embed)
 
+FORK_WORKFLOW_FILE = "fork_build_manual.yml"
+FORK_PARENT_REPO   = "RyanYuuki/AnymeX"   # whose forks are listed
+
+
+async def _fetch_anymex_forks() -> list[str]:
+    """Return all fork full_names (owner/repo) of RyanYuuki/AnymeX via GitHub API."""
+    forks: list[str] = []
+    page = 1
+    async with aiohttp.ClientSession() as session:
+        while True:
+            async with session.get(
+                f"{GITHUB_API}/repos/{FORK_PARENT_REPO}/forks?per_page=100&page={page}&sort=newest",
+                headers=gh_headers(),
+            ) as r:
+                if r.status != 200:
+                    break
+                data = await r.json()
+                if not data:
+                    break
+                forks.extend(f["full_name"] for f in data)
+                if len(data) < 100:
+                    break
+                page += 1
+    return forks
+
+
+async def _fetch_fork_branches(fork_repo: str) -> list[str]:
+    """Return all branch names from a given fork repo via GitHub API."""
+    branches: list[str] = []
+    page = 1
+    async with aiohttp.ClientSession() as session:
+        while True:
+            async with session.get(
+                f"{GITHUB_API}/repos/{fork_repo}/branches?per_page=100&page={page}",
+                headers=gh_headers(),
+            ) as r:
+                if r.status != 200:
+                    break
+                data = await r.json()
+                if not data:
+                    break
+                branches.extend(b["name"] for b in data)
+                if len(data) < 100:
+                    break
+                page += 1
+    return branches
+
+
+async def _fork_repo_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    try:
+        all_forks = await _fetch_anymex_forks()
+    except Exception:
+        all_forks = [FORK_PARENT_REPO]
+
+    filtered = [f for f in all_forks if current.lower() in f.lower()]
+    return [app_commands.Choice(name=f, value=f) for f in filtered[:25]]
+
+
+async def _fork_branch_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    # Read whichever fork the user has typed so far
+    fork_repo = interaction.namespace.fork_repo or FORK_PARENT_REPO
+    try:
+        all_branches = await _fetch_fork_branches(fork_repo)
+    except Exception:
+        all_branches = ["main"]
+
+    filtered = [b for b in all_branches if current.lower() in b.lower()]
+    return [app_commands.Choice(name=b, value=b) for b in filtered[:25]]
+
+
+@bot.tree.command(name="fork_build", description="Trigger a build from any fork of RyanYuuki/AnymeX")
+@app_commands.describe(
+    fork_repo="Fork repo to build from (e.g. someuser/AnymeX)",
+    source_branch="Branch to clone from the selected fork",
+    platforms="Platforms to build",
+    build_type="Build type",
+    tag_override="Version tag override",
+)
+@app_commands.autocomplete(fork_repo=_fork_repo_autocomplete, source_branch=_fork_branch_autocomplete)
+@app_commands.choices(platforms=PLATFORM_CHOICES, build_type=BUILD_TYPE_CHOICES)
+@has_allowed_role()
+async def fork_build(
+    interaction: discord.Interaction,
+    fork_repo: str,
+    source_branch: str,
+    platforms: app_commands.Choice[str],
+    build_type: app_commands.Choice[str],
+    tag_override: str = "",
+):
+    await interaction.response.defer()
+
+    discord_user_id = str(interaction.user.id)
+
+    payload = {
+        "ref": GITHUB_BRANCH,
+        "inputs": {
+            "source_repo": fork_repo,
+            "source_branch": source_branch,
+            "platforms": platforms.value,
+            "build_type": build_type.value,
+            "tag_override": tag_override,
+            "triggered_by": discord_user_id,
+        },
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{FORK_WORKFLOW_FILE}/dispatches",
+            headers=gh_headers(),
+            json=payload,
+        ) as r:
+            status = r.status
+            body = await r.text()
+
+    if status == 204:
+        embed = discord.Embed(title="🔨 Fork Build Triggered!", color=0x2EA043)
+        embed.add_field(name="Source Repo",   value=f"`{fork_repo}`",         inline=True)
+        embed.add_field(name="Branch",        value=f"`{source_branch}`",     inline=True)
+        embed.add_field(name="Build Type",    value=f"`{build_type.value}`",  inline=True)
+        embed.add_field(name="Platforms",     value=f"`{platforms.value}`",   inline=True)
+        embed.add_field(
+            name="Tag",
+            value=f"`{tag_override}`" if tag_override else "Auto-detect",
+            inline=True,
+        )
+        embed.set_footer(text=f"Triggered by {interaction.user.display_name}")
+        embed.description = "Build started — fetching run link…"
+
+        run_id = None
+        run_url = None
+        async with aiohttp.ClientSession() as session:
+            for _ in range(6):
+                await asyncio.sleep(2)
+                async with session.get(
+                    f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{FORK_WORKFLOW_FILE}/runs?per_page=1&branch={GITHUB_BRANCH}",
+                    headers=gh_headers(),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        runs = data.get("workflow_runs", [])
+                        if runs and runs[0].get("status") in ("queued", "in_progress"):
+                            run_id = runs[0]["id"]
+                            run_url = runs[0]["html_url"]
+                            break
+
+        embed.add_field(
+            name="View Run",
+            value=f"[Open Run]({run_url})" if run_url else f"[GitHub Actions](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)",
+            inline=False,
+        )
+
+        if run_id:
+            embed.description = "Build started — click below to cancel if needed"
+
+            class ForkBuildCancelView(discord.ui.View):
+                def __init__(self, run_id):
+                    super().__init__()
+                    self.run_id = run_id
+
+                @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red)
+                async def cancel_button(
+                    self,
+                    button_interaction: discord.Interaction,
+                    button: discord.ui.Button,
+                ):
+                    await button_interaction.response.defer()
+                    button.disabled = True
+                    button.label = "Cancelling…"
+                    await button_interaction.message.edit(view=self)
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
+                            headers=gh_headers(),
+                        ) as r:
+                            if r.status == 202:
+                                button.label = "Cancelled"
+                                await button_interaction.message.edit(view=self)
+                                await button_interaction.followup.send(
+                                    embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
+                                    ephemeral=True,
+                                )
+                            else:
+                                button.disabled = False
+                                button.label = "Cancel Build"
+                                await button_interaction.message.edit(view=self)
+                                await button_interaction.followup.send(
+                                    embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
+                                    ephemeral=True,
+                                )
+
+            await interaction.followup.send(embed=embed, view=ForkBuildCancelView(run_id))
+        else:
+            embed.description = "Build started"
+            await interaction.followup.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            title="❌ Failed to Trigger Fork Build",
+            description=f"**Status:** `{status}`\n```{body[:1000]}```",
+            color=0xDA3633,
+        )
+        await interaction.followup.send(embed=embed)
+
 # ── /translate command ────────────────────────────────────────────────────────
 # Scans all 4 community JSONs in the repo, finds any reason text that hasn't
 # been translated yet, runs _translate_reason on each one, and writes it back
