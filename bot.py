@@ -793,7 +793,13 @@ async def anilist_monitor():
     # ── up → down ────────────────────────────────────────────────────────────
     if status == "down" and prev != "down":
         _al_down_since = now_ts
-        short = error_msg.split(".")[0].strip()[:60]
+        # Cut at 'disabled' if present, else first period — avoids cutting mid-word
+        _em = error_msg.strip()
+        if 'disabled' in _em.lower():
+            _idx = _em.lower().index('disabled') + len('disabled')
+            short = _em[:_idx].strip()
+        else:
+            short = _em.split('.')[0].strip()[:80]
         short_err = f"{short} ({status_code})" if status_code else short or "Unknown error"
         await _al_send(is_down=True, short_err=short_err, duration_str=None)
         async with aiohttp.ClientSession() as session:
