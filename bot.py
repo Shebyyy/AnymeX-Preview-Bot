@@ -47,10 +47,26 @@ _PROXY_PASS = os.environ.get("PROXY_PASS")
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
 OWNER_ID = 612532963938271232  # receives proxy startup/switch DMs
 
-# ── Commentum server monitor ───────────────────────────────────────────────────
-COMMENTUM_PING_URL = os.environ.get("COMMENTUM_PING_URL", "https://anymex.duckdns.org/functions/v1/ping")
-COMMENTUM_CHECK_INTERVAL = int(os.environ.get("COMMENTUM_CHECK_INTERVAL", 5))  # minutes
-_commentum_was_up: bool | None = None  # None = unknown (first check)
+
+
+# ── AniList monitor ────────────────────────────────────────────────────────────
+FILE_ANILIST_STATUS = "anilist_status.json"  # persisted in main repo, same fields as YML
+_al_status:    str | None = None   # 'up'/'down' — loaded from file on start
+_al_down_since: int | None = None  # unix timestamp of when it went down
+_al_sha:       str | None = None   # github file sha for writes
+
+ANILIST_WEBHOOKS = {
+    "anymex":      os.environ.get("ANILIST_WEBHOOK_ANYMEX"),
+    "animestream": os.environ.get("ANILIST_WEBHOOK_ANIMESTREAM"),
+    "shonenx":     os.environ.get("ANILIST_WEBHOOK_SHONENX"),
+    "azyx":        os.environ.get("ANILIST_WEBHOOK_AZYX"),
+}
+ANILIST_ROLES = {
+    "anymex":      os.environ.get("ANILIST_ROLE_ANYMEX"),
+    "animestream": os.environ.get("ANILIST_ROLE_ANIMESTREAM"),
+    "shonenx":     os.environ.get("ANILIST_ROLE_SHONENX"),
+    "azyx":        os.environ.get("ANILIST_ROLE_AZYX"),
+}
 
 # ── Private userdata repo ──────────────────────────────────────────────────────
 USERDATA_REPO = "clients-userdata"
@@ -634,119 +650,174 @@ async def handle_proxy_failure(reason: str = "unknown"):
     asyncio.create_task(_dm_owner(embed))
 
 
-# ── Health check task ──────────────────────────────────────────────────────────
 
-FILE_MOMENTUM_STATUS = "momentum_status.json"  # stored in private userdata repo
+# ── AniList status monitor ─────────────────────────────────────────────────────
+# Mirrors YML logic exactly:
+#   - On start       : read anilist_status.json from repo → get previous state
+#   - Every 1 min    : hit AniList GraphQL (same query as YML)
+#   - up → down      : send DOWN webhook to all servers, save state to repo
+#   - down → up      : send UP webhook (with downtime duration), save state
+#   - no change      : do nothing, no messages, no noise
+#   - first run + up : silent, just save state so next restart knows
+# State file: { "status": "up"/"down", "down_since": <unix ts or null> }
 
-@tasks.loop(minutes=COMMENTUM_CHECK_INTERVAL)
-async def commentum_monitor():
-    """Ping the Commentum backend and log status changes to the log channel + owner DM.
-    Also writes current status + timestamps to momentum_status.json in the private repo
-    so external tools can poll it without hitting the backend directly.
+async def _al_load_state():
+    """On bot start: load previous AniList state from repo so restarts never false-alert."""
+    global _al_status, _al_down_since, _al_sha
+    try:
+        async with aiohttp.ClientSession() as session:
+            data, sha = await github_read_json(session, FILE_ANILIST_STATUS)
+            if isinstance(data, dict) and "status" in data:
+                _al_status     = data["status"]
+                _al_down_since = data.get("down_since")
+                _al_sha        = sha
+                print(f"[AniList] Loaded state from repo: {_al_status}")
+            else:
+                print("[AniList] No state file yet — will create on first change")
+    except Exception as e:
+        print(f"[AniList] Could not load state: {e}")
+
+
+async def _al_save_state(status: str, down_since, session: aiohttp.ClientSession):
+    """Save state to repo. Same fields as YML artifact: { status, down_since }."""
+    global _al_sha
+    import datetime as _dt
+    state = {
+        "status":     status,
+        "down_since": down_since,
+        "updated_at": _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    ok = await github_write_json(
+        session, FILE_ANILIST_STATUS, state, _al_sha,
+        f"anilist-monitor: {status}",
+    )
+    if ok:
+        _, new_sha = await github_read_json(session, FILE_ANILIST_STATUS)
+        _al_sha = new_sha
+
+
+async def _al_send(is_down: bool, short_err: str, duration_str: str | None):
+    """Fire embed to all configured server webhooks."""
+    import datetime as _dt
+    now_iso = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if is_down:
+        embed = {
+            "title":       "\U0001f534 AniList is DOWN",
+            "description": f"**{short_err}**\nCheck AniList Discord for updates.",
+            "color":       16729156,
+            "footer":      {"text": "AniList Monitor"},
+            "timestamp":   now_iso,
+        }
+    else:
+        embed = {
+            "title":       "\U0001f7e2 AniList is back UP",
+            "description": f"Was down for **{duration_str}**.",
+            "color":       4521096,
+            "footer":      {"text": "AniList Monitor"},
+            "timestamp":   now_iso,
+        }
+
+    async def _post(session, server):
+        url  = ANILIST_WEBHOOKS.get(server)
+        role = ANILIST_ROLES.get(server)
+        if not url:
+            return
+        payload = {"embeds": [embed]}
+        if role:
+            payload["content"] = f"<@&{role}>"
+        try:
+            async with session.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                print(f"[AniList] {server}: HTTP {r.status}")
+        except Exception as e:
+            print(f"[AniList] {server} failed: {e}")
+
+    async with aiohttp.ClientSession() as session:
+        await asyncio.gather(
+            *[_post(session, s) for s in ANILIST_WEBHOOKS],
+            return_exceptions=True,
+        )
+
+
+@tasks.loop(minutes=1)
+async def anilist_monitor():
     """
-    global _commentum_was_up
-    import datetime
+    Check AniList every 1 min — same logic as the YML workflow.
+    Webhooks fire only on actual status transitions, not every check.
+    State is persisted in repo so bot restarts never cause false alerts.
+    """
+    global _al_status, _al_down_since
 
-    now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    now_ts  = time.time()
+    # ── Hit AniList GraphQL (exact same query as YML) ────────────────────────
+    status      = "up"
+    status_code = None
+    error_msg   = ""
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(COMMENTUM_PING_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                is_up = resp.status == 200
+            async with session.post(
+                "https://graphql.anilist.co/",
+                json={"query": "{ Media(id:1) { id } }"},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                status_code = resp.status
                 try:
-                    body = await resp.json()
-                    server_msg = body.get("message", "ok")
-                    server_ts  = body.get("timestamp", "")
+                    body      = await resp.json(content_type=None)
+                    raw_error = (body.get("errors") or [{}])[0].get("message", "")
                 except Exception:
-                    server_msg = await resp.text()
-                    server_ts  = ""
+                    raw_error = await resp.text()
+
+                # Same check as YML: only "disabled" in error = down
+                if raw_error and "disabled" in raw_error.lower():
+                    status    = "down"
+                    error_msg = raw_error.strip()
+
     except Exception as e:
-        is_up = False
-        server_msg = str(e)
-        server_ts  = ""
+        status    = "down"
+        error_msg = str(e)
 
-    # ── First run: always log current status ─────────────────────────────────
-    first_run = _commentum_was_up is None
-    status_changed = first_run or (is_up != _commentum_was_up)
-    _commentum_was_up = is_up
+    # ── Only act on change (same as YML prev != current logic) ───────────────
+    if _al_status == status:
+        return
 
-    # ── Persist to momentum_status.json in private repo (every check) ────────
-    async def _save_momentum():
-        try:
-            async with aiohttp.ClientSession() as _s:
-                try:
-                    existing, sha = await github_read_json(
-                        _s, FILE_MOMENTUM_STATUS,
-                        repo=USERDATA_REPO, branch=USERDATA_BRANCH,
-                    )
-                    if not isinstance(existing, dict):
-                        existing = {}
-                except Exception:
-                    existing, sha = {}, None
+    prev       = _al_status
+    _al_status = status
+    now_ts     = int(time.time())
 
-                history: list = existing.get("history", [])
-                history.append({
-                    "checked_at": now_iso,
-                    "status": "up" if is_up else "down",
-                    "message": server_msg[:200],
-                })
-                history = history[-50:]  # keep last 50 entries
+    # ── up → down ────────────────────────────────────────────────────────────
+    if status == "down" and prev != "down":
+        _al_down_since = now_ts
+        short = error_msg.split(".")[0].strip()[:60]
+        short_err = f"{short} ({status_code})" if status_code else short or "Unknown error"
+        await _al_send(is_down=True, short_err=short_err, duration_str=None)
+        async with aiohttp.ClientSession() as session:
+            await _al_save_state("down", _al_down_since, session)
 
-                payload = {
-                    "status":             "up" if is_up else "down",
-                    "last_checked_at":    now_iso,
-                    "last_checked_ts":    now_ts,
-                    "check_interval_min": COMMENTUM_CHECK_INTERVAL,
-                    "ping_url":           COMMENTUM_PING_URL,
-                    "last_up_at":         now_iso if is_up else existing.get("last_up_at", ""),
-                    "last_down_at":       existing.get("last_down_at", "") if is_up else now_iso,
-                    "server_ts":          server_ts,
-                    "history":            history,
-                }
-                await github_write_json(
-                    _s, FILE_MOMENTUM_STATUS, payload, sha,
-                    f"monitor: commentum {'up' if is_up else 'down'} @ {now_iso}",
-                    repo=USERDATA_REPO, branch=USERDATA_BRANCH,
-                )
-        except Exception as e:
-            print(f"⚠️ [CommentumMonitor] Failed to save momentum_status.json: {e}")
+    # ── down → up ────────────────────────────────────────────────────────────
+    elif status == "up" and prev == "down":
+        if _al_down_since:
+            dur     = now_ts - _al_down_since
+            hrs     = dur // 3600
+            mins    = (dur % 3600) // 60
+            secs    = dur % 60
+            dur_str = f"{hrs}h {mins}m {secs}s" if hrs > 0 else f"{mins}m {secs}s"
+        else:
+            dur_str = "Unknown"
+        _al_down_since = None
+        await _al_send(is_down=False, short_err="", duration_str=dur_str)
+        async with aiohttp.ClientSession() as session:
+            await _al_save_state("up", None, session)
 
-    asyncio.create_task(_save_momentum())
-
-    if not status_changed:
-        return  # no Discord noise if nothing changed
-
-    # ── Build embed ──────────────────────────────────────────────────────────
-    if is_up:
-        embed = discord.Embed(
-            title="🟢 Commentum Server is UP",
-            description=f"The backend responded successfully.",
-            color=0x2ecc71,
-        )
-        embed.add_field(name="URL",      value=f"`{COMMENTUM_PING_URL}`", inline=False)
-        embed.add_field(name="Response", value=f"`{server_msg}`",         inline=True)
-        if server_ts:
-            embed.add_field(name="Server Time", value=f"`{server_ts}`",   inline=True)
-    else:
-        embed = discord.Embed(
-            title="🔴 Commentum Server is DOWN",
-            description=f"The backend did not respond or returned an error.",
-            color=0xe74c3c,
-        )
-        embed.add_field(name="URL",    value=f"`{COMMENTUM_PING_URL}`", inline=False)
-        embed.add_field(name="Reason", value=f"`{server_msg[:200]}`",   inline=False)
-
-    embed.set_footer(text=f"Checked every {COMMENTUM_CHECK_INTERVAL} min")
-    embed.timestamp = datetime.datetime.utcnow()
-
-    # ── Send to log channel ──────────────────────────────────────────────────
-    await _send_log(embed)
-
-    # ── DM owner on DOWN or first check ─────────────────────────────────────
-    if not is_up or first_run:
-        asyncio.create_task(_dm_owner(embed))
-
+    # ── first ever check + already up → silent, just save state ─────────────
+    elif prev is None and status == "up":
+        async with aiohttp.ClientSession() as session:
+            await _al_save_state("up", None, session)
 
 @tasks.loop(minutes=1)
 async def proxy_health_check():
@@ -5470,9 +5541,10 @@ async def on_ready():
         # ── 4. Start proxy tasks ──────────────────────────────────────────────────
         if not proxy_health_check.is_running():
             proxy_health_check.start()
-        if not commentum_monitor.is_running():
-            commentum_monitor.start()
-            print(f"✅ Commentum monitor started (interval: {COMMENTUM_CHECK_INTERVAL}min, url: {COMMENTUM_PING_URL})")
+        asyncio.create_task(_al_load_state())
+        if not anilist_monitor.is_running():
+            anilist_monitor.start()
+            print("✅ AniList monitor started (1 min interval)")
         asyncio.create_task(_background_proxy_finder())
 
         # ── 5. Heavy init in background — never blocks commands ───────────────────
