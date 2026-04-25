@@ -744,7 +744,7 @@ async def _al_send(is_down: bool, short_err: str, duration_str: str | None):
         )
 
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=5)
 async def anilist_monitor():
     """
     Check AniList every 1 min — same logic as the YML workflow.
