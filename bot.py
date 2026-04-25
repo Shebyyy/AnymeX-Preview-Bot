@@ -744,7 +744,7 @@ async def _al_send(is_down: bool, short_err: str, duration_str: str | None):
         )
 
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=1)
 async def anilist_monitor():
     """
     Check AniList every 1 min — same logic as the YML workflow.
@@ -774,7 +774,7 @@ async def anilist_monitor():
                     raw_error = await resp.text()
 
                 # Same check as YML: only "disabled" in error = down
-                if raw_error and "disabled" in raw_error.lower():
+                if status_code == 403 and raw_error and "disabled" in raw_error.lower():
                     status    = "down"
                     error_msg = raw_error.strip()
 
