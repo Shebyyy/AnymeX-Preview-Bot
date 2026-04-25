@@ -768,15 +768,20 @@ async def anilist_monitor():
             ) as resp:
                 status_code = resp.status
                 try:
-                    body      = await resp.json(content_type=None)
-                    raw_error = (body.get("errors") or [{}])[0].get("message", "")
+                    body   = await resp.json(content_type=None)
+                    errors = body.get("errors") or []
+                    # Only trigger on exact AniList disabled response:
+                    # HTTP 403 + errors[0].status == 403 + "disabled" in message
+                    if (
+                        errors
+                        and status_code == 403
+                        and errors[0].get("status") == 403
+                        and "disabled" in errors[0].get("message", "").lower()
+                    ):
+                        status    = "down"
+                        error_msg = errors[0]["message"].strip()
                 except Exception:
-                    raw_error = await resp.text()
-
-                # Same check as YML: only "disabled" in error = down
-                if status_code == 403 and raw_error and "disabled" in raw_error.lower():
-                    status    = "down"
-                    error_msg = raw_error.strip()
+                    pass  # not a valid JSON response, ignore
 
     except Exception:
         pass  # network blip / timeout — not a 403, ignore
