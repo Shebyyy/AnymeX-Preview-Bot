@@ -778,9 +778,8 @@ async def anilist_monitor():
                     status    = "down"
                     error_msg = raw_error.strip()
 
-    except Exception as e:
-        status    = "down"
-        error_msg = str(e)
+    except Exception:
+        pass  # network blip / timeout — not a 403, ignore
 
     # ── Only act on change (same as YML prev != current logic) ───────────────
     if _al_status == status:
