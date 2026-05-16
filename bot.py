@@ -1767,9 +1767,24 @@ async def _api_add_media(request, media_type: str):
         return web.json_response({"error": "mal_id must be an integer"}, status=400)
 
     mb_type = "anime" if media_type == "ANIME" else "manga"
+    mal_data = None  # Jikan fallback data
 
+    # ── Resolve anilist_id ↔ mal_id cross-reference ──────────────────────────
+    # Priority: AniList idMal lookup → mal-backup repo (fallback)
     if anilist_id is None and mal_id is not None:
-        anilist_id = await _malbackup_mal_to_anilist(mb_type, mal_id)
+        # Try AniList's own idMal field first (most reliable)
+        async with aiohttp.ClientSession() as session:
+            al_by_mal = await fetch_anilist_by_mal(session, mal_id, media_type)
+        if al_by_mal:
+            anilist_id = al_by_mal.get("id")
+            print(f"✅ Resolved MAL ID {mal_id} → AniList ID {anilist_id} via idMal lookup")
+        else:
+            # Fallback to mal-backup repo
+            anilist_id = await _malbackup_mal_to_anilist(mb_type, mal_id)
+            if anilist_id:
+                print(f"✅ Resolved MAL ID {mal_id} → AniList ID {anilist_id} via mal-backup")
+            else:
+                print(f"⚠️ Could not resolve MAL ID {mal_id} to AniList — will try Jikan fallback")
 
     if mal_id is None and anilist_id is not None:
         mal_id = await _malbackup_anilist_to_mal(mb_type, anilist_id)
@@ -1789,8 +1804,23 @@ async def _api_add_media(request, media_type: str):
             score = media.get("averageScore") or "N/A"
             poster = media.get("coverImage", {}).get("large", "")
             nsfw = bool(media.get("isAdult") or False)
+        elif mal_id:
+            # ── Jikan fallback: fetch from MAL when not on AniList ───────────
+            mal_data = await fetch_mal_jikan(session, mal_id, media_type)
+            if mal_data:
+                title = mal_data["title"]
+                poster = mal_data["poster"]
+                score = mal_data["score"]
+                nsfw = mal_data["nsfw"]
+                print(f"✅ Fetched MAL data via Jikan for MAL ID {mal_id}: {title}")
+            else:
+                title = f"MAL ID {mal_id}"
+                score = "N/A"
+                poster = ""
+                nsfw = False
+                print(f"⚠️ Jikan also failed for MAL ID {mal_id} — storing with minimal data")
         else:
-            title = f"MAL ID {mal_id}"
+            title = "Unknown"
             score = "N/A"
             poster = ""
             nsfw = False
@@ -4421,6 +4451,93 @@ async def fetch_anilist(session: aiohttp.ClientSession, media_id: int, media_typ
         return result.get("data", {}).get("Media")
 
 
+async def fetch_anilist_by_mal(session: aiohttp.ClientSession, mal_id: int, media_type: str) -> dict | None:
+    """Look up an AniList entry by its MAL ID using the idMal field.
+    Returns the full AniList Media object if found, else None.
+    This is the most reliable way to resolve MAL → AniList because it queries
+    AniList's own database directly instead of relying on a third-party backup repo.
+    """
+    query = """
+    query ($malId: Int, $type: MediaType) {
+      Media(idMal: $malId, type: $type) {
+        id idMal
+        title { romaji english native }
+        coverImage { large }
+        bannerImage
+        averageScore
+        genres
+        isAdult
+        status
+        format
+        episodes
+        duration
+        chapters
+        volumes
+        season
+        seasonYear
+        description(asHtml: false)
+        studios(isMain: true) { nodes { name } }
+      }
+    }
+    """
+    try:
+        async with session.post(
+            ANILIST_API,
+            json={"query": query, "variables": {"malId": mal_id, "type": media_type}},
+            headers={"Content-Type": "application/json"},
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as r:
+            if r.status != 200:
+                return None
+            result = await r.json()
+            return result.get("data", {}).get("Media")
+    except Exception as e:
+        print(f"⚠️ [AniList idMal lookup] Failed for MAL ID {mal_id}: {e}")
+        return None
+
+
+async def fetch_mal_jikan(session: aiohttp.ClientSession, mal_id: int, media_type: str) -> dict | None:
+    """Fetch anime/manga data from Jikan API (no auth needed).
+    Used as a fallback when an entry is not on AniList at all.
+    Returns a normalized dict with title, poster, score, nsfw, etc.
+    """
+    endpoint = "anime" if media_type in ("ANIME", "anime") else "manga"
+    url = f"https://api.jikan.moe/v4/{endpoint}/{mal_id}/full"
+    try:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as r:
+            if r.status != 200:
+                print(f"⚠️ [Jikan] MAL {endpoint}/{mal_id} returned status {r.status}")
+                return None
+            result = await r.json()
+            data = result.get("data")
+            if not data:
+                return None
+            # Normalize Jikan response to a consistent format
+            images = data.get("images", {}) or {}
+            jpg_images = images.get("jpg", {}) or {}
+            return {
+                "title": data.get("title", f"MAL ID {mal_id}"),
+                "poster": jpg_images.get("large_image_url", "") or jpg_images.get("image_url", ""),
+                "score": data.get("score") or "N/A",
+                "nsfw": bool(data.get("rating") and "hx" in str(data.get("rating", "")).lower()),
+                "genres": ", ".join(g.get("name", "") for g in (data.get("genres") or [])),
+                "synopsis": (data.get("synopsis") or "")[:500],
+                "status": data.get("status"),
+                "episodes": data.get("episodes"),
+                "chapters": data.get("chapters"),
+                "volumes": data.get("volumes"),
+                "type": data.get("type"),
+                "year": data.get("year"),
+                "source": "MAL",
+            }
+    except Exception as e:
+        print(f"⚠️ [Jikan] Failed for MAL ID {mal_id}: {e}")
+        return None
+
+
 async def fetch_anilist_batch(session: aiohttp.ClientSession, ids: list[int], media_type: str) -> dict[int, dict]:
     """Fetch up to 50 media items in one AniList request. Returns {id: media_dict}."""
     if not ids:
@@ -5956,17 +6073,36 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
             return
 
         media = await fetch_anilist(session, anilist_id, media_type)
+        mal_data = None
 
-    if not media:
-        await interaction.followup.send("❌ Could not fetch info from AniList.", ephemeral=True)
+        # ── Jikan fallback when AniList doesn't have this entry ───────────
+        if not media:
+            mal_id_guess = None
+            # Try resolving AniList ID → MAL ID via mal-backup to attempt Jikan
+            mb_type = "anime" if media_type == "ANIME" else "manga"
+            mal_id_guess = await _malbackup_anilist_to_mal(mb_type, anilist_id)
+            if mal_id_guess:
+                mal_data = await fetch_mal_jikan(session, mal_id_guess, media_type)
+
+    if not media and not mal_data:
+        await interaction.followup.send("❌ Could not fetch info from AniList or MAL.", ephemeral=True)
         return
 
-    titles = media["title"]
-    title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
-    cover_url = media.get("coverImage", {}).get("large", "")
-    score = media.get("averageScore") or "N/A"
-    genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
-    mal_id = media.get("idMal")
+    # ── Build entry data from either AniList or Jikan ─────────────────────
+    if media:
+        titles = media["title"]
+        title = titles.get("english") or titles.get("romaji") or titles.get("native") or "Unknown"
+        cover_url = media.get("coverImage", {}).get("large", "")
+        score = media.get("averageScore") or "N/A"
+        genres = ", ".join(media.get("genres", [])[:4]) or "N/A"
+        mal_id = media.get("idMal")
+    else:
+        # Using Jikan (MAL) fallback data
+        title = mal_data["title"]
+        cover_url = mal_data["poster"]
+        score = mal_data["score"]
+        genres = mal_data.get("genres", "N/A")
+        mal_id = await _malbackup_anilist_to_mal("anime" if media_type == "ANIME" else "manga", anilist_id) or None
 
     # Build AniList and MAL links
     type_path = "anime" if media_type == "ANIME" else "manga"
@@ -5978,16 +6114,34 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     user_snapshot = _build_user_snapshot(profile)
     _mark_admin_flag(user_snapshot, admins)
 
-    episodes = media.get("episodes")
-    duration = media.get("duration")
-    chapters = media.get("chapters")
-    volumes = media.get("volumes")
-    status = media.get("status")
-    fmt = media.get("format")
-    season = media.get("season")
-    season_year = media.get("seasonYear")
-    description = (media.get("description") or "")[:500]
-    studios = [s["name"] for s in (media.get("studios", {}).get("nodes") or [])]
+    # ── Extract detailed fields from either AniList or Jikan data ──────────
+    if media:
+        episodes = media.get("episodes")
+        duration = media.get("duration")
+        chapters = media.get("chapters")
+        volumes = media.get("volumes")
+        status = media.get("status")
+        fmt = media.get("format")
+        season = media.get("season")
+        season_year = media.get("seasonYear")
+        description = (media.get("description") or "")[:500]
+        studios = [s["name"] for s in (media.get("studios", {}).get("nodes") or [])]
+        entry_genres = media.get("genres", [])
+        entry_nsfw = bool(media.get("isAdult") or False)
+    else:
+        # Jikan fallback — some fields won't be available
+        episodes = mal_data.get("episodes")
+        duration = None
+        chapters = mal_data.get("chapters")
+        volumes = mal_data.get("volumes")
+        status = mal_data.get("status")
+        fmt = mal_data.get("type")
+        season = None
+        season_year = mal_data.get("year")
+        description = (mal_data.get("synopsis") or "")[:500]
+        studios = []
+        entry_genres = genres if isinstance(genres, list) else [g.strip() for g in (genres or "N/A").split(",") if g.strip()]
+        entry_nsfw = mal_data.get("nsfw", False)
 
     async with aiohttp.ClientSession() as _tr_session:
         stored_reason = await _translate_reason(_tr_session, reason)
@@ -6013,8 +6167,8 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
         "added_by_discord_id": str(interaction.user.id),
         "poster": cover_url,
         "score": score,
-        "genres": media.get("genres", []),
-        "nsfw": bool(media.get("isAdult") or False),
+        "genres": entry_genres,
+        "nsfw": entry_nsfw,
         "status": status,
         "format": fmt,
         "episodes": episodes,

@@ -60,29 +60,48 @@ Health check. No auth required.
 
 ## `POST /api/add_anime`
 
-Add an anime to the underrated anime list. Title, poster, and score are fetched automatically from AniList using the `anilist_id`.
+Add an anime to the underrated anime list. Title, poster, and score are fetched automatically.
+
+### ID Resolution Flow
+
+When you provide an ID, the bot resolves data in this order:
+
+1. **If `anilist_id` provided** → Fetch from AniList directly
+2. **If only `mal_id` provided** → Try AniList's `idMal` lookup first → If not on AniList, fall back to **Jikan API** (MAL data)
+3. **Cross-reference** → The other ID is auto-resolved when possible
+
+This means entries not on AniList will still get proper title, poster, and score from MAL via Jikan.
 
 ### Request Body
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `anilist_id` | `int` | ✅ Required | AniList media ID |
+| `anilist_id` | `int` | ⚠️ One of these | AniList media ID |
+| `mal_id` | `int` | ⚠️ One of these | MAL media ID — resolved via AniList idMal or Jikan |
 | `reason` | `string` | ✅ Required | Why this anime is underrated |
 | `anilist_user_id` | `int` | ⚠️ One of these | Submitter's AniList user ID |
 | `mal_user_id` | `int` | ⚠️ One of these | Submitter's MAL user ID |
 | `author` | `string` | ❌ Optional | Display name — falls back to AniList username → MAL username → `"Unknown"` |
-| `mal_id` | `int` | ❌ Optional | MAL media ID — auto-resolved from AniList if omitted |
 | `anilist_username` | `string` | ❌ Optional | Only used if user is not in `users.json` |
 | `mal_username` | `string` | ❌ Optional | Only used if user is not in `users.json` |
 
 > If the user exists in `users.json` (registered via `/setup` in Discord), their full profile including avatar and stats is used automatically.
 
-**Example Request — minimal**
+**Example Request — with AniList ID**
 ```json
 {
   "anilist_id": 74489,
   "reason": "Beautifully illustrated philosophical story about identity and change",
   "anilist_user_id": 5724017
+}
+```
+
+**Example Request — with MAL ID only**
+```json
+{
+  "mal_id": 147172,
+  "reason": "The action scenes are pure goosebumps and the art is insane",
+  "anilist_user_id": 778172
 }
 ```
 
@@ -122,7 +141,7 @@ Add an anime to the underrated anime list. Title, poster, and score are fetched 
 }
 ```
 
-**Error responses:** `400` missing fields, `401` unauthorized, `404` not found on AniList, `409` already in list, `500` GitHub write failed.
+**Error responses:** `400` missing fields, `401` unauthorized, `404` not found on AniList or MAL, `409` already in list, `500` GitHub write failed.
 
 ---
 
@@ -466,7 +485,7 @@ Authorization: Bearer YOUR_API_SECRET
 
 | Field | Anime/Manga | Show/Movie | Description |
 |-------|-------------|------------|-------------|
-| `anilist_id` | ✅ | ❌ | AniList media ID |
+| `anilist_id` | ✅ | ❌ | AniList media ID — `null` if entry only exists on MAL |
 | `mal_id` | ✅ | ❌ | MAL media ID — null if not resolvable |
 | `simkl_id` | ❌ | ✅ | Simkl media ID |
 | `title` | ✅ | ✅ | Media title |
@@ -475,7 +494,7 @@ Authorization: Bearer YOUR_API_SECRET
 | `reason` | ✅ | ✅ | Why this is underrated |
 | `user` | ✅ | ✅ | Submitter profile snapshot |
 | `poster` | ✅ | ✅ | Cover image URL |
-| `score` | ✅ | ✅ | Average score (AniList /100 for anime/manga, Simkl /10 for shows/movies) |
+| `score` | ✅ | ✅ | Average score (AniList /100, MAL /10 via Jikan, or Simkl /10 for shows/movies) |
 | `nsfw` | ✅ | ❌ | Adult content flag from AniList |
 | `genres` | ❌ | ✅ | Comma-separated genre string |
 | `simkl_url` | ❌ | ✅ | Direct Simkl page link |
