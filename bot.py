@@ -9779,6 +9779,9 @@ async def on_message(message: discord.Message):
                 )
             return  # skip process_commands for this message
 
+    # ── Hi trigger ──────────────────────────────────────────────────────────────
+    await hi_trigger._handle(message)
+
 
 
 # /sheby_build  — trigger sheby_alpha_manual.yml (clones Shebyyy/AnymeX)
