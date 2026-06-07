@@ -34,27 +34,25 @@ async def _handle(message: discord.Message):
 
     print(f"[hi_trigger] Triggered by {message.author} in #{message.channel}")
 
-    mention_prefix = f"<@{message.author.id}> "
-    full_content = mention_prefix + REPLY_MESSAGE
+    # When it's a proper reply, Discord already shows "Replying to @user"
+    # So no need to add <@id> in content — that would double-mention
+    # Only add mention prefix for the fallback (no reply reference)
+    mention_content = f"<@{message.author.id}> {REPLY_MESSAGE}"
 
     try:
         webhook = await _get_or_create_webhook(message.channel)
         if webhook:
             # Build the payload with message_reference so Discord shows it as a reply
-            payload = {
-                "content": full_content,
-                "username": WEBHOOK_USERNAME,
-                "avatar_url": WEBHOOK_AVATAR_URL,
-                "allowed_mentions": {
-                    "parse": ["users"],
-                    "users": [str(message.author.id)],
-                },
-            }
-            # Add message_reference to make it a reply (Discord API supports this for webhooks)
             ref = {"message_id": str(message.id), "channel_id": str(message.channel.id)}
             if message.guild:
                 ref["guild_id"] = str(message.guild.id)
-            payload["message_reference"] = ref
+
+            payload = {
+                "content": REPLY_MESSAGE,  # no mention needed — reply header does it
+                "username": WEBHOOK_USERNAME,
+                "avatar_url": WEBHOOK_AVATAR_URL,
+                "message_reference": ref,
+            }
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -64,18 +62,38 @@ async def _handle(message: discord.Message):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status in (200, 204):
-                        print(f"[hi_trigger] Replied via webhook ✅")
+                        print(f"[hi_trigger] Replied via webhook (with reference) ✅")
                     else:
+                        # message_reference might not be supported — retry without it
+                        # add mention manually since there's no reply header
                         body = await resp.text()
-                        print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back to message.reply")
-                        await message.reply(full_content, mention_author=True)
+                        print(f"[hi_trigger] Webhook with reference got HTTP {resp.status}: {body[:200]}")
+                        print(f"[hi_trigger] Retrying webhook without message_reference + adding mention...")
+                        payload["content"] = mention_content
+                        payload["allowed_mentions"] = {
+                            "parse": ["users"],
+                            "users": [str(message.author.id)],
+                        }
+                        payload.pop("message_reference", None)
+                        async with session.post(
+                            webhook.url,
+                            json=payload,
+                            headers={"Content-Type": "application/json"},
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as resp2:
+                            if resp2.status in (200, 204):
+                                print(f"[hi_trigger] Replied via webhook (no reference, with mention) ✅")
+                            else:
+                                body2 = await resp2.text()
+                                print(f"[hi_trigger] Webhook failed again HTTP {resp2.status}: {body2[:200]} — falling back")
+                                await message.reply(REPLY_MESSAGE, mention_author=True)
         else:
-            await message.reply(full_content, mention_author=True)
+            await message.reply(REPLY_MESSAGE, mention_author=True)
             print(f"[hi_trigger] Replied via normal reply ✅")
     except Exception as e:
         print(f"[hi_trigger] Error: {e}")
         try:
-            await message.reply(full_content, mention_author=True)
+            await message.reply(REPLY_MESSAGE, mention_author=True)
         except Exception as e2:
             print(f"[hi_trigger] Fallback also failed: {e2}")
 
