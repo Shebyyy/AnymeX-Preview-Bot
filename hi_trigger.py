@@ -38,14 +38,51 @@ async def _handle(message: discord.Message):
         webhook = await _get_or_create_webhook(message.channel)
         if webhook:
             async with aiohttp.ClientSession() as session:
-                wh = discord.Webhook.from_url(webhook.url, session=session)
-                await wh.send(
-                    content=REPLY_MESSAGE,
-                    username=WEBHOOK_USERNAME,
-                    avatar_url=WEBHOOK_AVATAR_URL,
-                    message_reference=discord.MessageReference(message_id=message.id),
-                )
-            print(f"[hi_trigger] Replied via webhook ✅")
+                # Step 1: Send webhook with custom profile + mention tag
+                payload = {
+                    "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
+                    "username": WEBHOOK_USERNAME,
+                    "avatar_url": WEBHOOK_AVATAR_URL,
+                    "allowed_mentions": {"parse": ["users"]},
+                    "wait": True,
+                }
+                async with session.post(
+                    webhook.url + "?wait=true",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status in (200, 204):
+                        data = await resp.json()
+                        webhook_msg_id = data.get("id")
+                        if webhook_msg_id:
+                            # Step 2: Try to edit the message to add message_reference (reply)
+                            edit_url = f"{webhook.url}/messages/{webhook_msg_id}"
+                            edit_payload = {
+                                "message_reference": {
+                                    "message_id": str(message.id),
+                                    "channel_id": str(message.channel.id),
+                                }
+                            }
+                            if message.guild:
+                                edit_payload["message_reference"]["guild_id"] = str(message.guild.id)
+                            async with session.patch(
+                                edit_url,
+                                json=edit_payload,
+                                headers={"Content-Type": "application/json"},
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as edit_resp:
+                                if edit_resp.status in (200, 204):
+                                    print(f"[hi_trigger] Replied via webhook + reply edit ✅")
+                                else:
+                                    body = await edit_resp.text()
+                                    print(f"[hi_trigger] Webhook sent with profile + mention (edit reply failed {edit_resp.status}: {body[:100]})")
+                        else:
+                            print(f"[hi_trigger] Webhook sent with profile + mention ✅")
+                    else:
+                        body = await resp.text()
+                        print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
+                        await message.reply(REPLY_MESSAGE, mention_author=True)
         else:
             await message.reply(REPLY_MESSAGE, mention_author=True)
             print(f"[hi_trigger] Replied via normal reply ✅")
