@@ -11,10 +11,11 @@ import discord
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
-TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
-REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
-WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
-WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
+TARGET_USER_IDS       = {1331083395614380090, 1400504783097561098}
+TARGET_REPLY_MESSAGE   = "Single yet? <:hmmm:1497190580344586422>"
+OTHERS_REPLY_MESSAGE   = "Still single? <:hmmm:1497190580344586422>"
+WEBHOOK_USERNAME       = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
+WEBHOOK_AVATAR_URL     = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
 # Unicode lookalikes that map to "i" after normalization
 _I_LOOKALIKES = re.compile(r"[iıіιᎥίϊΐί]+", re.IGNORECASE)
@@ -75,19 +76,20 @@ _bot = None
 async def _handle(message: discord.Message):
     if message.author.bot:
         return
-    if message.author.id not in TARGET_USER_IDS:
-        return
     if not _is_hi(message.content):
         return
 
-    print(f"[hi_trigger] Triggered by {message.author} in #{message.channel}")
+    is_target = message.author.id in TARGET_USER_IDS
+    reply_msg = TARGET_REPLY_MESSAGE if is_target else OTHERS_REPLY_MESSAGE
+
+    print(f"[hi_trigger] Triggered by {message.author} in #{message.channel} ({'target' if is_target else 'other'})")
 
     try:
         webhook = await _get_or_create_webhook(message.channel)
         if webhook:
             async with aiohttp.ClientSession() as session:
                 payload = {
-                    "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
+                    "content": f"<@{message.author.id}> {reply_msg}",
                     "username": WEBHOOK_USERNAME,
                     "avatar_url": WEBHOOK_AVATAR_URL,
                     "allowed_mentions": {"parse": ["users"]},
@@ -103,14 +105,14 @@ async def _handle(message: discord.Message):
                     else:
                         body = await resp.text()
                         print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
-                        await message.reply(REPLY_MESSAGE, mention_author=True)
+                        await message.reply(reply_msg, mention_author=True)
         else:
-            await message.reply(REPLY_MESSAGE, mention_author=True)
+            await message.reply(reply_msg, mention_author=True)
             print(f"[hi_trigger] Replied via normal reply ✅")
     except Exception as e:
         print(f"[hi_trigger] Error: {e}")
         try:
-            await message.reply(REPLY_MESSAGE, mention_author=True)
+            await message.reply(reply_msg, mention_author=True)
         except Exception as e2:
             print(f"[hi_trigger] Fallback also failed: {e2}")
 
