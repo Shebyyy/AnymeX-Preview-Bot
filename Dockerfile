@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py .
 COPY moderation.py .
+COPY hi_trigger.py .
 
 EXPOSE 8080
 
