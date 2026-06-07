@@ -3,6 +3,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 import re
+import unicodedata
 import aiohttp
 import discord
 
@@ -15,8 +16,55 @@ REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
 WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
 WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
-# Matches "hi" with any Discord formatting, any case
-HI_PATTERN = re.compile(r"^[\*_~`]*hi[\*_~`]*$", re.IGNORECASE)
+# Unicode lookalikes that map to "i" after normalization
+_I_LOOKALIKES = re.compile(r"[iıіιᎥίϊΐί]+", re.IGNORECASE)
+
+# Discord markdown characters + zero-width chars + visual separators + combining diacritics
+_JUNK_PATTERN = re.compile(r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]")
+
+# Emojis and other non-letter clutter at the edges
+_EDGE_JUNK = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Normalizer — strips ALL tricks and checks if the message is essentially "hi"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_hi(text: str) -> bool:
+    """
+    Returns True if the message is 'hi' regardless of:
+      - Case: hi, Hi, HI, hI
+      - Discord formatting: *hi*, **hi**, _hi_, ||hi||, `hi`, >hi, >>>hi
+      - Zero-width / invisible chars: h​i, h‌i, h‍i
+      - Separators: h i, h.i, h-i, h_i, h/i
+      - Unicode lookalikes: hı, hі (Cyrillic), hι (Greek)
+      - Extra i's: hii, hiii, hiiii (up to 5 i's)
+      - Combining diacritics: hï, hî, hí
+      - Emojis around it: 👋hi, hi 🖤
+    """
+    # Strip leading/trailing whitespace
+    stripped = text.strip()
+
+    # Remove leading/trailing non-word chars (emojis, symbols, punctuation)
+    stripped = _EDGE_JUNK.sub("", stripped)
+
+    # Decompose first: ï → i + combining diaeresis, so the diacritic becomes strippable
+    decomposed = unicodedata.normalize("NFKD", stripped)
+
+    # Remove ALL junk characters (markdown, spaces, zero-width, separators, diacritics)
+    cleaned = _JUNK_PATTERN.sub("", decomposed)
+
+    # Normalize remaining unicode lookalikes (ı→i, і→i, ι→i, etc.)
+    cleaned = unicodedata.normalize("NFKC", cleaned)
+
+    # Now check: must start with 'h' followed by 1-5 i-like characters
+    if len(cleaned) < 2 or len(cleaned) > 6:
+        return False
+
+    if cleaned[0].lower() != 'h':
+        return False
+
+    # All remaining chars must be i-like
+    return bool(_I_LOOKALIKES.fullmatch(cleaned[1:]))
 
 _bot = None
 
@@ -29,7 +77,7 @@ async def _handle(message: discord.Message):
         return
     if message.author.id not in TARGET_USER_IDS:
         return
-    if not HI_PATTERN.match(message.content.strip()):
+    if not _is_hi(message.content):
         return
 
     print(f"[hi_trigger] Triggered by {message.author} in #{message.channel}")
@@ -38,13 +86,11 @@ async def _handle(message: discord.Message):
         webhook = await _get_or_create_webhook(message.channel)
         if webhook:
             async with aiohttp.ClientSession() as session:
-                # Step 1: Send webhook with custom profile + mention tag
                 payload = {
                     "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
                     "username": WEBHOOK_USERNAME,
                     "avatar_url": WEBHOOK_AVATAR_URL,
                     "allowed_mentions": {"parse": ["users"]},
-                    "wait": True,
                 }
                 async with session.post(
                     webhook.url + "?wait=true",
@@ -53,32 +99,7 @@ async def _handle(message: discord.Message):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status in (200, 204):
-                        data = await resp.json()
-                        webhook_msg_id = data.get("id")
-                        if webhook_msg_id:
-                            # Step 2: Try to edit the message to add message_reference (reply)
-                            edit_url = f"{webhook.url}/messages/{webhook_msg_id}"
-                            edit_payload = {
-                                "message_reference": {
-                                    "message_id": str(message.id),
-                                    "channel_id": str(message.channel.id),
-                                }
-                            }
-                            if message.guild:
-                                edit_payload["message_reference"]["guild_id"] = str(message.guild.id)
-                            async with session.patch(
-                                edit_url,
-                                json=edit_payload,
-                                headers={"Content-Type": "application/json"},
-                                timeout=aiohttp.ClientTimeout(total=10),
-                            ) as edit_resp:
-                                if edit_resp.status in (200, 204):
-                                    print(f"[hi_trigger] Replied via webhook + reply edit ✅")
-                                else:
-                                    body = await edit_resp.text()
-                                    print(f"[hi_trigger] Webhook sent with profile + mention (edit reply failed {edit_resp.status}: {body[:100]})")
-                        else:
-                            print(f"[hi_trigger] Webhook sent with profile + mention ✅")
+                        print(f"[hi_trigger] Sent via webhook with profile + mention ✅")
                     else:
                         body = await resp.text()
                         print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
