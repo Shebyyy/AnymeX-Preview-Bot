@@ -21,7 +21,7 @@ import discord
 # ─────────────────────────────────────────────────────────────────────────────
 
 # The user who triggers the reply
-TARGET_USER_ID = 1331083395614380090
+TARGET_USER_ID = 1400504783097561098
 
 # The message to reply with
 REPLY_MESSAGE = "Single yet? <:hmmm:1497190580344586422>"
