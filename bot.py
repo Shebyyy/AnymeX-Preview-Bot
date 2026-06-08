@@ -9782,6 +9782,9 @@ async def on_message(message: discord.Message):
     # ── Hi trigger ──────────────────────────────────────────────────────────────
     await hi_trigger._handle(message)
 
+    # ── Source/extension trigger ────────────────────────────────────────────────
+    await source_trigger._handle(message)
+
 
 
 # /sheby_build  — trigger sheby_alpha_manual.yml (clones Shebyyy/AnymeX)
@@ -10281,6 +10284,9 @@ async def main():
 
     import hi_trigger
     hi_trigger.setup(bot)
+
+    import source_trigger
+    source_trigger.setup(bot)
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
