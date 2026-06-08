@@ -21,7 +21,10 @@ WEBHOOK_AVATAR_URL     = "https://cdn.discordapp.com/avatars/612532963938271232/
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Unicode lookalikes that map to "i" after normalization
-_I_LOOKALIKES = re.compile(r"[iıіιᎥίϊΐί]+", re.IGNORECASE)
+_I_LOOKALIKES = re.compile(r"[iıіιᎥίϊΐíìîïīį]+", re.IGNORECASE)
+
+# Pre-normalize: replace i-lookalikes that would get eaten by edge-junk stripping
+_I_PRENORMALIZE = re.compile(r"[¡]")
 
 # All junk chars to strip (markdown, zero-width, separators, diacritics)
 _JUNK_PATTERN = re.compile(r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]")
@@ -39,6 +42,7 @@ _EDGE_JUNK = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
 def _is_hi_exact(text: str) -> bool:
     """Check if the entire message is just 'hi' (with any tricks)."""
     stripped = text.strip()
+    stripped = _I_PRENORMALIZE.sub("i", stripped)  # ¡ → i before edge-junk eats it
     stripped = _EDGE_JUNK.sub("", stripped)
     decomposed = unicodedata.normalize("NFKD", stripped)
     cleaned = _JUNK_PATTERN.sub("", decomposed)
@@ -87,6 +91,7 @@ def _contains_hi(text: str) -> bool:
 
     # Normalize text for word-level scanning
     stripped = text.strip()
+    stripped = _I_PRENORMALIZE.sub("i", stripped)  # ¡ → i before edge-junk eats it
     stripped = _EDGE_JUNK.sub("", stripped)
     decomposed = unicodedata.normalize("NFKD", stripped)
     normalized = _FULL_JUNK.sub(" ", decomposed)
