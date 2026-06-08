@@ -38,7 +38,7 @@ def _is_asking_about_sources(text: str) -> bool:
 
 # Words that indicate someone is asking about extensions
 _EXTENSION_KEYWORDS = re.compile(
-    r"\b(extension|extensions|ext|addon|add-on|add-ons|repo|repos|repository)\b",
+    r"\b(extension|extensions|ext|addon|add-on|add-ons|plugin|plugins|repo|repos|repository)\b",
     re.IGNORECASE,
 )
 
@@ -49,20 +49,24 @@ _QUESTION_PATTERNS = re.compile(
 )
 
 # Problem/complaint patterns — "not working", "broken", "can't play", etc.
-# These trigger the guide link when combined with source/extension context
 _PROBLEM_KEYWORDS = re.compile(
     r"\b("
     r"not\s+working|isn't\s+working|isnt\s+working|doesn't\s+work|doesnt\s+work|won't\s+work|wont\s+work|"
     r"not\s+loading|won't\s+load|wont\s+load|doesn't\s+load|doesnt\s+load|"
     r"broken|broke|down|dead|crashed|crash|"
-    r"can't\s+(?:play|watch|stream|load|open|access|find|use)|cant\s+(?:play|watch|stream|load|open|access|find|use)|"
+    r"can't\s+(?:play|watch|stream|load|open|access|find|use|install|download)|cant\s+(?:play|watch|stream|load|open|access|find|use|install|download)|"
     r"no\s+(?:source|sources|extension|extensions|video|episodes|results|content)|"
     r"empty|blank|nothing\s+(?:shows|shows\s+up|works|plays)|"
     r"error|fail|failed|"
     r"stopped\s+working|keep\s+(?:getting|showing)|"
     r"not\s+(?:showing|playing|loading|found|available|supported)|"
     r"missing|disappeared|gone|"
-    r"how\s+do\s+i\s+(?:fix|add|get|use)"
+    r"how\s+do\s+i\s+(?:fix|add|get|use|install|download)|"
+    r"can't\s+install|cant\s+install|unable\s+to\s+(?:install|download|add|use|find|load)|"
+    r"can't\s+download|cant\s+download|"
+    r"not\s+installed|not\s+found|"
+    r"doesn't\s+show|doesnt\s+show|"
+    r"how\s+to\s+(?:install|download|add|setup|set\s+up|use)"
     r")\b",
     re.IGNORECASE,
 )
@@ -222,6 +226,11 @@ async def _handle(message: discord.Message):
         if len(content.split()) <= 10:
             should_trigger = True
             match_reason = "reported a problem (likely source-related)"
+    elif is_question and not has_source_kw and not has_ext_kw:
+        # Question pattern alone ("how to add?", "where to download?") — short messages likely about the app
+        if len(content.split()) <= 8:
+            should_trigger = True
+            match_reason = "asked a question (likely source-related)"
 
     if not should_trigger:
         return
