@@ -14,6 +14,9 @@ import discord
 GUIDE_URL       = "https://anymex-extensions.vercel.app/guide"
 EXTENSIONS_API  = "https://anymex-extensions.vercel.app/api/extensions"
 
+# Only reply in this channel (set to None to reply everywhere)
+ALLOWED_CHANNEL_ID = 1496732120511414332
+
 # Cooldown per channel (seconds) — prevents spam
 COOLDOWN_SECONDS = 30
 
@@ -32,7 +35,7 @@ def _is_asking_about_sources(text: str) -> bool:
     """Check if someone is asking about AnymeX sources (not source code / open source)."""
     if not _SOURCE_KEYWORDS_RAW.search(text):
         return False
-    if re.search(r"\b(open\s*source|source\s*code|source\s*file|source\s*of|source\s*repo(?:sitory)?|source\s*is\s+on)\b", text, re.IGNORECASE):
+    if re.search(r"\b(open[\s-]*source|source[\s-]*code|source[\s-]*file|source[\s-]*of|source[\s-]*repo(?:sitory)?|source[\s-]*is[\s-]*on)\b", text, re.IGNORECASE):
         return False
     return True
 
@@ -179,6 +182,10 @@ _bot = None
 
 async def _handle(message: discord.Message):
     if message.author.bot:
+        return
+
+    # Only reply in the allowed channel
+    if ALLOWED_CHANNEL_ID and message.channel.id != ALLOWED_CHANNEL_ID:
         return
 
     content = message.content
