@@ -23,8 +23,10 @@ WEBHOOK_AVATAR_URL     = "https://cdn.discordapp.com/avatars/612532963938271232/
 # Unicode lookalikes that map to "i" after normalization
 _I_LOOKALIKES = re.compile(r"[iıіιᎥίϊΐíìîïīį]+", re.IGNORECASE)
 
-# Pre-normalize: replace i-lookalikes that would get eaten by edge-junk stripping
+# Pre-normalize: replace lookalikes that would get eaten by edge-junk stripping
 _I_PRENORMALIZE = re.compile(r"[¡]")
+_H_PRENORMALIZE = re.compile(r"[\U0001f1ed\u029c]")   # 🇭/ʜ → H
+_I_PRENORMALIZE_FULL = re.compile(r"[¡\U0001f1ee\u026a]")  # ¡/🇮/ɪ → i
 
 # All junk chars to strip (markdown, zero-width, separators, diacritics)
 _JUNK_PATTERN = re.compile(r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]")
@@ -42,7 +44,8 @@ _EDGE_JUNK = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
 def _is_hi_exact(text: str) -> bool:
     """Check if the entire message is just 'hi' (with any tricks)."""
     stripped = text.strip()
-    stripped = _I_PRENORMALIZE.sub("i", stripped)  # ¡ → i before edge-junk eats it
+    stripped = _H_PRENORMALIZE.sub("H", stripped)   # 🇭 → H
+    stripped = _I_PRENORMALIZE_FULL.sub("i", stripped)  # ¡/🇮 → i
     stripped = _EDGE_JUNK.sub("", stripped)
     decomposed = unicodedata.normalize("NFKD", stripped)
     cleaned = _JUNK_PATTERN.sub("", decomposed)
@@ -56,13 +59,15 @@ def _is_hi_exact(text: str) -> bool:
 
 def _is_h_word(word: str) -> bool:
     """Check if a single-char word is 'h'."""
-    w = unicodedata.normalize("NFKC", unicodedata.normalize("NFKD", word))
+    w = _H_PRENORMALIZE.sub("H", word)  # 🇭 → H
+    w = unicodedata.normalize("NFKC", unicodedata.normalize("NFKD", w))
     return len(w) == 1 and w.lower() == 'h'
 
 
 def _is_i_word(word: str) -> bool:
     """Check if a word is just i-like characters."""
-    w = _EDGE_JUNK.sub("", word)
+    w = _I_PRENORMALIZE_FULL.sub("i", word)  # ¡/🇮 → i
+    w = _EDGE_JUNK.sub("", w)
     w = unicodedata.normalize("NFKC", unicodedata.normalize("NFKD", w))
     w = _JUNK_PATTERN.sub("", w)
     if not w or len(w) > 5:
@@ -91,7 +96,8 @@ def _contains_hi(text: str) -> bool:
 
     # Normalize text for word-level scanning
     stripped = text.strip()
-    stripped = _I_PRENORMALIZE.sub("i", stripped)  # ¡ → i before edge-junk eats it
+    stripped = _H_PRENORMALIZE.sub("H", stripped)   # 🇭 → H
+    stripped = _I_PRENORMALIZE_FULL.sub("i", stripped)  # ¡/🇮 → i
     stripped = _EDGE_JUNK.sub("", stripped)
     decomposed = unicodedata.normalize("NFKD", stripped)
     normalized = _FULL_JUNK.sub(" ", decomposed)
