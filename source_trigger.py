@@ -11,7 +11,7 @@ import discord
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
-GUIDE_URL       = "https://anymex-extensions.vercel.app/guide"
+GUIDE_URL       = "https://anymex-extensions.vercel.app/guides"
 EXTENSIONS_API  = "https://anymex-extensions.vercel.app/api/extensions"
 
 # Only reply in this channel (set to None to reply everywhere)
