@@ -20,6 +20,20 @@ ALLOWED_CHANNEL_ID = 1496732120511414332
 # Cooldown per channel (seconds) — prevents spam
 COOLDOWN_SECONDS = 30
 
+# Roles that should NOT receive the guide link
+EXCLUDED_ROLE_IDS = {
+    1496743097395314829,  # Owner
+    1496743497091252254,  # Admin
+    1496581599557582950,  # Mod
+    1497134255954726912,  # Nub dev
+}
+
+# Users that should NOT receive the guide link
+EXCLUDED_USER_IDS = {
+    826730448688250890,   # bakabakaidiot
+    1331083395614380090,  # devta.exe
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Keyword patterns
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +197,15 @@ _bot = None
 async def _handle(message: discord.Message):
     if message.author.bot:
         return
+
+    # Skip excluded users
+    if message.author.id in EXCLUDED_USER_IDS:
+        return
+
+    # Skip users with excluded roles (guild only)
+    if hasattr(message.author, "roles"):
+        if any(role.id in EXCLUDED_ROLE_IDS for role in message.author.roles):
+            return
 
     # Only reply in the allowed channel
     if ALLOWED_CHANNEL_ID and message.channel.id != ALLOWED_CHANNEL_ID:
