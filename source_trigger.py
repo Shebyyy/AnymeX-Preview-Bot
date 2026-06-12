@@ -19,10 +19,10 @@ ALLOWED_CHANNEL_ID = 1496732120511414332
 
 # Ignore these roles — bot won't reply to members who have any of these roles
 IGNORE_ROLE_IDS = {
-    1496743097395314829,   # Owner
-    1496743497091252254,   # Admin
-    1496581599557582950,   # Mod
-    1497134255954726912,   # Nub dev
+    1496743097395314829,  # Owner
+    1496743497091252254,  # Admin
+    1496581599557582950,  # Mod
+    1497134255954726912,  # Nub dev
 }
 
 # Ignore these members — bot won't reply to them regardless of roles
@@ -288,10 +288,6 @@ async def _handle(message: discord.Message):
 def setup(bot: discord.Client):
     global _bot
     _bot = bot
-
-    @bot.listen("on_message")
-    async def on_message_source(message: discord.Message):
-        await _handle(message)
 
     # Pre-fetch extension names on startup
     @bot.listen("on_ready")
