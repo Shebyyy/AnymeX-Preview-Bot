@@ -17,6 +17,20 @@ EXTENSIONS_API  = "https://anymex-extensions.vercel.app/api/extensions"
 # Only reply in this channel (set to None to reply everywhere)
 ALLOWED_CHANNEL_ID = 1496732120511414332
 
+# Ignore these roles — bot won't reply to members who have any of these roles
+IGNORE_ROLE_IDS = {
+    1496743097395314829,   # Owner
+    1496743497091252254,   # Admin
+    1496581599557582950,   # Mod
+    1497134255954726912,   # Nub dev
+}
+
+# Ignore these members — bot won't reply to them regardless of roles
+IGNORE_USER_IDS = {
+    826730448688250890,   # bakabakaidiot
+    1331083395614380090,  # devta.exe
+}
+
 # Cooldown per channel (seconds) — prevents spam
 COOLDOWN_SECONDS = 30
 
@@ -183,6 +197,15 @@ _bot = None
 async def _handle(message: discord.Message):
     if message.author.bot:
         return
+
+    # Skip ignored members
+    if message.author.id in IGNORE_USER_IDS:
+        return
+
+    # Skip members with ignored roles
+    if IGNORE_ROLE_IDS and message.member:
+        if any(role.id in IGNORE_ROLE_IDS for role in message.member.roles):
+            return
 
     # Only reply in the allowed channel
     if ALLOWED_CHANNEL_ID and message.channel.id != ALLOWED_CHANNEL_ID:
