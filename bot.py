@@ -5638,6 +5638,16 @@ async def on_disconnect():
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     try:
+        # ── 0. Register persistent views so buttons survive bot restarts ─────────
+        # These views handle button clicks on messages that were sent before restart.
+        # CancelBuildView is registered per-message in the build commands via
+        # bot.add_view(view, message_id=msg.id), but we also register a fallback.
+        try:
+            bot.add_view(CancelBuildView(run_id=0, label="Cancel Build"))
+            print("✅ Persistent CancelBuildView registered")
+        except Exception as e:
+            print(f"⚠️ Failed to register persistent CancelBuildView: {e}")
+
         # ── 1. Flush any logs queued/persisted before bot was ready ──────────────
         if LOG_CHANNEL_ID:
             try:
@@ -5913,13 +5923,13 @@ async def myprofile(interaction: discord.Interaction):
 
 class ConfirmView(discord.ui.View):
     def __init__(self, entry: dict, filepath: str, media_type: str, cover_url: str):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
         self.entry = entry
         self.filepath = filepath
         self.media_type = media_type
         self.cover_url = cover_url
 
-    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.success, custom_id="confirm_anime:confirm")
     async def confirm(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -6016,7 +6026,7 @@ class ConfirmView(discord.ui.View):
         await interaction.message.edit(view=self)
         await interaction.followup.send(embed=embed)
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger, custom_id="confirm_anime:cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         for child in self.children:
@@ -6227,7 +6237,7 @@ async def handle_add(interaction, anilist_id: int, reason: str, media_type: str)
     preview.add_field(name="Reason", value=stored_reason, inline=False)
     if cover_url:
         preview.set_thumbnail(url=cover_url)
-    preview.set_footer(text="You have 2 minutes to confirm.")
+    preview.set_footer(text="Click ✅ to confirm or ❌ to cancel.")
 
     view = ConfirmView(entry=entry, filepath=filepath, media_type=media_type.lower(), cover_url=cover_url)
     await interaction.followup.send(embed=preview, view=view)
@@ -6395,7 +6405,7 @@ async def handle_simkl_add(
     preview.add_field(name="Reason", value=stored_reason, inline=False)
     if poster_url:
         preview.set_thumbnail(url=poster_url)
-    preview.set_footer(text="You have 2 minutes to confirm.")
+    preview.set_footer(text="Click ✅ to confirm or ❌ to cancel.")
 
     view = SimklConfirmView(entry=entry, filepath=filepath, media_type=media_type, poster_url=poster_url)
     await interaction.followup.send(embed=preview, view=view)
@@ -6403,13 +6413,13 @@ async def handle_simkl_add(
 
 class SimklConfirmView(discord.ui.View):
     def __init__(self, entry: dict, filepath: str, media_type: str, poster_url: str | None):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
         self.entry = entry
         self.filepath = filepath
         self.media_type = media_type
         self.poster_url = poster_url
 
-    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.green, custom_id="confirm_simkl:confirm")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         async with aiohttp.ClientSession() as session:
@@ -6500,7 +6510,7 @@ class SimklConfirmView(discord.ui.View):
         await interaction.followup.send(embed=embed)
         self.stop()
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.red, custom_id="confirm_simkl:cancel")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         for child in self.children:
@@ -6966,6 +6976,97 @@ BUILD_TYPE_CHOICES = [
     app_commands.Choice(name="stable", value="stable"),
 ]
 
+# ══════════════════════════════════════════════════════════════════════════════
+# NOTE: Discord Components V2 Status
+# ══════════════════════════════════════════════════════════════════════════════
+# Discord introduced Components V2 (IS_COMPONENTS_V2 flag = 1 << 15) which adds
+# new component types: TextDisplay, Thumbnail, MediaGallery, File, Separator,
+# Section, and Container. This allows buttons/images inside "embeds" (containers),
+# eliminates the side color bar, and enables side-by-side thumbnails + text.
+#
+# HOWEVER, discord.py does NOT yet support Components V2 natively as of v2.5.x.
+# See: https://github.com/Rapptz/discord.py/issues/10192
+#
+# Until discord.py adds V2 support, we use the **persistent View** pattern:
+#   - timeout=None  → buttons never expire during runtime
+#   - custom_id     → buttons are identifiable and re-registerable on restart
+#   - bot.add_view() → registers views on startup so old buttons still work
+#
+# When discord.py adds V2 support, the ConfirmView/SimklConfirmView can be
+# migrated to use Container components for a cleaner look.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Persistent Cancel Build View — works across bot restarts
+# ══════════════════════════════════════════════════════════════════════════════
+# All cancel buttons share a single custom_id pattern: cancel_build:{run_id}
+# When clicked, we parse the run_id from the custom_id to cancel the correct build.
+# A mapping of custom_id → {run_id, label} is kept in memory so the handler
+# knows which build to cancel even after a bot restart (re-populated from GitHub).
+# ══════════════════════════════════════════════════════════════════════════════
+
+_active_builds: dict[str, dict] = {}  # custom_id → {"run_id": int, "label": str}
+
+class CancelBuildView(discord.ui.View):
+    """
+    Persistent cancel-build button that never expires.
+    The run_id is encoded in the button's custom_id so it survives bot restarts.
+    """
+    def __init__(self, run_id: int, label: str = "Cancel Build"):
+        super().__init__(timeout=None)
+        self.run_id = run_id
+        self._label = label
+        # Set a unique custom_id for this specific build run
+        cid = f"cancel_build:{run_id}"
+        self.cancel_button.custom_id = cid
+        self.cancel_button.label = label
+        # Track in global mapping for persistence
+        _active_builds[cid] = {"run_id": run_id, "label": label}
+
+    @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red, custom_id="cancel_build:0")
+    async def cancel_button(
+        self,
+        button_interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        # Parse run_id from the custom_id (format: cancel_build:{run_id})
+        cid = button.custom_id
+        run_id = self.run_id
+        # Also try parsing from custom_id as fallback (in case of persistent view)
+        if not run_id and cid.startswith("cancel_build:"):
+            try:
+                run_id = int(cid.split(":")[1])
+            except (ValueError, IndexError):
+                pass
+
+        await button_interaction.response.defer()
+        button.disabled = True
+        button.label = "Cancelling…"
+        await button_interaction.message.edit(view=self)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run_id}/cancel",
+                headers=gh_headers(),
+            ) as r:
+                if r.status == 202:
+                    button.label = "Cancelled"
+                    await button_interaction.message.edit(view=self)
+                    await button_interaction.followup.send(
+                        embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
+                        ephemeral=True,
+                    )
+                    # Remove from active builds tracking
+                    _active_builds.pop(cid, None)
+                else:
+                    button.disabled = False
+                    button.label = self._label
+                    await button_interaction.message.edit(view=self)
+                    await button_interaction.followup.send(
+                        embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
+                        ephemeral=True,
+                    )
+
 
 @bot.tree.command(name="build", description="Trigger the AnymeX-Preview build workflow")
 @app_commands.describe(
@@ -7052,44 +7153,9 @@ async def build(
         if run_id:
             embed.description = "Build started — click below to cancel if needed"
 
-            class CancelView(discord.ui.View):
-                def __init__(self, run_id):
-                    super().__init__()
-                    self.run_id = run_id
-
-                @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red)
-                async def cancel_button(
-                    self,
-                    button_interaction: discord.Interaction,
-                    button: discord.ui.Button,
-                ):
-                    await button_interaction.response.defer()
-                    button.disabled = True
-                    button.label = "Cancelling…"
-                    await button_interaction.message.edit(view=self)
-
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
-                            headers=gh_headers(),
-                        ) as r:
-                            if r.status == 202:
-                                button.label = "Cancelled"
-                                await button_interaction.message.edit(view=self)
-                                await button_interaction.followup.send(
-                                    embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
-                                    ephemeral=True,
-                                )
-                            else:
-                                button.disabled = False
-                                button.label = "Cancel Build"
-                                await button_interaction.message.edit(view=self)
-                                await button_interaction.followup.send(
-                                    embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
-                                    ephemeral=True,
-                                )
-
-            await interaction.followup.send(embed=embed, view=CancelView(run_id))
+            view = CancelBuildView(run_id, label="Cancel Build")
+            msg = await interaction.followup.send(embed=embed, view=view)
+            bot.add_view(view, message_id=msg.id)
         else:
             embed.description = "Build started"
             await interaction.followup.send(embed=embed)
@@ -7305,8 +7371,39 @@ async def create_tag(interaction: discord.Interaction, tag: str, message: str = 
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+async def _delete_tag_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for /delete_tag — lists existing beta tags from the repo."""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/tags?per_page=25",
+                headers=gh_headers(),
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    return []
+                tags = await r.json()
+        except Exception:
+            return []
+
+    choices = []
+    for t in tags:
+        name = t.get("name", "")
+        if not current or current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+
+    if current and not any(c.value == current for c in choices):
+        choices.append(app_commands.Choice(name=current, value=current))
+
+    return choices[:25]
+
+
 @bot.tree.command(name="delete_tag", description="Delete a Git tag, its release, and cancel any running build.yml")
-@app_commands.describe(tag="Tag name to delete")
+@app_commands.describe(tag="Tag name to delete — autocomplete shows existing tags")
+@app_commands.autocomplete(tag=_delete_tag_autocomplete)
 @has_allowed_role()
 async def delete_tag(interaction: discord.Interaction, tag: str):
     await interaction.response.defer()
@@ -7327,21 +7424,23 @@ async def delete_tag(interaction: discord.Interaction, tag: str):
                 release_status = r.status
 
         # Cancel any running build.yml on the beta branch
+        # Tag creation auto-triggers build.yml via GitHub Actions on:push:tags
         cancel_status = None
         async with session.get(
-            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/build.yml/runs?per_page=1&branch={GITHUB_BRANCH}&status=in_progress",
+            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/build.yml/runs?per_page=5&branch={GITHUB_BRANCH}",
             headers=gh_headers(),
         ) as r:
             if r.status == 200:
                 runs_data = await r.json()
-                runs = runs_data.get("workflow_runs", [])
-                if runs:
-                    run_id = runs[0]["id"]
-                    async with session.post(
-                        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run_id}/cancel",
-                        headers=gh_headers(),
-                    ) as cr:
-                        cancel_status = cr.status
+                for run in runs_data.get("workflow_runs", []):
+                    if run.get("status") in ("in_progress", "queued", "waiting", "requested"):
+                        run_id = run["id"]
+                        async with session.post(
+                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run_id}/cancel",
+                            headers=gh_headers(),
+                        ) as cr:
+                            cancel_status = cr.status
+                        break  # cancel the first active one
 
     if tag_status in (200, 204):
         embed = discord.Embed(title="🗑️ Beta Tag Deleted!", color=0x2EA043)
@@ -7353,8 +7452,8 @@ async def delete_tag(interaction: discord.Interaction, tag: str):
         )
         if cancel_status == 202:
             embed.add_field(name="Build", value="✅ Cancelled running build.yml", inline=False)
-        elif cancel_status is not None:
-            embed.add_field(name="Build", value="⚠️ No running build found", inline=False)
+        else:
+            embed.add_field(name="Build", value="No running build.yml found", inline=False)
     else:
         embed = discord.Embed(
             title="❌ Failed to Delete",
@@ -7549,21 +7648,23 @@ async def delete_stable_tag(interaction: discord.Interaction, tag: str):
                 release_status = r.status
 
         # Cancel any running build.yml on the stable branch
+        # Tag creation auto-triggers build.yml via GitHub Actions on:push:tags
         cancel_status = None
         async with session.get(
-            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/actions/workflows/build.yml/runs?per_page=1&branch={STABLE_BRANCH}&status=in_progress",
+            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/actions/workflows/build.yml/runs?per_page=5&branch={STABLE_BRANCH}",
             headers=gh_headers(),
         ) as r:
             if r.status == 200:
                 runs_data = await r.json()
-                runs = runs_data.get("workflow_runs", [])
-                if runs:
-                    run_id = runs[0]["id"]
-                    async with session.post(
-                        f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/actions/runs/{run_id}/cancel",
-                        headers=gh_headers(),
-                    ) as cr:
-                        cancel_status = cr.status
+                for run in runs_data.get("workflow_runs", []):
+                    if run.get("status") in ("in_progress", "queued", "waiting", "requested"):
+                        run_id = run["id"]
+                        async with session.post(
+                            f"{GITHUB_API}/repos/{STABLE_OWNER}/{STABLE_REPO}/actions/runs/{run_id}/cancel",
+                            headers=gh_headers(),
+                        ) as cr:
+                            cancel_status = cr.status
+                        break  # cancel the first active one
 
     if tag_status in (200, 204):
         embed = discord.Embed(title="🗑️ Stable Tag Deleted!", color=0x2EA043)
@@ -7576,8 +7677,8 @@ async def delete_stable_tag(interaction: discord.Interaction, tag: str):
         )
         if cancel_status == 202:
             embed.add_field(name="Build", value="✅ Cancelled running build.yml", inline=False)
-        elif cancel_status is not None:
-            embed.add_field(name="Build", value="⚠️ No running build found", inline=False)
+        else:
+            embed.add_field(name="Build", value="No running build.yml found", inline=False)
     else:
         embed = discord.Embed(
             title="❌ Failed to Delete",
@@ -7647,42 +7748,9 @@ async def latest_run(interaction: discord.Interaction):
         embed.description = "Running - click button to cancel"
         embed.set_footer(text=f"Run ID: {run_id}")
 
-        class CancelView(discord.ui.View):
-            def __init__(self, run_id):
-                super().__init__()
-                self.run_id = run_id
-
-            @discord.ui.button(label="Cancel Run", style=discord.ButtonStyle.red)
-            async def cancel_button(
-                self, button_interaction: discord.Interaction, button: discord.ui.Button
-            ):
-                await button_interaction.response.defer()
-                button.disabled = True
-                button.label = "Cancelling…"
-                await button_interaction.message.edit(view=self)
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
-                        headers=gh_headers(),
-                    ) as r:
-                        if r.status == 202:
-                            button.label = "Cancelled"
-                            await button_interaction.message.edit(view=self)
-                            await button_interaction.followup.send(
-                                embed=discord.Embed(title="✅ Run cancelled", color=0x2EA043),
-                                ephemeral=True,
-                            )
-                        else:
-                            button.disabled = False
-                            button.label = "Cancel Run"
-                            await button_interaction.message.edit(view=self)
-                            await button_interaction.followup.send(
-                                embed=discord.Embed(title="❌ Failed to cancel", color=0xDA3633),
-                                ephemeral=True,
-                            )
-
-        await interaction.followup.send(embed=embed, view=CancelView(run_id))
+        view = CancelBuildView(run_id, label="Cancel Run")
+        msg = await interaction.followup.send(embed=embed, view=view)
+        bot.add_view(view, message_id=msg.id)
     else:
         await interaction.followup.send(embed=embed)
 
@@ -9780,10 +9848,13 @@ async def on_message(message: discord.Message):
             return  # skip process_commands for this message
 
     # ── Hi trigger ──────────────────────────────────────────────────────────────
-    await hi_trigger._handle(message)
+    # NOTE: hi_trigger.setup() registers its own on_message listener via bot.listen(),
+    # so we do NOT call hi_trigger._handle() here — that would cause double-processing.
+    # If hi_trigger.setup() is NOT called (module missing), this is a no-op.
 
     # ── Source/extension trigger ────────────────────────────────────────────────
-    await source_trigger._handle(message)
+    # NOTE: source_trigger.setup() also registers its own on_message listener,
+    # so no direct call needed here either.
 
 
 
@@ -9916,44 +9987,9 @@ async def sheby_build(
         if run_id:
             embed.description = "Build started — click below to cancel if needed"
 
-            class ShebyBuildCancelView(discord.ui.View):
-                def __init__(self, run_id):
-                    super().__init__()
-                    self.run_id = run_id
-
-                @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red)
-                async def cancel_button(
-                    self,
-                    button_interaction: discord.Interaction,
-                    button: discord.ui.Button,
-                ):
-                    await button_interaction.response.defer()
-                    button.disabled = True
-                    button.label = "Cancelling…"
-                    await button_interaction.message.edit(view=self)
-
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
-                            headers=gh_headers(),
-                        ) as r:
-                            if r.status == 202:
-                                button.label = "Cancelled"
-                                await button_interaction.message.edit(view=self)
-                                await button_interaction.followup.send(
-                                    embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
-                                    ephemeral=True,
-                                )
-                            else:
-                                button.disabled = False
-                                button.label = "Cancel Build"
-                                await button_interaction.message.edit(view=self)
-                                await button_interaction.followup.send(
-                                    embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
-                                    ephemeral=True,
-                                )
-
-            await interaction.followup.send(embed=embed, view=ShebyBuildCancelView(run_id))
+            view = CancelBuildView(run_id, label="Cancel Build")
+            msg = await interaction.followup.send(embed=embed, view=view)
+            bot.add_view(view, message_id=msg.id)
         else:
             embed.description = "Build started"
             await interaction.followup.send(embed=embed)
@@ -10125,44 +10161,9 @@ async def fork_build(
         if run_id:
             embed.description = "Build started — click below to cancel if needed"
 
-            class ForkBuildCancelView(discord.ui.View):
-                def __init__(self, run_id):
-                    super().__init__()
-                    self.run_id = run_id
-
-                @discord.ui.button(label="Cancel Build", style=discord.ButtonStyle.red)
-                async def cancel_button(
-                    self,
-                    button_interaction: discord.Interaction,
-                    button: discord.ui.Button,
-                ):
-                    await button_interaction.response.defer()
-                    button.disabled = True
-                    button.label = "Cancelling…"
-                    await button_interaction.message.edit(view=self)
-
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{self.run_id}/cancel",
-                            headers=gh_headers(),
-                        ) as r:
-                            if r.status == 202:
-                                button.label = "Cancelled"
-                                await button_interaction.message.edit(view=self)
-                                await button_interaction.followup.send(
-                                    embed=discord.Embed(title="✅ Build cancelled", color=0x2EA043),
-                                    ephemeral=True,
-                                )
-                            else:
-                                button.disabled = False
-                                button.label = "Cancel Build"
-                                await button_interaction.message.edit(view=self)
-                                await button_interaction.followup.send(
-                                    embed=discord.Embed(title="❌ Failed to cancel build", color=0xDA3633),
-                                    ephemeral=True,
-                                )
-
-            await interaction.followup.send(embed=embed, view=ForkBuildCancelView(run_id))
+            view = CancelBuildView(run_id, label="Cancel Build")
+            msg = await interaction.followup.send(embed=embed, view=view)
+            bot.add_view(view, message_id=msg.id)
         else:
             embed.description = "Build started"
             await interaction.followup.send(embed=embed)

@@ -1,5 +1,12 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# hi_trigger.py  —  Auto-reply when someone says "Hi" (catches all loopholes)
+# hi_trigger.py  —  Auto-reply when someone says "Hi" (catches ALL loopholes)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Unicode loophole coverage:
+#   H lookalikes: ǶĦⱧꞕɦНнΗηℋℌℍⒽⓗＨｈᴴₕ𝐇𝐡𝐻𝑯𝒉𝒽𝓗𝓱𝔥𝕙𝕳𝖍𝖧𝗁𝗛𝗵𝘏𝘩𝙃𝙝𝙷𝚑🄷
+#   I lookalikes: ıіΙιίϊΐɪɨᵻȷǀ|ӏᴵℐℑⅈⒾⓗＩｉ𝐈𝐢𝐼𝑰𝒊𝒾𝓘𝓲𝔦𝕀𝕚𝕴𝖎𝖨𝗂𝗜𝗶𝘐𝘪𝙄𝙞𝙸𝚒🄸
+#   Also catches: h| h/ hl h1 h! h¡ (visual tricks for "i")
+#   Does NOT trigger on: high, hiring, hint, history, hill, etc.
 # ══════════════════════════════════════════════════════════════════════════════
 
 import re
@@ -17,25 +24,149 @@ WEBHOOK_USERNAME       = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
 WEBHOOK_AVATAR_URL     = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Unicode pre-normalization maps
+# ─────────────────────────────────────────────────────────────────────────────
+# These are characters that VISUALLY look like H/h or I/i but do NOT
+# NFKD-decompose to the base letter. We must replace them before processing.
+
+# Build a single replacement function for all H-lookalikes → "H"
+_H_MAP = str.maketrans({
+    # H variants that don't NFKD-decompose to H
+    "\u01f6": "H",  # Ƕ  LATIN CAPITAL LETTER HWAIR (H WITH HOOK)
+    "\u0126": "H",  # Ħ  LATIN CAPITAL LETTER H WITH STROKE
+    "\u0127": "h",  # ħ  LATIN SMALL LETTER H WITH STROKE
+    "\u2c67": "H",  # Ⱨ  LATIN CAPITAL LETTER H WITH DESCENDER
+    "\u2c68": "h",  # ⱨ  LATIN SMALL LETTER H WITH DESCENDER
+    "\ua795": "h",  # ꞕ  LATIN SMALL LETTER H WITH PALATAL HOOK
+    "\u0266": "h",  # ɦ  LATIN SMALL LETTER H WITH HOOK
+    "\ua7ed": "h",  # ꟭  LATIN SMALL LETTER H WITH PALATAL HOOK (alt)
+    # Cyrillic letters that look identical to H/h
+    "\u041d": "H",  # Н  CYRILLIC CAPITAL LETTER EN
+    "\u043d": "h",  # н  CYRILLIC SMALL LETTER EN
+    # Greek letters that look like H/h
+    "\u0397": "H",  # Η  GREEK CAPITAL LETTER ETA
+    "\u03b7": "h",  # η  GREEK SMALL LETTER ETA (looks like n/h)
+    # Regional indicator 🇭 → H
+    "\U0001f1ed": "H",
+    # Small capital H
+    "\u029c": "H",  # ʜ  LATIN LETTER SMALL CAPITAL H
+    # Mathematical / fancy H variants that NFKC-normalize to H already,
+    # but we pre-normalize for safety in case NFKD doesn't catch them
+    "\u210b": "H",  # ℋ  SCRIPT CAPITAL H
+    "\u210c": "H",  # ℌ  BLACK-LETTER CAPITAL H
+    "\u210d": "H",  # ℍ  DOUBLE-STRUCK CAPITAL H
+    "\u210e": "h",  # ℎ  PLANCK CONSTANT
+    "\u24bd": "H",  # Ⓗ  CIRCLED LATIN CAPITAL LETTER H
+    "\u24d7": "h",  # ⓗ  CIRCLED LATIN SMALL LETTER H
+    "\uff28": "H",  # Ｈ  FULLWIDTH LATIN CAPITAL LETTER H
+    "\uff48": "h",  # ｈ  FULLWIDTH LATIN SMALL LETTER H
+    "\u1d34": "H",  # ᴴ  MODIFIER LETTER CAPITAL H
+    "\u2095": "h",  # ₕ  LATIN SUBSCRIPT SMALL LETTER H
+    "\u1f137": "H", # 🄷  SQUARED LATIN CAPITAL LETTER H
+})
+
+# I-lookalikes → "i"
+_I_MAP = str.maketrans({
+    # I variants that don't NFKD-decompose to I
+    "\u0131": "i",  # ı  LATIN SMALL LETTER DOTLESS I
+    "\u0456": "i",  # і  CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I
+    "\u0406": "I",  # І  CYRILLIC CAPITAL LETTER BYELORUSSIAN-UKRAINIAN I
+    "\u0399": "I",  # Ι  GREEK CAPITAL LETTER IOTA
+    "\u03b9": "i",  # ι  GREEK SMALL LETTER IOTA
+    "\u03af": "i",  # ί  GREEK SMALL LETTER IOTA WITH TONOS
+    "\u03ca": "i",  # ϊ  GREEK SMALL LETTER IOTA WITH DIALYTIKA
+    "\u0390": "i",  # ΐ  GREEK SMALL LETTER IOTA WITH DIALYTIKA AND TONOS
+    "\u026a": "i",  # ɪ  LATIN LETTER SMALL CAPITAL I
+    "\u0268": "i",  # ɨ  LATIN SMALL LETTER I WITH STROKE
+    "\u1d7b": "i",  # ᵻ  LATIN SMALL CAPITAL LETTER I WITH STROKE
+    "\u0237": "i",  # ȷ  LATIN SMALL LETTER DOTLESS J (looks like i)
+    # Cyrillic palochka (looks like I/l/i)
+    "\u04c0": "I",  # Ӏ  CYRILLIC LETTER PALOCHKA
+    # Visual i tricks: pipe, dental click, divides
+    "\u01c0": "i",  # ǀ  LATIN LETTER DENTAL CLICK (looks like l/i)
+    "\u2223": "i",  # ∣  DIVIDES (looks like l/i)
+    "\uff5c": "i",  # ｜ FULLWIDTH VERTICAL LINE
+    # Regional indicator 🇮 → i
+    "\U0001f1ee": "i",
+    # Inverted exclamation (looks like i)
+    "\u00a1": "i",  # ¡
+    # Mathematical / fancy I variants
+    "\u2110": "I",  # ℐ  SCRIPT CAPITAL I
+    "\u2111": "I",  # ℑ  BLACK-LETTER CAPITAL I
+    "\u2139": "i",  # ℹ  INFORMATION SOURCE
+    "\u2148": "i",  # ⅈ  DOUBLE-STRUCK ITALIC SMALL I
+    "\u2160": "I",  # Ⅰ  ROMAN NUMERAL ONE
+    "\u2170": "i",  # ⅰ  SMALL ROMAN NUMERAL ONE
+    "\u24be": "I",  # Ⓘ  CIRCLED LATIN CAPITAL LETTER I
+    "\u24d8": "i",  # ⓘ  CIRCLED LATIN SMALL LETTER I
+    "\uff29": "I",  # Ｉ  FULLWIDTH LATIN CAPITAL LETTER I
+    "\uff49": "i",  # ｉ  FULLWIDTH LATIN SMALL LETTER I
+    "\u1d35": "I",  # ᴵ  MODIFIER LETTER CAPITAL I
+    "\u1d62": "i",  # ᵢ  LATIN SUBSCRIPT SMALL LETTER I
+    "\u2071": "i",  # ⁱ  SUPERSCRIPT LATIN SMALL LETTER I
+    "\u1f138": "I", # 🄸  SQUARED LATIN CAPITAL LETTER I
+})
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Combined pre-normalization: apply both maps at once
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _prenormalize(text: str) -> str:
+    """Replace ALL known H/I lookalikes with their base letters."""
+    return text.translate(_H_MAP).translate(_I_MAP)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Hi detection patterns
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Unicode lookalikes that map to "i" after normalization
-_I_LOOKALIKES = re.compile(r"[iıіιᎥίϊΐíìîïīį]+", re.IGNORECASE)
-
-# Pre-normalize: replace lookalikes that would get eaten by edge-junk stripping
-_I_PRENORMALIZE = re.compile(r"[¡]")
-_H_PRENORMALIZE = re.compile(r"[\U0001f1ed\u029c]")   # 🇭/ʜ → H
-_I_PRENORMALIZE_FULL = re.compile(r"[¡\U0001f1ee\u026a]")  # ¡/🇮/ɪ → i
+# After pre-normalization + NFKD + junk stripping, the i part should match this
+_I_PATTERN = re.compile(r"[i]+", re.IGNORECASE)
 
 # All junk chars to strip (markdown, zero-width, separators, diacritics)
-_JUNK_PATTERN = re.compile(r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]")
+_JUNK_PATTERN = re.compile(
+    r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]"
+)
 
 # Same but spaces become word separators instead of being stripped
-_FULL_JUNK = re.compile(r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]")
+_FULL_JUNK = re.compile(
+    r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0.,\-_/\\:;!'\"\(\)\[\]{}\u0300-\u036f]"
+)
 
 # Emojis and other non-letter clutter at the edges
 _EDGE_JUNK = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core normalizer — used by both exact and word-level checks
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_hi(text: str) -> str:
+    """
+    Full normalization pipeline:
+      1. Pre-normalize Unicode lookalikes (Ƕ→H, ı→i, ɪ→i, etc.)
+      2. Strip edge junk (emojis at edges)
+      3. NFKD decompose (separates base letters from combining marks)
+      4. Strip combining diacritics + junk
+      5. NFKC recompose
+    """
+    s = _prenormalize(text.strip())
+    s = _EDGE_JUNK.sub("", s)
+    s = unicodedata.normalize("NFKD", s)
+    s = _JUNK_PATTERN.sub("", s)
+    s = unicodedata.normalize("NFKC", s)
+    return s
+
+
+def _normalize_for_words(text: str) -> str:
+    """
+    Normalization for word-level scanning (keeps spaces as word separators).
+    """
+    s = _prenormalize(text.strip())
+    s = _EDGE_JUNK.sub("", s)
+    s = unicodedata.normalize("NFKD", s)
+    s = _FULL_JUNK.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = unicodedata.normalize("NFKC", s)
+    return s
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hi detector — catches "hi" as standalone or within a sentence
@@ -43,36 +174,29 @@ _EDGE_JUNK = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
 
 def _is_hi_exact(text: str) -> bool:
     """Check if the entire message is just 'hi' (with any tricks)."""
-    stripped = text.strip()
-    stripped = _H_PRENORMALIZE.sub("H", stripped)   # 🇭 → H
-    stripped = _I_PRENORMALIZE_FULL.sub("i", stripped)  # ¡/🇮 → i
-    stripped = _EDGE_JUNK.sub("", stripped)
-    decomposed = unicodedata.normalize("NFKD", stripped)
-    cleaned = _JUNK_PATTERN.sub("", decomposed)
-    cleaned = unicodedata.normalize("NFKC", cleaned)
+    cleaned = _normalize_hi(text)
     if len(cleaned) < 2 or len(cleaned) > 6:
         return False
     if cleaned[0].lower() != 'h':
         return False
-    return bool(_I_LOOKALIKES.fullmatch(cleaned[1:]))
+    return bool(_I_PATTERN.fullmatch(cleaned[1:]))
 
 
 def _is_h_word(word: str) -> bool:
-    """Check if a single-char word is 'h'."""
-    w = _H_PRENORMALIZE.sub("H", word)  # 🇭 → H
-    w = unicodedata.normalize("NFKC", unicodedata.normalize("NFKD", w))
+    """Check if a single-char word is 'h' (after full normalization)."""
+    w = _normalize_hi(word)
     return len(w) == 1 and w.lower() == 'h'
 
 
 def _is_i_word(word: str) -> bool:
-    """Check if a word is just i-like characters."""
-    w = _I_PRENORMALIZE_FULL.sub("i", word)  # ¡/🇮 → i
+    """Check if a word is just i-like characters (after full normalization)."""
+    w = _prenormalize(word)
     w = _EDGE_JUNK.sub("", w)
     w = unicodedata.normalize("NFKC", unicodedata.normalize("NFKD", w))
     w = _JUNK_PATTERN.sub("", w)
     if not w or len(w) > 5:
         return False
-    return bool(_I_LOOKALIKES.fullmatch(w))
+    return bool(_I_PATTERN.fullmatch(w))
 
 
 def _contains_hi(text: str) -> bool:
@@ -83,7 +207,8 @@ def _contains_hi(text: str) -> bool:
       - Discord formatting: *hi*, **hi**, ||hi||, `hi`, >hi
       - Zero-width / invisible chars: h​i, h‌i, h‍i
       - Separators: h i, h.i, h-i, h_i
-      - Unicode lookalikes: hı, hі, hι
+      - Unicode H lookalikes: Ƕi, Ħi, Ⱨi, ꞕi, ɦi, Нi, Ηi
+      - Unicode I lookalikes: hı, hі, hι, hɪ, hɨ, hᵻ, hȷ, hǀ
       - Extra i's: hii, hiii (up to 5)
       - Combining diacritics: hï, hî, hí
       - In a sentence: "oh hi", "just wanted to say hi"
@@ -95,15 +220,7 @@ def _contains_hi(text: str) -> bool:
         return True
 
     # Normalize text for word-level scanning
-    stripped = text.strip()
-    stripped = _H_PRENORMALIZE.sub("H", stripped)   # 🇭 → H
-    stripped = _I_PRENORMALIZE_FULL.sub("i", stripped)  # ¡/🇮 → i
-    stripped = _EDGE_JUNK.sub("", stripped)
-    decomposed = unicodedata.normalize("NFKD", stripped)
-    normalized = _FULL_JUNK.sub(" ", decomposed)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    normalized = unicodedata.normalize("NFKC", normalized)
-
+    normalized = _normalize_for_words(text)
     words = normalized.split(" ")
 
     # Check each word individually
@@ -112,7 +229,7 @@ def _contains_hi(text: str) -> bool:
         if not word:
             continue
         if len(word) >= 2 and len(word) <= 6:
-            if word[0].lower() == 'h' and _I_LOOKALIKES.fullmatch(word[1:]):
+            if word[0].lower() == 'h' and _I_PATTERN.fullmatch(word[1:]):
                 return True
 
     # Check adjacent word pairs: 'h' 'i' → hi (catches "h i", "h.i" in sentences)
