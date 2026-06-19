@@ -62,7 +62,7 @@ _H_MAP = str.maketrans({
     "\uff48": "h",  # ｈ  FULLWIDTH LATIN SMALL LETTER H
     "\u1d34": "H",  # ᴴ  MODIFIER LETTER CAPITAL H
     "\u2095": "h",  # ₕ  LATIN SUBSCRIPT SMALL LETTER H
-    "\u1f137": "H", # 🄷  SQUARED LATIN CAPITAL LETTER H
+    "\U0001f137": "H", # 🄷  SQUARED LATIN CAPITAL LETTER H
 })
 
 # I-lookalikes → "i"
@@ -104,7 +104,7 @@ _I_MAP = str.maketrans({
     "\u1d35": "I",  # ᴵ  MODIFIER LETTER CAPITAL I
     "\u1d62": "i",  # ᵢ  LATIN SUBSCRIPT SMALL LETTER I
     "\u2071": "i",  # ⁱ  SUPERSCRIPT LATIN SMALL LETTER I
-    "\u1f138": "I", # 🄸  SQUARED LATIN CAPITAL LETTER I
+    "\U0001f138": "I", # 🄸  SQUARED LATIN CAPITAL LETTER I
 })
 
 # ─────────────────────────────────────────────────────────────────────────────
