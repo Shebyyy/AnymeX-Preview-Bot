@@ -40,16 +40,42 @@ _H_MAP = str.maketrans({
     "\ua795": "h",  # ꞕ  LATIN SMALL LETTER H WITH PALATAL HOOK
     "\u0266": "h",  # ɦ  LATIN SMALL LETTER H WITH HOOK
     "\ua7ed": "h",  # ꟭  LATIN SMALL LETTER H WITH PALATAL HOOK (alt)
+    "\u2c75": "H",  # Ⱶ  LATIN CAPITAL LETTER HALF H
+    "\u2c76": "h",  # ⱶ  LATIN SMALL LETTER HALF H
+    "\ua7aa": "H",  # Ɦ  LATIN CAPITAL LETTER H WITH HOOK
     # Cyrillic letters that look identical to H/h
     "\u041d": "H",  # Н  CYRILLIC CAPITAL LETTER EN
     "\u043d": "h",  # н  CYRILLIC SMALL LETTER EN
+    "\u04a2": "H",  # Ң  CYRILLIC CAPITAL LETTER EN WITH DESCENDER
+    "\u04a3": "h",  # ң  CYRILLIC SMALL LETTER EN WITH DESCENDER
+    "\u04c9": "H",  # Ӊ  CYRILLIC CAPITAL LETTER EN WITH TAIL
+    "\u04ca": "h",  # ӊ  CYRILLIC SMALL LETTER EN WITH TAIL
+    "\u0528": "H",  # Ԩ  CYRILLIC CAPITAL LETTER EN WITH LEFT HOOK
+    "\u0529": "h",  # ԩ  CYRILLIC SMALL LETTER EN WITH LEFT HOOK
+    # Cyrillic Che variants (look like h with tail/hook)
+    "\u04b6": "H",  # Ҷ  CYRILLIC CAPITAL LETTER CHE WITH DESCENDER
+    "\u04b7": "h",  # ҷ  CYRILLIC SMALL LETTER CHE WITH DESCENDER
+    "\u04b8": "H",  # Ҹ  CYRILLIC CAPITAL LETTER CHE WITH VERTICAL STROKE
+    "\u04b9": "h",  # ҹ  CYRILLIC SMALL LETTER CHE WITH VERTICAL STROKE
+    "\u04cb": "H",  # Ӌ  CYRILLIC CAPITAL LETTER KHAKASSIAN CHE
+    "\u04cc": "h",  # ӌ  CYRILLIC SMALL LETTER KHAKASSIAN CHE
+    # Deseret H (obscure script, looks like H/h)
+    "\U00010410": "H",  # 𐐐  DESERET CAPITAL LETTER H
+    "\U00010438": "h",  # 𐐸  DESERET SMALL LETTER H
     # Greek letters that look like H/h
     "\u0397": "H",  # Η  GREEK CAPITAL LETTER ETA
     "\u03b7": "h",  # η  GREEK SMALL LETTER ETA (looks like n/h)
+    # Armenian letters that look like H/h
+    "\u053b": "H",  # Ի  ARMENIAN CAPITAL LETTER INI
+    "\u056b": "h",  # ի  ARMENIAN SMALL LETTER INI
     # Regional indicator 🇭 → H
     "\U0001f1ed": "H",
     # Small capital H
     "\u029c": "H",  # ʜ  LATIN LETTER SMALL CAPITAL H
+    "\u02b0": "h",  # ʰ  MODIFIER LETTER SMALL H
+    "\u02b1": "h",  # ʱ  MODIFIER LETTER SMALL H WITH HOOK
+    "\u1da3": "h",  # ᶣ  MODIFIER LETTER SMALL TURNED H
+    "\u1d78": "H",  # ᵸ  MODIFIER LETTER CYRILLIC EN
     # Mathematical / fancy H variants that NFKC-normalize to H already,
     # but we pre-normalize for safety in case NFKD doesn't catch them
     "\u210b": "H",  # ℋ  SCRIPT CAPITAL H
@@ -82,6 +108,16 @@ _I_MAP = str.maketrans({
     "\u0237": "i",  # ȷ  LATIN SMALL LETTER DOTLESS J (looks like i)
     # Cyrillic palochka (looks like I/l/i)
     "\u04c0": "I",  # Ӏ  CYRILLIC LETTER PALOCHKA
+    "\u04cf": "i",  # ӏ  CYRILLIC SMALL LETTER PALOCHKA
+    # Latin Iota / I with stroke (look like I/i)
+    "\u0196": "I",  # Ɩ  LATIN CAPITAL LETTER IOTA
+    "\u0269": "i",  # ɩ  LATIN SMALL LETTER IOTA
+    "\u0197": "I",  # Ɨ  LATIN CAPITAL LETTER I WITH STROKE
+    "\ua7ae": "I",  # Ɪ  LATIN CAPITAL LETTER I WITH SERIF
+    "\u019a": "i",  # ƚ  LATIN SMALL LETTER L WITH BAR (looks like i)
+    # Deseret I (obscure script, looks like I/i)
+    "\U00010414": "I",  # 𐐔  DESERET CAPITAL LETTER I
+    "\U0001043c": "i",  # 𐐼  DESERET SMALL LETTER I
     # Visual i tricks: pipe, dental click, divides
     "\u01c0": "i",  # ǀ  LATIN LETTER DENTAL CLICK (looks like l/i)
     "\u2223": "i",  # ∣  DIVIDES (looks like l/i)
