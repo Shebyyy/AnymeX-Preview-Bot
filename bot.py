@@ -10286,6 +10286,9 @@ async def main():
     import hi_trigger
     hi_trigger.setup(bot)
 
+    import ai_trigger
+    ai_trigger.setup(bot)
+
     import source_trigger
     source_trigger.setup(bot)
 

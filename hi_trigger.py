@@ -359,6 +359,13 @@ async def _handle(message: discord.Message):
     if message.author.id not in TARGET_USER_IDS:
         return
 
+    # Mark as caught so ai_trigger (Layer 2) skips this message
+    try:
+        import ai_trigger
+        ai_trigger.mark_caught_by_hi(message.id)
+    except ImportError:
+        pass
+
     print(f"[hi_trigger] Triggered by {message.author} in #{message.channel}")
 
     try:
