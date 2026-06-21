@@ -89,6 +89,27 @@ _H_MAP = str.maketrans({
     "\u1d34": "H",  # ᴴ  MODIFIER LETTER CAPITAL H
     "\u2095": "h",  # ₕ  LATIN SUBSCRIPT SMALL LETTER H
     "\U0001f137": "H", # 🄷  SQUARED LATIN CAPITAL LETTER H
+    # ── Obscure script H letters (visual H lookalikes) ──
+    "\U00010337": "H",  # 𐌷  GOTHIC LETTER HAGL
+    "\u16ba": "H",  # ᚺ  RUNIC LETTER HAGLAZ
+    "\u16bc": "H",  # ᚼ  RUNIC LETTER LONG-BRANCH-HAGALL
+    "\u16bd": "h",  # ᚽ  RUNIC LETTER SHORT-TWIG-HAGALL
+    "\u310f": "H",  # ㄏ  BOPOMOFO LETTER H
+    "\u31b7": "h",  # ㆷ  BOPOMOFO FINAL LETTER H
+    "\U0001029b": "H",  # 𐊛  LYCIAN LETTER H
+    "\U0001036c": "H",  # 𐍬  OLD PERMIC LETTER HA
+    "\u2c90": "H",  # Ⲑ  COPTIC CAPITAL LETTER THETHE
+    "\u2c91": "h",  # ⲑ  COPTIC SMALL LETTER THETHE
+    "\u071a": "h",  # ܚ  SYRIAC LETTER HETH
+    "\u2c10": "H",  # Ⱀ  GLAGOLITIC CAPITAL LETTER NASHI
+    "\u2c40": "h",  # ⱀ  GLAGOLITIC SMALL LETTER NASHI
+    "\U00010847": "H",  # 𐡇  IMPERIAL ARAMAIC LETTER HETH
+    "\U0001088a": "H",  # 𐢊  NABATAEAN LETTER HETH
+    "\U0001bc00": "H",  # 𛰀  DUPLOYAN LETTER H
+    # ── Modifier H letters (NFKC→already-mapped chars, bypass prenormalize!) ──
+    "\ua7f8": "H",  # ꟸ  MODIFIER LETTER CAPITAL H WITH STROKE
+    "\U00010795": "h",  # 𐞕  MODIFIER LETTER SMALL H WITH STROKE
+    "\U00010796": "H",  # 𐞖  MODIFIER LETTER SMALL CAPITAL H
 })
 
 # I-lookalikes → "i"
@@ -118,6 +139,53 @@ _I_MAP = str.maketrans({
     # Deseret I (obscure script, looks like I/i)
     "\U00010414": "I",  # 𐐔  DESERET CAPITAL LETTER I
     "\U0001043c": "i",  # 𐐼  DESERET SMALL LETTER I
+    # ── Latin epigraphic / obscure Latin ──
+    "\ua7fe": "I",  # ꟾ  LATIN EPIGRAPHIC LETTER I LONGA
+    "\u1d96": "i",  # ᶖ  LATIN SMALL LETTER I WITH RETROFLEX HOOK
+    # ── CJK / Korean vertical lines (look like i) ──
+    "\u3127": "i",  # ㄧ  BOPOMOFO LETTER I
+    "\u3163": "i",  # ㅣ  HANGUL LETTER I
+    "\uffdc": "i",  # ￜ  HALFWIDTH HANGUL LETTER I
+    # ── Japanese i (commonly used as i substitute on Discord) ──
+    "\u3043": "i",  # ぃ  HIRAGANA LETTER SMALL I
+    "\u3044": "i",  # い  HIRAGANA LETTER I
+    "\u30a3": "i",  # ィ  KATAKANA LETTER SMALL I
+    "\u30a4": "i",  # イ  KATAKANA LETTER I
+    "\uff68": "i",  # ｨ  HALFWIDTH KATAKANA LETTER SMALL I
+    "\uff72": "i",  # ｲ  HALFWIDTH KATAKANA LETTER I
+    # ── Cherokee I ──
+    "\u13a2": "I",  # Ꭲ  CHEROKEE LETTER I
+    "\uab72": "i",  # ꭲ  CHEROKEE SMALL LETTER I
+    # ── Obscure script I letters (visual I lookalikes) ──
+    "\U00010286": "I",  # 𐊆  LYCIAN LETTER I
+    "\U00010309": "I",  # 𐌉  OLD ITALIC LETTER I
+    "\U000102b9": "I",  # 𐊹  CARIAN LETTER I
+    "\U0001039b": "I",  # 𐎛  UGARITIC LETTER I
+    "\U00010498": "I",  # 𐒘  OSMANYA LETTER I
+    "\U000104bb": "I",  # 𐒻  OSAGE CAPITAL LETTER I
+    "\U000104e3": "i",  # 𐓣  OSAGE SMALL LETTER I
+    "\U00010c90": "I",  # 𐲐  OLD HUNGARIAN CAPITAL LETTER I
+    "\U00010cd0": "i",  # 𐳐  OLD HUNGARIAN SMALL LETTER I
+    "\U0001057e": "I",  # 𐕾  VITHKUQI CAPITAL LETTER I
+    "\U000105a5": "i",  # 𐖥  VITHKUQI SMALL LETTER I
+    "\U0001050d": "I",  # 𐔍  ELBASAN LETTER I
+    "\u07cc": "I",  # ߌ  NKO LETTER I
+    "\U00010b0c": "I",  # 𐬌  AVESTAN LETTER I
+    "\U00016e4b": "I",  # 𖹋  MEDEFAIDRIN CAPITAL LETTER I
+    "\U00016e6b": "i",  # 𖹫  MEDEFAIDRIN SMALL LETTER I
+    "\U0001e90b": "I",  # 𞤋  ADLAM CAPITAL LETTER I
+    "\U0001e92d": "i",  # 𞤭  ADLAM SMALL LETTER I
+    "\ua4f2": "i",  # ꓲ  LISU LETTER I
+    "\U0001bc46": "i",  # 𛱆  DUPLOYAN LETTER I
+    "\u2c0b": "I",  # Ⰻ  GLAGOLITIC CAPITAL LETTER I
+    "\u2c3b": "i",  # ⰻ  GLAGOLITIC SMALL LETTER I
+    "\U00010359": "I",  # 𐍙  OLD PERMIC LETTER I
+    "\u1822": "i",  # ᠢ  MONGOLIAN LETTER I
+    "\ua6a9": "i",  # ꚩ  BAMUM LETTER I
+    # ── Modifier I letters (NFKC→already-mapped chars, bypass prenormalize!) ──
+    "\u1da4": "i",  # ᶤ  MODIFIER LETTER SMALL I WITH STROKE
+    "\u1da6": "i",  # ᶦ  MODIFIER LETTER SMALL CAPITAL I
+    "\u1da7": "i",  # ᶧ  MODIFIER LETTER SMALL CAPITAL I WITH STROKE
     # Visual i tricks: pipe, dental click, divides
     "\u01c0": "i",  # ǀ  LATIN LETTER DENTAL CLICK (looks like l/i)
     "\u2223": "i",  # ∣  DIVIDES (looks like l/i)
