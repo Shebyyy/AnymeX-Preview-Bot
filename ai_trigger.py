@@ -23,8 +23,7 @@ import discord
 
 TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
 REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
-WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
-WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
+# AI trigger uses plain reply (bot's own profile) — no webhook/custom tag
 
 # Groq API config
 GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
@@ -186,49 +185,12 @@ async def _handle(message: discord.Message):
 
     print(f"[ai_trigger] Triggered by {message.author} in #{message.channel}")
 
+    # AI trigger uses plain reply — bot's own profile, no custom webhook
     try:
-        webhook = await _get_or_create_webhook(message.channel)
-        if webhook:
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
-                    "username": WEBHOOK_USERNAME,
-                    "avatar_url": WEBHOOK_AVATAR_URL,
-                    "allowed_mentions": {"parse": ["users"]},
-                }
-                async with session.post(
-                    webhook.url + "?wait=true",
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status in (200, 204):
-                        print(f"[ai_trigger] Sent via webhook with profile + mention ✅")
-                    else:
-                        body = await resp.text()
-                        print(f"[ai_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
-                        await message.reply(REPLY_MESSAGE, mention_author=True)
-        else:
-            await message.reply(REPLY_MESSAGE, mention_author=True)
-            print(f"[ai_trigger] Replied via normal reply ✅")
+        await message.reply(REPLY_MESSAGE, mention_author=True)
+        print(f"[ai_trigger] Replied via normal reply ✅")
     except Exception as e:
-        print(f"[ai_trigger] Error: {e}")
-        try:
-            await message.reply(REPLY_MESSAGE, mention_author=True)
-        except Exception as e2:
-            print(f"[ai_trigger] Fallback also failed: {e2}")
-
-
-async def _get_or_create_webhook(channel: discord.TextChannel):
-    try:
-        webhooks = await channel.webhooks()
-        for wh in webhooks:
-            if wh.user and wh.user.id == _bot.user.id and wh.name == "AiTrigger":
-                return wh
-        return await channel.create_webhook(name="AiTrigger")
-    except Exception as e:
-        print(f"[ai_trigger] Webhook error: {e}")
-        return None
+        print(f"[ai_trigger] Reply failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
