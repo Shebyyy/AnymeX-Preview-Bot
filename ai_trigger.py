@@ -88,6 +88,7 @@ A greeting includes ALL of these:
 
 NOT a greeting:
 - Normal conversation, questions, statements (longer messages with real content)
+- "its", "it's", "it is" — these are pronouns, not greetings
 - Words that happen to start with h (high, hiring, hint, history, help, here, how, have)
 - Real words in sentences (not tricks)
 - Code blocks with actual code
