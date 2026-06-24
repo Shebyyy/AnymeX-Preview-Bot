@@ -89,13 +89,14 @@ A greeting includes ALL of these:
 NOT a greeting:
 - Normal conversation, questions, statements (longer messages with real content)
 - "its", "it's", "it is" — these are pronouns, not greetings
+- Short reactions, filler words, expressions (ohhk, ok, okay, lol, wtf, damn, bruh, etc.)
+- Swearing or frustrated messages
 - Words that happen to start with h (high, hiring, hint, history, help, here, how, have)
 - Real words in sentences (not tricks)
 - Code blocks with actual code
 - URLs or links
 
-Be AGGRESSIVE — if there's ANY chance it's a creative/trick greeting, say yes.
-When in doubt, say yes. Better to catch a false positive than miss a trick.
+Be thorough but precise. When in doubt, say no. Only say yes if you're confident it's a greeting.
 
 Reply ONLY one word: "yes" or "no" """
 
