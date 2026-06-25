@@ -16,11 +16,10 @@
 #   - GIFs / images that show greetings (waving, hi text, etc.) ← VISION!
 #   - Any creative/trick way of saying hi
 #
-# Dual AI:
-#   - Groq (text-only) — fastest, for messages without attachments
-#   - Google Gemini Flash (vision) — can SEE images/GIFs/stickers
-#
-# Both are FREE. Groq: 14,400 req/day. Gemini: 1,500 req/day.
+# Triple AI stack (all FREE, no API keys needed for primary):
+#   1. Pollinations (primary) — free, no key, GPT-OSS 20B (smart!)
+#   2. Groq (fallback) — free with key, llama-3.1-8b (fast but dumber)
+#   3. Google Gemini Flash (vision) — can SEE images/GIFs/stickers
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -37,12 +36,16 @@ TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
 REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
 # AI trigger uses plain reply (bot's own profile) — no webhook/custom tag
 
-# ── Groq API (text-only, fast) ──
+# ── Pollinations API (primary — FREE, no key needed!) ──
+POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"
+POLLINATIONS_MODEL   = "openai"  # GPT-OSS 20B reasoning model
+
+# ── Groq API (fallback text — needs key) ──
 GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 GROQ_API_URL  = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL    = "llama-3.1-8b-instant"
 
-# ── Google Gemini API (vision — can see images/GIFs) ──
+# ── Google Gemini API (vision — can SEE images/GIFs) ──
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 GEMINI_MODEL  = "gemini-2.0-flash"  # Free, fast, supports images
@@ -57,45 +60,25 @@ MAX_IMAGE_SIZE = 4 * 1024 * 1024  # 4MB max for Gemini
 _caught_by_hi: set[int] = set()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI Prompt — clear rules, no ambiguity
+# AI Prompts — focus on CONCEPT, not just examples
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """Determine whether the message's primary intent is to greet someone.
+SYSTEM_PROMPT = """Is this message a greeting?
 
-Reply "yes" ONLY if the message itself is a greeting, in ANY language, script, encoding, or visual form.
+A greeting is any message whose MAIN PURPOSE is to say hello, acknowledge someone, or start a conversation. Examples: hi, hey, hello, yo, sup, what's up, howdy, hola, namaste, ciao, konnichiwa, salaam, annyeong, bonjour, aloha, greetings, wassup, etc.
 
-Examples that ARE greetings:
-- Any language: hi, hello, hey, hola, bonjour, ciao, namaste, salaam, assalamu alaikum, konnichiwa, annyeong, ni hao, etc.
-- Informal greetings: sup, yo, wassup, morning, good morning, good evening, etc.
-- Emoji or visual greetings: 👋 🙋 🤝 🙏
-- Unicode/obfuscated forms: ⓗⓘ, 𐌷𐌹, 🇭🇮, ♓ℹ, ⠓⠊, zero-width characters, homoglyphs, combining marks.
-- Encoded forms: Morse, Binary, Hex, Base64, ROT13, Braille.
-- ASCII art, stickers, GIFs, images, or any creative way intended as a greeting.
+Also count as greeting: emoji-only greetings (👋), Unicode tricks (♓ℹ ⠓⠊ 𐌷𐌹), l33tspeak (h1 y0), encoded text (Morse, binary, Base64, ROT13), ASCII art, reversed text, any creative/trick way to say hello.
 
-Reply "no" if:
-- The message only mentions greetings (e.g. "the word hi").
-- It is a question or discussion about greetings.
-- "hi" appears inside another unrelated word.
-- The primary intent is not greeting someone.
+NOT a greeting: normal sentences, questions, statements, comments. "It's unchanged tho?" is NOT a greeting.
 
-Output ONLY:
-yes
-or
-no
-"""
+Reply only "yes" or "no"."""
 
 # Separate prompt for vision (image analysis)
-VISION_PROMPT = """Determine whether this image/GIF/sticker's primary purpose is greeting someone.
+VISION_PROMPT = """Does this image/GIF show a greeting?
 
-Reply "yes" if it visually represents a greeting in any language or form (text, waving, bowing, handshake, greeting sticker, etc.).
+A greeting in visual form: someone waving, a hand wave, text saying hi/hello in any language, a waving emoji, any visual way of saying hello.
 
-Reply "no" otherwise.
-
-Output ONLY:
-yes
-or
-no
-"""
+Reply only "yes" or "no"."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,7 +172,53 @@ async def _download_as_base64(url: str, max_size: int = MAX_IMAGE_SIZE) -> tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Groq AI call (text-only)
+# Pollinations AI call (primary — free, no key, smart model)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _ask_pollinations(text: str) -> bool:
+    """Send text to Pollinations AI (GPT-OSS 20B). Returns True if greeting."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "model": POLLINATIONS_MODEL,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                "max_tokens": 3,
+                "temperature": 0.1,
+            }
+            headers = {"Content-Type": "application/json"}
+            async with session.post(
+                POLLINATIONS_API_URL,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    print(f"[ai_trigger] Pollinations HTTP {resp.status}: {body[:200]}")
+                    return False
+
+                data = await resp.json()
+                reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+
+                if reply.startswith("yes"):
+                    print(f"[ai_trigger] Pollinations: greeting detected \"{text[:80]}\" → {reply}")
+                    return True
+                print(f"[ai_trigger] Pollinations: NOT greeting \"{text[:80]}\" → {reply}")
+                return False
+
+    except aiohttp.ClientTimeout:
+        print(f"[ai_trigger] Pollinations timeout: \"{text[:50]}\"")
+        return False
+    except Exception as e:
+        print(f"[ai_trigger] Pollinations error: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq AI call (fallback — text-only, needs API key)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _ask_groq(text: str) -> bool:
@@ -246,11 +275,10 @@ async def _ask_groq(text: str) -> bool:
 
 async def _ask_gemini_vision(text: str, image_data: list[tuple[str, str]] = None) -> bool:
     """Send text + optional images to Gemini. Returns True if it's a greeting.
-    
+
     image_data: list of (base64_data, mime_type) tuples
     """
     if not GEMINI_API_KEY:
-        # No Gemini key — fall back to text-only analysis
         return False
 
     try:
@@ -326,12 +354,12 @@ async def _ask_gemini_vision(text: str, image_data: list[tuple[str, str]] = None
 
 async def _check_greeting(message: discord.Message) -> bool:
     """Check if a message is a greeting using AI.
-    
+
     Strategy:
-    - If message has image/GIF attachments → use Gemini (can SEE them)
-    - If message has sticker image → try Gemini with sticker image
-    - If text-only → use Groq (fastest)
-    - If no vision API available → fall back to text description only
+    1. If message has image/GIF attachments → Gemini Vision (can SEE them)
+    2. If message has sticker image → Gemini Vision (can SEE them)
+    3. Text-only → Pollinations (primary, smart, free)
+    4. Fallback → Groq → Gemini text
     """
     ai_text = _build_ai_text(message)
     has_attachments = bool(message.attachments)
@@ -354,18 +382,15 @@ async def _check_greeting(message: discord.Message) -> bool:
                     image_data.append(result)
 
         if image_data:
-            # Send to Gemini with actual images!
             return await _ask_gemini_vision(ai_text, image_data)
 
     # ── Has stickers → try Gemini with sticker image ──
     if has_stickers and GEMINI_API_KEY:
         image_data = []
         for sticker in message.stickers:
-            # Discord stickers have a URL we can download
             sticker_url = None
             if sticker.url:
                 sticker_url = sticker.url
-            # Try different format URLs
             if not sticker_url and sticker.id:
                 sticker_url = f"https://cdn.discordapp.com/stickers/{sticker.id}.png"
 
@@ -377,20 +402,21 @@ async def _check_greeting(message: discord.Message) -> bool:
         if image_data:
             return await _ask_gemini_vision(ai_text, image_data)
 
-    # ── Text-only or no vision API → use Groq (fastest) ──
+    # ── Text-only (or no vision for attachments) → Pollinations first ──
+    result = await _ask_pollinations(ai_text)
+    if result:
+        return True
+
+    # ── Pollinations failed → try Groq ──
     if GROQ_API_KEY:
         result = await _ask_groq(ai_text)
-        # If Groq says no but message has attachments/stickers,
-        # try Gemini with text description as fallback
-        if not result and (has_attachments or has_stickers) and GEMINI_API_KEY:
-            return await _ask_gemini_vision(ai_text)
-        return result
+        if result:
+            return True
 
-    # ── Only Gemini available → use it for text too ──
+    # ── Groq failed → try Gemini text as last resort ──
     if GEMINI_API_KEY:
         return await _ask_gemini_vision(ai_text)
 
-    # No API keys set
     return False
 
 
@@ -452,10 +478,12 @@ def setup(bot: discord.Client):
     global _bot
     _bot = bot
 
-    has_ai = bool(GROQ_API_KEY or GEMINI_API_KEY)
-    if not has_ai:
-        print("⚠️ ai_trigger NOT loaded — set GROQ_API_KEY and/or GEMINI_API_KEY")
-        return
+    # Pollinations always available (no key needed), but check Groq/Gemini too
+    modes = [f"Pollinations ({POLLINATIONS_MODEL}) — primary"]
+    if GROQ_API_KEY:
+        modes.append(f"Groq ({GROQ_MODEL}) — fallback")
+    if GEMINI_API_KEY:
+        modes.append(f"Gemini vision ({GEMINI_MODEL})")
 
     @bot.listen("on_message")
     async def on_message_ai(message: discord.Message):
@@ -465,9 +493,4 @@ def setup(bot: discord.Client):
     async def on_message_edit_ai(before: discord.Message, after: discord.Message):
         await _handle(after)
 
-    modes = []
-    if GROQ_API_KEY:
-        modes.append(f"Groq text ({GROQ_MODEL})")
-    if GEMINI_API_KEY:
-        modes.append(f"Gemini vision ({GEMINI_MODEL})")
     print(f"✅ ai_trigger loaded — {', '.join(modes)} — watching users {TARGET_USER_IDS}")
