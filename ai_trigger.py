@@ -17,8 +17,8 @@
 #   - Any creative/trick way of saying hi
 #
 # AI stack (all FREE, works on render.com):
-#   1. Pollinations — primary, free, no key needed (GPT-OSS 20B, smart!)
-#   2. Groq Vision — sees actual images/GIFs/stickers (needs GROQ_API_KEY)
+#   1. Pollinations — text greeting detection (GPT-OSS 20B, smart, free, no key)
+#   2. OpenRouter — vision greeting detection (free models that SEE images!)
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -34,14 +34,21 @@ import discord
 TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
 REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
 
-# ── Pollinations API (primary — FREE, no key needed!) ──
+# ── Pollinations API (text — FREE, no key needed!) ──
 POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"
 POLLINATIONS_MODEL   = "openai"  # GPT-OSS 20B reasoning model
 
-# ── Groq API (vision — needs GROQ_API_KEY) ──
-GROQ_API_KEY       = os.environ.get("GROQ_API_KEY", "")
-GROQ_API_URL       = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_VISION_MODEL  = "llama-3.2-11b-vision-preview"
+# ── OpenRouter API (vision — needs OPENROUTER_API_KEY) ──
+OPENROUTER_API_KEY  = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_URL  = "https://openrouter.ai/api/v1/chat/completions"
+
+# Free vision models on OpenRouter (ordered by preference)
+OPENROUTER_VISION_MODELS = [
+    "nvidia/nemotron-nano-12b-v2-vl:free",     # Best free vision — detected greeting image!
+    "google/gemma-4-26b-a4b-it:free",            # Google vision model
+    "google/gemma-4-31b-it:free",                # Google vision model (bigger)
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",  # Multi-modal
+]
 
 # Pre-check filters
 MAX_WORDS     = 30
@@ -70,7 +77,9 @@ Reply only "yes" or "no"."""
 
 VISION_PROMPT = """Does this image/GIF show a greeting?
 
-A greeting in visual form: someone waving, a hand wave, text saying hi/hello in any language, a waving emoji, any visual way of saying hello.
+A greeting in visual form: someone waving, a hand wave, text saying hi/hello/hey in any language or script, a waving emoji, waving hand, any visual way of saying hello or greeting someone.
+
+Be generous — if there's any text, wave, or greeting gesture visible, say yes.
 
 Reply only "yes" or "no"."""
 
@@ -165,7 +174,7 @@ async def _download_as_base64(url: str, max_size: int = MAX_IMAGE_SIZE) -> tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pollinations AI call (primary — free, no key, smart model)
+# Pollinations AI call (text — free, no key, smart model)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _ask_pollinations(text: str) -> bool:
@@ -210,68 +219,83 @@ async def _ask_pollinations(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Groq Vision AI call (can SEE images — needs GROQ_API_KEY)
+# OpenRouter Vision AI call (can SEE images — needs OPENROUTER_API_KEY)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _ask_groq_vision(text: str, image_data: list[tuple[str, str]]) -> bool:
-    """Send text + images to Groq Vision. Returns True if it's a greeting.
+async def _ask_openrouter_vision(text: str, image_data: list[tuple[str, str]]) -> bool:
+    """Send text + images to OpenRouter Vision. Returns True if it's a greeting.
 
+    Tries multiple free vision models in order until one works.
     image_data: list of (base64_data, mime_type) tuples
     """
-    if not GROQ_API_KEY:
+    if not OPENROUTER_API_KEY:
         return False
 
-    try:
-        # Build OpenAI-compatible vision message content
-        content = [{"type": "text", "text": VISION_PROMPT}]
+    # Build OpenAI-compatible vision message content
+    content = [{"type": "text", "text": VISION_PROMPT}]
 
-        if text:
-            content.append({"type": "text", "text": f"Message: {text}"})
+    if text:
+        content.append({"type": "text", "text": f"Message text: {text}"})
 
-        for b64_data, mime_type in image_data:
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime_type};base64,{b64_data}"
+    for b64_data, mime_type in image_data:
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime_type};base64,{b64_data}"
+            }
+        })
+
+    # Try each free vision model until one works
+    for model in OPENROUTER_VISION_MODELS:
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": content}],
+                    "max_tokens": 5,
+                    "temperature": 0.1,
                 }
-            })
+                headers = {
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://anymex-bot.render.com",
+                    "X-Title": "AnymeX-Preview-Bot",
+                }
+                async with session.post(
+                    OPENROUTER_API_URL,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 429:
+                        # Rate limited — try next model
+                        print(f"[ai_trigger] OpenRouter {model}: rate limited, trying next...")
+                        continue
 
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "model": GROQ_VISION_MODEL,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": 3,
-                "temperature": 0.1,
-            }
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            async with session.post(
-                GROQ_API_URL,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    print(f"[ai_trigger] Groq vision HTTP {resp.status}: {body[:300]}")
-                    return False
+                    if resp.status != 200:
+                        body = await resp.text()
+                        print(f"[ai_trigger] OpenRouter {model} HTTP {resp.status}: {body[:200]}")
+                        continue
 
-                data = await resp.json()
-                reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+                    data = await resp.json()
+                    reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
 
-                if reply.startswith("yes"):
-                    print(f"[ai_trigger] Groq vision: greeting detected \"{text[:80]}\" → {reply}")
-                    return True
-                return False
+                    if reply.startswith("yes"):
+                        print(f"[ai_trigger] OpenRouter {model}: greeting detected \"{text[:80]}\" → {reply}")
+                        return True
 
-    except aiohttp.ClientTimeout:
-        print(f"[ai_trigger] Groq vision timeout: \"{text[:50]}\"")
-        return False
-    except Exception as e:
-        print(f"[ai_trigger] Groq vision error: {e}")
-        return False
+                    print(f"[ai_trigger] OpenRouter {model}: not a greeting → {reply}")
+                    return False  # Model responded, just said no
+
+        except aiohttp.ClientTimeout:
+            print(f"[ai_trigger] OpenRouter {model}: timeout, trying next...")
+            continue
+        except Exception as e:
+            print(f"[ai_trigger] OpenRouter {model}: error {e}, trying next...")
+            continue
+
+    print(f"[ai_trigger] All OpenRouter vision models failed")
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,16 +306,17 @@ async def _check_greeting(message: discord.Message) -> bool:
     """Check if a message is a greeting using AI.
 
     Strategy:
-    1. Has images/GIFs/stickers + Groq key? → Groq Vision (can SEE them)
-    2. Everything else → Pollinations (smart, free, no key)
+    1. Has images/GIFs/stickers + OpenRouter key? → OpenRouter Vision (can SEE them)
+    2. Has images but no key? → Pollinations with text description only
+    3. Text only → Pollinations (smart, free, no key)
     """
     ai_text = _build_ai_text(message)
     has_attachments = bool(message.attachments)
     has_stickers = bool(message.stickers)
     has_visual = has_attachments or has_stickers
 
-    # ── Has images/GIFs/stickers + Groq key → try Groq Vision ──
-    if has_visual and GROQ_API_KEY:
+    # ── Has images/GIFs/stickers + OpenRouter key → try OpenRouter Vision ──
+    if has_visual and OPENROUTER_API_KEY:
         image_data = []
 
         # Download image attachments
@@ -319,11 +344,10 @@ async def _check_greeting(message: discord.Message) -> bool:
                     image_data.append(result)
 
         if image_data:
-            result = await _ask_groq_vision(ai_text, image_data)
+            result = await _ask_openrouter_vision(ai_text, image_data)
             if result:
                 return True
-            # If Groq vision said no, still try Pollinations with text description
-            # (maybe the vision model missed something the text model catches)
+            # Vision said no — fall through to text check as backup
 
     # ── Everything → Pollinations ──
     return await _ask_pollinations(ai_text)
@@ -387,11 +411,12 @@ def setup(bot: discord.Client):
     global _bot
     _bot = bot
 
-    modes = [f"Pollinations ({POLLINATIONS_MODEL}) — primary"]
-    if GROQ_API_KEY:
-        modes.append(f"Groq vision ({GROQ_VISION_MODEL})")
+    modes = [f"Pollinations ({POLLINATIONS_MODEL}) — text"]
+    if OPENROUTER_API_KEY:
+        models_str = ", ".join(m.split("/")[-1] for m in OPENROUTER_VISION_MODELS[:2])
+        modes.append(f"OpenRouter vision ({models_str})")
     else:
-        modes.append("⚠️ No GROQ_API_KEY — image detection limited to filenames only")
+        modes.append("⚠️ No OPENROUTER_API_KEY — image detection limited to filenames only")
 
     @bot.listen("on_message")
     async def on_message_ai(message: discord.Message):
