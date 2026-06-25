@@ -60,19 +60,42 @@ _caught_by_hi: set[int] = set()
 # AI Prompt — clear rules, no ambiguity
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """Is this message a greeting in ANY language, ANY format, or ANY trick?
+SYSTEM_PROMPT = """Determine whether the message's primary intent is to greet someone.
 
-Greeting = any way of saying hi/hello. This includes:
-- Any language: hi, hey, hello, hola, namaste, ciao, konnichiwa, salaam, annyeong, ni hao, bonjour, aloha, etc.
-- Any format: text, emoji (👋), Unicode tricks (🇭🇮 ⓗⓘ ʜɪ 𐌷𐌹 ⠓⠊ ♓ℹ), l33tspeak (h1 h3y), encoded (Morse, binary, hex, Base64, ROT13), ASCII art, reversed "ih", stickers
-- Any trick: zero-width chars, homoglyphs, combining marks, visual lookalikes, any creative way to say hello
+Reply "yes" ONLY if the message itself is a greeting, in ANY language, script, encoding, or visual form.
 
-Reply "yes" or "no"."""
+Examples that ARE greetings:
+- Any language: hi, hello, hey, hola, bonjour, ciao, namaste, salaam, assalamu alaikum, konnichiwa, annyeong, ni hao, etc.
+- Informal greetings: sup, yo, wassup, morning, good morning, good evening, etc.
+- Emoji or visual greetings: 👋 🙋 🤝 🙏
+- Unicode/obfuscated forms: ⓗⓘ, 𐌷𐌹, 🇭🇮, ♓ℹ, ⠓⠊, zero-width characters, homoglyphs, combining marks.
+- Encoded forms: Morse, Binary, Hex, Base64, ROT13, Braille.
+- ASCII art, stickers, GIFs, images, or any creative way intended as a greeting.
+
+Reply "no" if:
+- The message only mentions greetings (e.g. "the word hi").
+- It is a question or discussion about greetings.
+- "hi" appears inside another unrelated word.
+- The primary intent is not greeting someone.
+
+Output ONLY:
+yes
+or
+no
+"""
 
 # Separate prompt for vision (image analysis)
-VISION_PROMPT = """Does this image/GIF show a greeting in ANY form? (someone waving, text saying hi/hello in any language, waving hand, any visual greeting)
+VISION_PROMPT = """Determine whether this image/GIF/sticker's primary purpose is greeting someone.
 
-Reply "yes" or "no"."""
+Reply "yes" if it visually represents a greeting in any language or form (text, waving, bowing, handshake, greeting sticker, etc.).
+
+Reply "no" otherwise.
+
+Output ONLY:
+yes
+or
+no
+"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
