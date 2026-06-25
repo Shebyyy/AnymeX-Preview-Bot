@@ -13,15 +13,19 @@
 #   - L33tspeak: h1, h3y, h3llo, y0
 #   - Emoji-only greetings: 👋, 🙏, 🤝
 #   - Stickers that are greetings
-#   - GIFs / attachments that look like greetings
+#   - GIFs / images that show greetings (waving, hi text, etc.) ← VISION!
 #   - Any creative/trick way of saying hi
 #
-# Uses Groq API (free, ~0.1-0.3s response time)
+# Dual AI:
+#   - Groq (text-only) — fastest, for messages without attachments
+#   - Google Gemini Flash (vision) — can SEE images/GIFs/stickers
+#
+# Both are FREE. Groq: 14,400 req/day. Gemini: 1,500 req/day.
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
 import re
-import unicodedata
+import base64
 import aiohttp
 import discord
 
@@ -33,173 +37,174 @@ TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
 REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
 # AI trigger uses plain reply (bot's own profile) — no webhook/custom tag
 
-# Groq API config
+# ── Groq API (text-only, fast) ──
 GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 GROQ_API_URL  = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL    = "llama-3.1-8b-instant"  # Fast + free tier friendly
+GROQ_MODEL    = "llama-3.1-8b-instant"
 
-# Pre-check filters (very relaxed — we only check 2 target users anyway)
-MAX_WORDS     = 30     # Allow ASCII art / encoded messages (was 6)
-MIN_LENGTH    = 1      # Skip empty messages
-MAX_LENGTH    = 2000   # Allow ASCII art (was 40)
+# ── Google Gemini API (vision — can see images/GIFs) ──
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_MODEL  = "gemini-2.0-flash"  # Free, fast, supports images
+
+# Pre-check filters
+MAX_WORDS     = 30
+MIN_LENGTH    = 1
+MAX_LENGTH    = 2000
+MAX_IMAGE_SIZE = 4 * 1024 * 1024  # 4MB max for Gemini
 
 # Track recently caught message IDs to avoid double-firing with hi_trigger
 _caught_by_hi: set[int] = set()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AI Prompt — knows about ALL encoding tricks
+# AI Prompt — clear rules, no ambiguity
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an extremely thorough greeting detector. Your job is to catch ANY form of greeting or saying "hi", no matter how creative or encoded.
+SYSTEM_PROMPT = """You are a greeting detector. Determine if the message is a GREETING (someone saying hi/hello).
 
-A greeting includes ALL of these:
+YES = greeting:
+1. Direct: hi, hey, hello, sup, yo, howdy, heya, hiya, yoo, heyyyy
+2. Other languages: hola, bonjour, namaste, ciao, konnichiwa, salaam, salut, aloha, privyet, merhaba, jambo, olá, hallo, hei, hej, czesc, ahoy, annyeong, ni hao
+3. Slang: wassup, what's up, whats good, how's it going, watcha, yooo, wagwan, yerr
+4. Emoji greetings: 👋 🙏 🤝 🫡 🖐️ ✋ (standalone)
+5. L33tspeak: h1, h3y, h3llo, y0, any trick spelling of a greeting
+6. Unicode tricks for "hi": 🇭🇮 ⓗⓘ ｈｉ ʰⁱ ₕᵢ ʜɪ 𐌷𐌹 𝐡𝐢 ⠓⠊ ♓ℹ and any visual lookalike
+7. Encoded: Morse .... .., Binary 01101000 01101001, ASCII 104 105, Hex 68 69, Base64 aGk=, ROT13 uv
+8. ASCII art that spells "hi" or a greeting
+9. Sticker names that are greetings
+10. Reversed trick: ih
+11. Images/GIFs showing someone waving, saying hi, or greeting
+12. Any creative/symbol combo that means a greeting
 
-1. DIRECT GREETINGS: hi, hey, hello, sup, yo, howdy, heya, hiya, yoo, heyyyy
-2. OTHER LANGUAGES: hola, bonjour, namaste, ciao, konnichiwa, salaam, salut, aloha, privyet, merhaba, jambo, olá, hallo, hei, hej, czesc, ahoy, annyeong, ni hao
-3. SLANG: wassup, what's up, whats good, how's it going, watcha, yooo, heyyyy, wagwan, yerr
-4. EMOJI GREETINGS: 👋, 🙏, 🤝, 🫡, 🖐️, ✋ (when used as standalone greeting)
-5. L33TSPEAK / CREATIVE: h1, h3y, h3llo, y0, h1h1, any deliberate trick spelling
+NO = not a greeting:
+- Sentences: "It's unchanged tho?", "I'm doing fine", "That's cool", "What time is it?"
+- Real words: high, hiring, hint, history, help, here, how, have
+- Normal conversation, statements, questions, opinions
+- "it's", "I'm", "that's", "they're" in a sentence = NOT a greeting
+- Casual chat: "tho", "lol", "fr", "bruh", "yeah", "nah"
+- Code, URLs
+- Images/GIFs that are NOT greetings (memes, reactions, random content)
 
-6. UNICODE TRICKS (visual lookalikes for "hi"):
-   - Regional indicators: 🇭🇮
-   - Circled: ⓗⓘ
-   - Fullwidth: ｈｉ
-   - Superscript: ʰⁱ
-   - Subscript: ₕᵢ
-   - Small caps: ʜɪ
-   - Gothic: 𐌷𐌹
-   - Mathematical: 𝐡𝐢, 𝘩𝘪, 𝕙𝕚, 𝚑𝚒
-   - Braille: ⠓⠊
-   - Any Unicode characters that visually spell "hi" (♓ℹ, etc.)
+CRITICAL: A greeting's ONLY purpose is to say hello. A sentence with grammar (pronouns, verbs, real question) is NOT a greeting.
 
-7. ENCODED "hi":
-   - Morse code: .... ..
-   - Binary: 01101000 01101001
-   - ASCII/decimal: 104 105
-   - Hex: 68 69
-   - Base64: aGk=
-   - ROT13: uv
-   - Any number code that represents hi
+Reply ONLY one word: "yes" or "no" """
 
-8. ASCII ART that spells "hi" or a greeting word
-9. STICKER names that are greetings
-10. REVERSED: ih (when used as a trick for hi)
-11. ANY combination of symbols, numbers, letters, emoji that represents a greeting
+# Separate prompt for vision (image analysis)
+VISION_PROMPT = """You are a greeting detector. Look at this image/GIF and determine if it shows a GREETING.
 
-NOT a greeting:
-- Normal conversation, questions, statements (longer messages with real content)
-- "its", "it's", "it is" — these are pronouns, not greetings
-- Short reactions, filler words, expressions (ohhk, ok, okay, lol, wtf, damn, bruh, etc.)
-- Swearing or frustrated messages
-- Words that happen to start with h (high, hiring, hint, history, help, here, how, have)
-- Real words in sentences (not tricks)
-- Code blocks with actual code
-- URLs or links
+YES if the image shows:
+- Someone waving hello
+- Text saying "hi", "hey", "hello", or any greeting
+- A waving hand emoji/character
+- Any visual that clearly means "hello" or "hi"
 
-Be thorough but precise. When in doubt, say no. Only say yes if you're confident it's a greeting.
+NO if the image shows:
+- A meme, reaction, or funny image (not a greeting)
+- Random content, screenshots, game captures
+- Emojis or characters that are NOT waving/greeting
+- Anything that isn't clearly saying hello
+
+If you're not sure, say no. Only say yes if it clearly shows a greeting.
 
 Reply ONLY one word: "yes" or "no" """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Quick pre-filter (very relaxed — only skip OBVIOUSLY not-greetings)
+# Pre-filter — relaxed, let AI decide
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Only skip messages that are 100% definitely not greetings
-# We removed the aggressive _DEF_NOT_GREETING list because the AI is smart enough
-# and we only check 2 target users (very low API usage)
-
 def _should_check_ai(text: str, message: discord.Message = None) -> bool:
-    """Very relaxed filter — return True if message COULD be a greeting.
-    
-    Since we only check 2 target users, we can afford to send almost
-    everything to AI. We only skip obviously-not-greeting messages.
-    """
+    """Very relaxed filter — let AI decide. We only check 2 target users."""
     stripped = text.strip()
 
-    # ── Always check ──
-    # Stickers (might be greeting stickers)
+    # Always check stickers and attachments
     if message and message.stickers:
         return True
-
-    # Attachments (GIFs, images — might be waving GIF etc.)
     if message and message.attachments:
         return True
 
     # Empty text
     if not stripped:
-        # But if there are stickers/attachments with no text, still check
         if message and (message.stickers or message.attachments):
             return True
         return False
 
-    # Length check (very generous)
-    if len(stripped) < MIN_LENGTH:
+    if len(stripped) < MIN_LENGTH or len(stripped) > MAX_LENGTH:
         return False
-    if len(stripped) > MAX_LENGTH:
-        return False
-
-    # Word count (allow more for encoded messages / ASCII art)
     if len(stripped.split()) > MAX_WORDS:
         return False
-
-    # Skip code blocks (actual code, not tricks)
     if stripped.startswith('```') and stripped.endswith('```'):
         return False
-
-    # Skip URLs only
     if re.match(r'^https?://\S+$', stripped):
         return False
 
-    # ── Let everything else through to AI ──
-    # The AI is smart — let it decide. We only have 2 target users,
-    # so even sending all their messages would be <100 calls/day.
-    # Groq free tier allows 14,400/day. No worries.
     return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build the text to send to AI (includes stickers, attachments context)
+# Build text context for AI (stickers, attachment descriptions)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_ai_text(message: discord.Message) -> str:
-    """Build the text representation to send to AI, including stickers/attachments."""
+    """Build text for AI. Stickers/attachments described by name."""
     parts = []
 
-    # Main text content
     if message.content.strip():
         parts.append(message.content.strip())
 
-    # Stickers — include name and description
     for sticker in message.stickers:
-        sticker_info = f"[sticker: {sticker.name}"
+        info = f"[sticker: {sticker.name}"
         if sticker.description:
-            sticker_info += f" - {sticker.description}"
-        sticker_info += "]"
-        parts.append(sticker_info)
+            info += f" - {sticker.description}"
+        info += "]"
+        parts.append(info)
 
-    # Attachments — describe what they are
     for att in message.attachments:
-        att_info = f"[attachment: {att.filename}"
+        info = f"[attachment: {att.filename}"
         if att.content_type:
-            att_info += f" ({att.content_type})"
-        # Flag GIFs specifically — they're commonly used as greetings
-        if att.filename.lower().endswith('.gif'):
-            att_info += " - this is a GIF"
-        if att.content_type and 'gif' in att.content_type.lower():
-            att_info += " - this is a GIF"
-        att_info += "]"
-        parts.append(att_info)
+            info += f" ({att.content_type})"
+        if att.filename.lower().endswith('.gif') or (att.content_type and 'gif' in att.content_type.lower()):
+            info += " - GIF"
+        info += "]"
+        parts.append(info)
 
     return " | ".join(parts) if parts else ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Groq AI call
+# Download attachment as base64
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _ask_ai(text: str) -> bool:
-    """Send message to Groq AI and return True if it's a greeting."""
+async def _download_as_base64(url: str, max_size: int = MAX_IMAGE_SIZE) -> tuple[str, str] | None:
+    """Download an image from URL and return (base64_data, mime_type) or None."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return None
+                # Check size before downloading
+                content_length = resp.headers.get('Content-Length')
+                if content_length and int(content_length) > max_size:
+                    return None
+
+                data = await resp.read()
+                if len(data) > max_size:
+                    return None
+
+                mime_type = resp.headers.get('Content-Type', 'image/png')
+                b64 = base64.b64encode(data).decode('utf-8')
+                return (b64, mime_type)
+    except Exception as e:
+        print(f"[ai_trigger] Download failed: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq AI call (text-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _ask_groq(text: str) -> bool:
+    """Send text to Groq AI. Returns True if it's a greeting."""
     if not GROQ_API_KEY:
         return False
 
@@ -211,8 +216,8 @@ async def _ask_ai(text: str) -> bool:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": text},
                 ],
-                "max_tokens": 3,        # We only need "yes" or "no"
-                "temperature": 0.1,      # Low temp = more consistent
+                "max_tokens": 3,
+                "temperature": 0.1,
                 "top_p": 1,
             }
             headers = {
@@ -223,7 +228,7 @@ async def _ask_ai(text: str) -> bool:
                 GROQ_API_URL,
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=5),  # Slightly longer for ASCII art
+                timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -234,16 +239,170 @@ async def _ask_ai(text: str) -> bool:
                 reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
 
                 if reply.startswith("yes"):
-                    print(f"[ai_trigger] AI detected greeting: \"{text[:100]}\" → {reply}")
+                    print(f"[ai_trigger] Groq: greeting detected \"{text[:80]}\" → {reply}")
                     return True
                 return False
 
     except aiohttp.ClientTimeout:
-        print(f"[ai_trigger] Groq timeout for: \"{text[:50]}\"")
+        print(f"[ai_trigger] Groq timeout: \"{text[:50]}\"")
         return False
     except Exception as e:
         print(f"[ai_trigger] Groq error: {e}")
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Gemini AI call (vision — can SEE images)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _ask_gemini_vision(text: str, image_data: list[tuple[str, str]] = None) -> bool:
+    """Send text + optional images to Gemini. Returns True if it's a greeting.
+    
+    image_data: list of (base64_data, mime_type) tuples
+    """
+    if not GEMINI_API_KEY:
+        # No Gemini key — fall back to text-only analysis
+        return False
+
+    try:
+        # Build content parts
+        parts = []
+
+        # System instruction
+        parts.append({"text": VISION_PROMPT if image_data else SYSTEM_PROMPT})
+
+        # User text
+        if text:
+            parts.append({"text": text})
+
+        # Images
+        if image_data:
+            for b64_data, mime_type in image_data:
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": b64_data
+                    }
+                })
+
+        payload = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {
+                "maxOutputTokens": 3,
+                "temperature": 0.1,
+                "topP": 1,
+            }
+        }
+
+        url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    print(f"[ai_trigger] Gemini HTTP {resp.status}: {body[:200]}")
+                    return False
+
+                data = await resp.json()
+                # Gemini response format
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return False
+
+                reply = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip().lower()
+
+                if reply.startswith("yes"):
+                    src = "vision" if image_data else "text"
+                    print(f"[ai_trigger] Gemini ({src}): greeting detected \"{text[:80]}\" → {reply}")
+                    return True
+                return False
+
+    except aiohttp.ClientTimeout:
+        print(f"[ai_trigger] Gemini timeout: \"{text[:50]}\"")
+        return False
+    except Exception as e:
+        print(f"[ai_trigger] Gemini error: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main AI check — picks the right model based on content
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _check_greeting(message: discord.Message) -> bool:
+    """Check if a message is a greeting using AI.
+    
+    Strategy:
+    - If message has image/GIF attachments → use Gemini (can SEE them)
+    - If message has sticker image → try Gemini with sticker image
+    - If text-only → use Groq (fastest)
+    - If no vision API available → fall back to text description only
+    """
+    ai_text = _build_ai_text(message)
+    has_attachments = bool(message.attachments)
+    has_stickers = bool(message.stickers)
+
+    # ── Has image/GIF attachments → use Gemini Vision ──
+    if has_attachments and GEMINI_API_KEY:
+        image_data = []
+        for att in message.attachments:
+            # Only process image-like attachments
+            is_image = False
+            if att.content_type and any(t in att.content_type.lower() for t in ['image', 'gif']):
+                is_image = True
+            if att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')):
+                is_image = True
+
+            if is_image:
+                result = await _download_as_base64(att.url)
+                if result:
+                    image_data.append(result)
+
+        if image_data:
+            # Send to Gemini with actual images!
+            return await _ask_gemini_vision(ai_text, image_data)
+
+    # ── Has stickers → try Gemini with sticker image ──
+    if has_stickers and GEMINI_API_KEY:
+        image_data = []
+        for sticker in message.stickers:
+            # Discord stickers have a URL we can download
+            sticker_url = None
+            if sticker.url:
+                sticker_url = sticker.url
+            # Try different format URLs
+            if not sticker_url and sticker.id:
+                sticker_url = f"https://cdn.discordapp.com/stickers/{sticker.id}.png"
+
+            if sticker_url:
+                result = await _download_as_base64(sticker_url)
+                if result:
+                    image_data.append(result)
+
+        if image_data:
+            return await _ask_gemini_vision(ai_text, image_data)
+
+    # ── Text-only or no vision API → use Groq (fastest) ──
+    if GROQ_API_KEY:
+        result = await _ask_groq(ai_text)
+        # If Groq says no but message has attachments/stickers,
+        # try Gemini with text description as fallback
+        if not result and (has_attachments or has_stickers) and GEMINI_API_KEY:
+            return await _ask_gemini_vision(ai_text)
+        return result
+
+    # ── Only Gemini available → use it for text too ──
+    if GEMINI_API_KEY:
+        return await _ask_gemini_vision(ai_text)
+
+    # No API keys set
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,25 +422,23 @@ async def _handle(message: discord.Message):
 
     # Skip if hi_trigger already caught this message
     if message.id in _caught_by_hi:
-        _caught_by_hi.discard(message.id)  # Clean up
+        _caught_by_hi.discard(message.id)
         return
 
-    # Build the full text (content + stickers + attachments)
+    # Pre-filter
     ai_text = _build_ai_text(message)
-
-    # Very relaxed pre-filter
     if not _should_check_ai(ai_text, message):
         return
 
-    # Ask AI
-    is_greeting = await _ask_ai(ai_text)
+    # Ask AI (picks right model automatically)
+    is_greeting = await _check_greeting(message)
 
     if not is_greeting:
         return
 
     print(f"[ai_trigger] Triggered by {message.author} in #{message.channel}")
 
-    # AI trigger uses plain reply — bot's own profile, no custom webhook
+    # AI trigger uses plain reply — bot's own profile
     try:
         await message.reply(REPLY_MESSAGE, mention_author=True)
         print(f"[ai_trigger] Replied via normal reply ✅")
@@ -306,8 +463,9 @@ def setup(bot: discord.Client):
     global _bot
     _bot = bot
 
-    if not GROQ_API_KEY:
-        print("⚠️ ai_trigger NOT loaded — GROQ_API_KEY environment variable is not set")
+    has_ai = bool(GROQ_API_KEY or GEMINI_API_KEY)
+    if not has_ai:
+        print("⚠️ ai_trigger NOT loaded — set GROQ_API_KEY and/or GEMINI_API_KEY")
         return
 
     @bot.listen("on_message")
@@ -318,4 +476,9 @@ def setup(bot: discord.Client):
     async def on_message_edit_ai(before: discord.Message, after: discord.Message):
         await _handle(after)
 
-    print(f"✅ ai_trigger loaded — AI greeting detector watching users {TARGET_USER_IDS}")
+    modes = []
+    if GROQ_API_KEY:
+        modes.append(f"Groq text ({GROQ_MODEL})")
+    if GEMINI_API_KEY:
+        modes.append(f"Gemini vision ({GEMINI_MODEL})")
+    print(f"✅ ai_trigger loaded — {', '.join(modes)} — watching users {TARGET_USER_IDS}")
