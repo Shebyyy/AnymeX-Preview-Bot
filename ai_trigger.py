@@ -60,53 +60,19 @@ _caught_by_hi: set[int] = set()
 # AI Prompt — clear rules, no ambiguity
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a greeting detector. Determine if the message is a GREETING (someone saying hi/hello).
+SYSTEM_PROMPT = """Is this message a greeting in ANY language, ANY format, or ANY trick?
 
-YES = greeting:
-1. Direct: hi, hey, hello, sup, yo, howdy, heya, hiya, yoo, heyyyy
-2. Other languages: hola, bonjour, namaste, ciao, konnichiwa, salaam, salut, aloha, privyet, merhaba, jambo, olá, hallo, hei, hej, czesc, ahoy, annyeong, ni hao
-3. Slang: wassup, what's up, whats good, how's it going, watcha, yooo, wagwan, yerr
-4. Emoji greetings: 👋 🙏 🤝 🫡 🖐️ ✋ (standalone)
-5. L33tspeak: h1, h3y, h3llo, y0, any trick spelling of a greeting
-6. Unicode tricks for "hi": 🇭🇮 ⓗⓘ ｈｉ ʰⁱ ₕᵢ ʜɪ 𐌷𐌹 𝐡𝐢 ⠓⠊ ♓ℹ and any visual lookalike
-7. Encoded: Morse .... .., Binary 01101000 01101001, ASCII 104 105, Hex 68 69, Base64 aGk=, ROT13 uv
-8. ASCII art that spells "hi" or a greeting
-9. Sticker names that are greetings
-10. Reversed trick: ih
-11. Images/GIFs showing someone waving, saying hi, or greeting
-12. Any creative/symbol combo that means a greeting
+Greeting = any way of saying hi/hello. This includes:
+- Any language: hi, hey, hello, hola, namaste, ciao, konnichiwa, salaam, annyeong, ni hao, bonjour, aloha, etc.
+- Any format: text, emoji (👋), Unicode tricks (🇭🇮 ⓗⓘ ʜɪ 𐌷𐌹 ⠓⠊ ♓ℹ), l33tspeak (h1 h3y), encoded (Morse, binary, hex, Base64, ROT13), ASCII art, reversed "ih", stickers
+- Any trick: zero-width chars, homoglyphs, combining marks, visual lookalikes, any creative way to say hello
 
-NO = not a greeting:
-- Sentences: "It's unchanged tho?", "I'm doing fine", "That's cool", "What time is it?"
-- Real words: high, hiring, hint, history, help, here, how, have
-- Normal conversation, statements, questions, opinions
-- "it's", "I'm", "that's", "they're" in a sentence = NOT a greeting
-- Casual chat: "tho", "lol", "fr", "bruh", "yeah", "nah"
-- Code, URLs
-- Images/GIFs that are NOT greetings (memes, reactions, random content)
-
-CRITICAL: A greeting's ONLY purpose is to say hello. A sentence with grammar (pronouns, verbs, real question) is NOT a greeting.
-
-Reply ONLY one word: "yes" or "no" """
+Reply "yes" or "no"."""
 
 # Separate prompt for vision (image analysis)
-VISION_PROMPT = """You are a greeting detector. Look at this image/GIF and determine if it shows a GREETING.
+VISION_PROMPT = """Does this image/GIF show a greeting in ANY form? (someone waving, text saying hi/hello in any language, waving hand, any visual greeting)
 
-YES if the image shows:
-- Someone waving hello
-- Text saying "hi", "hey", "hello", or any greeting
-- A waving hand emoji/character
-- Any visual that clearly means "hello" or "hi"
-
-NO if the image shows:
-- A meme, reaction, or funny image (not a greeting)
-- Random content, screenshots, game captures
-- Emojis or characters that are NOT waving/greeting
-- Anything that isn't clearly saying hello
-
-If you're not sure, say no. Only say yes if it clearly shows a greeting.
-
-Reply ONLY one word: "yes" or "no" """
+Reply "yes" or "no"."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
