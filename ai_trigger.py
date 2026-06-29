@@ -56,8 +56,58 @@ MIN_LENGTH    = 1
 MAX_LENGTH    = 2000
 MAX_IMAGE_SIZE = 4 * 1024 * 1024  # 4MB max
 
+# Browser User-Agent — Pollinations 403s without it now!
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 # Track recently caught message IDs to avoid double-firing with hi_trigger
 _caught_by_hi: set[int] = set()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Visual Unicode trick decoder
+# ─────────────────────────────────────────────────────────────────────────────
+# Maps emoji/symbols that visually look like letters → their letter equivalents
+# So "♓🇮" (Pisces + flag-I) becomes "hi" for the AI to recognize
+
+VISUAL_MAP = {
+    # Zodiac signs that look like letters
+    '♓': 'h', '♈': 'r', '♉': 't', '♊': 'i', '♋': 'c', '♌': 'l',
+    '♍': 'm', '♎': 'l', '♏': 'm', '♐': 's', '♑': 'c', '♒': 'a',
+    # Regional indicators (flag letters A-Z)
+    '🇦': 'a', '🇧': 'b', '🇨': 'c', '🇩': 'd', '🇪': 'e', '🇫': 'f',
+    '🇬': 'g', '🇭': 'h', '🇮': 'i', '🇯': 'j', '🇰': 'k', '🇱': 'l',
+    '🇲': 'm', '🇳': 'n', '🇴': 'o', '🇵': 'p', '🇶': 'q', '🇷': 'r',
+    '🇸': 's', '🇹': 't', '🇺': 'u', '🇻': 'v', '🇼': 'w', '🇽': 'x',
+    '🇾': 'y', '🇿': 'z',
+    # Info symbols
+    'ℹ': 'i', 'ℋ': 'h', 'ℌ': 'h', 'Ⓗ': 'h', 'Ⓘ': 'i', 'ⓗ': 'h', 'ⓘ': 'i',
+    # Braille alphabet
+    '⠁': 'a', '⠃': 'b', '⠉': 'c', '⠙': 'd', '⠑': 'e', '⠋': 'f',
+    '⠛': 'g', '⠓': 'h', '⠊': 'i', '⠚': 'j', '⠅': 'k', '⠇': 'l',
+    '⠍': 'm', '⠝': 'n', '⠕': 'o', '⠏': 'p', '⠟': 'q', '⠗': 'r',
+    '⠎': 's', '⠞': 't', '⠥': 'u', '⠧': 'v', '⠺': 'w', '⠭': 'x',
+    '⠽': 'y', '⠵': 'z',
+    # Math style / superscript letters
+    '𝐡': 'h', '𝐢': 'i', '𝐇': 'h', '𝐈': 'i', 'ʰ': 'h', 'ⁱ': 'i',
+    'ᵉ': 'e', 'ʸ': 'y', 'ᵒ': 'o', 'ᵃ': 'a',
+    # Runic / ancient scripts that look like latin
+    '𐌷': 'h', '𐌹': 'i',
+    # Circled letters
+    'ⓞ': 'o', 'ⓔ': 'e', 'ⓨ': 'y', 'ⓐ': 'a',
+    # Common greeting emojis (not letters but signal greetings)
+    '👋': ' wave ',
+}
+
+def _decode_visual(text: str) -> str:
+    """Decode visual Unicode tricks to readable letters.
+    So '♓🇮' (Pisces + flag-I) becomes 'hi'.
+    """
+    result = []
+    for ch in text:
+        if ch in VISUAL_MAP:
+            result.append(VISUAL_MAP[ch])
+        else:
+            result.append(ch)
+    return ''.join(result)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AI Prompts
@@ -154,7 +204,11 @@ async def _download_as_base64(url: str, max_size: int = MAX_IMAGE_SIZE) -> tuple
     """Download an image from URL and return (base64_data, mime_type) or None."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=10),
+                headers={"User-Agent": BROWSER_UA},
+            ) as resp:
                 if resp.status != 200:
                     return None
                 content_length = resp.headers.get('Content-Length')
@@ -178,19 +232,35 @@ async def _download_as_base64(url: str, max_size: int = MAX_IMAGE_SIZE) -> tuple
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _ask_pollinations(text: str) -> bool:
-    """Send text to Pollinations AI (GPT-OSS 20B). Returns True if greeting."""
+    """Send text to Pollinations AI (GPT-OSS 20B). Returns True if greeting.
+
+    Also sends a decoded version of visual Unicode tricks so the AI can
+    recognize things like '♓🇮' (Pisces + flag-I) = 'hi'.
+    """
+    # Decode visual Unicode tricks to readable letters
+    decoded = _decode_visual(text)
+    # If decoding changed the text, include both versions for the AI
+    if decoded.strip() != text.strip() and decoded.strip():
+        user_content = f"{text}\n[decoded: {decoded}]"
+    else:
+        user_content = text
+
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
                 "model": POLLINATIONS_MODEL,
                 "messages": [
                     {"role": "system", "content": TEXT_PROMPT},
-                    {"role": "user", "content": text},
+                    {"role": "user", "content": user_content},
                 ],
                 "max_tokens": 3,
                 "temperature": 0.1,
             }
-            headers = {"Content-Type": "application/json"}
+            # Browser UA required — Pollinations 403s without it now
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": BROWSER_UA,
+            }
             async with session.post(
                 POLLINATIONS_API_URL,
                 json=payload,
@@ -260,6 +330,7 @@ async def _ask_openrouter_vision(text: str, image_data: list[tuple[str, str]]) -
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://anymex-bot.render.com",
                     "X-Title": "AnymeX-Preview-Bot",
+                    "User-Agent": BROWSER_UA,
                 }
                 async with session.post(
                     OPENROUTER_API_URL,
