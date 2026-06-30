@@ -111,7 +111,10 @@ async def _read_bans_from_github() -> tuple[dict, str | None]:
         return {}, None
     try:
         async with aiohttp.ClientSession() as session:
-            data, sha = await _github_read_json_fn(session, FILE_TRAP_BANS)
+            data, sha = await _github_read_json_fn(
+                session, FILE_TRAP_BANS,
+                repo=_userdata_repo, branch=_userdata_branch,
+            )
             if not isinstance(data, dict):
                 return {}, sha
             return data, sha
@@ -120,18 +123,25 @@ async def _read_bans_from_github() -> tuple[dict, str | None]:
         return {}, None
 
 
-async def _write_bans_to_github(data: dict, sha: str | None, commit_msg: str):
-    """Write trap_bans.json to GitHub."""
+async def _write_bans_to_github(data: dict, sha: str | None, commit_msg: str) -> bool:
+    """Write trap_bans.json to GitHub. Returns True on success, False on failure."""
     if not _github_write_json_fn:
+        print("[trap_trigger] ❌ Cannot write bans: no GitHub write function configured")
         return False
     try:
         async with aiohttp.ClientSession() as session:
-            return await _github_write_json_fn(
+            ok = await _github_write_json_fn(
                 session, FILE_TRAP_BANS, data, sha, commit_msg,
                 repo=_userdata_repo, branch=_userdata_branch,
             )
+        if not ok:
+            print(
+                f"[trap_trigger] ❌ GitHub write FAILED for {FILE_TRAP_BANS} "
+                f"(repo={_userdata_repo}, branch={_userdata_branch}, sha={'new file' if sha is None else 'update'})"
+            )
+        return bool(ok)
     except Exception as e:
-        print(f"[trap_trigger] Write bans to GitHub error: {e}")
+        print(f"[trap_trigger] ❌ Write bans to GitHub error: {e}")
         return False
 
 
@@ -273,10 +283,13 @@ async def _record_ban(
         "message_content": content_preview,
     }
 
-    await _write_bans_to_github(
+    ok = await _write_bans_to_github(
         bans, sha, f"🪤 Trap ban: {user} in {guild.name} (unban at {unban_at})"
     )
-    print(f"[trap_trigger] Recorded ban in GitHub: {key} → unban at {unban_at}")
+    if ok:
+        print(f"[trap_trigger] ✅ Recorded ban in GitHub: {key} → unban at {unban_at}")
+    else:
+        print(f"[trap_trigger] ❌ FAILED to record ban in GitHub: {key} (user is banned but won't auto-unban!)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
