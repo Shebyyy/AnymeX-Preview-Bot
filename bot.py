@@ -10292,6 +10292,15 @@ async def main():
     import source_trigger
     source_trigger.setup(bot)
 
+    import trap_trigger
+    trap_trigger.setup(
+        bot,
+        github_read_json_fn=github_read_json,
+        github_write_json_fn=github_write_json,
+        userdata_repo=USERDATA_REPO,
+        userdata_branch=USERDATA_BRANCH,
+    )
+
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
     asyncio.create_task(_load_log_queue())
