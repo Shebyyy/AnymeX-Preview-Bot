@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# source_trigger.py  —  AI-powered guide link responder
+# source_trigger.py  —  AI-powered guide link responder + manual commands
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # Replaces the old regex-based version. Now uses AI (Pollinations, free, no key)
@@ -11,6 +11,12 @@
 #   none     → stay silent
 #
 # Same idea as ai_trigger.py (which uses Pollinations for greeting detection).
+#
+# ── Manual commands (anyone can use, must be a reply) ──
+#   !setup     → reply to the referenced message with the Setup Guide
+#   !download  → reply to the referenced message with the Download Guide
+#   !both      → reply to the referenced message with both guides
+# The command message is auto-deleted to keep chat clean.
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -47,6 +53,17 @@ EXCLUDED_ROLE_IDS = {
 EXCLUDED_USER_IDS = {
     826730448688250890,   # bakabakaidiot
     1331083395614380090,  # devta.exe
+}
+
+# ── Manual commands config ──
+# Anyone can use these by replying to a user's message.
+# The command message is auto-deleted to keep chat clean.
+MANUAL_PREFIX = "!"
+# Map: command (lowercase, without prefix) → classification
+MANUAL_COMMANDS = {
+    "setup":    "setup",
+    "download": "download",
+    "both":     "both",
 }
 
 # ── Pollinations API (text — FREE, no key needed!) ──
@@ -408,6 +425,113 @@ async def _handle(message: discord.Message):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Manual commands (!setup / !download / !both — must be a reply)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _handle_manual(message: discord.Message) -> bool:
+    """Handle manual guide commands. Returns True if the message was a manual
+    command (so the caller can skip the AI path).
+
+    Usage: reply to a user's message with  !setup  /  !download  /  !both
+    The command message is auto-deleted; the bot replies to the referenced
+    message with the appropriate guide link.
+    """
+    if message.author.bot:
+        return False
+
+    content = message.content.strip()
+    if not content:
+        return False
+
+    # Must start with the manual prefix
+    if not content.startswith(MANUAL_PREFIX):
+        return False
+
+    # Strip prefix, take the first word, lowercase it
+    rest = content[len(MANUAL_PREFIX):].strip()
+    if not rest:
+        return False
+    first_word = rest.split()[0].lower()
+
+    # Is it a known manual command?
+    classification = MANUAL_COMMANDS.get(first_word)
+    if classification is None:
+        return False
+
+    # ── It's a manual command — handle it ──
+    print(f"[source_trigger] Manual !{first_word} by {message.author} in #{message.channel}")
+
+    # Must be a reply to another message
+    if message.reference is None or message.reference.message_id is None:
+        try:
+            await message.reply(
+                f"ℹ️ Reply to a user's message with `!{first_word}` to send them the guide.",
+                mention_author=False,
+            )
+        except Exception:
+            pass
+        # Still try to delete the command
+        try:
+            await message.delete()
+        except Exception as e:
+            print(f"[source_trigger] Failed to delete command (no-ref): {e}")
+        return True
+
+    # Fetch the referenced (original) message
+    try:
+        ref_message = await message.channel.fetch_message(message.reference.message_id)
+    except Exception as e:
+        print(f"[source_trigger] Failed to fetch referenced message: {e}")
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return True
+
+    if ref_message is None:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return True
+
+    # Don't reply to bots (would be weird)
+    if ref_message.author.bot:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return True
+
+    # Build the reply
+    reply = _build_reply(classification, None)
+    if not reply:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return True
+
+    # Delete the command message first (keep chat clean)
+    try:
+        await message.delete()
+    except Exception as e:
+        print(f"[source_trigger] Failed to delete command message: {e}")
+
+    # Reply to the ORIGINAL user's message
+    try:
+        await ref_message.reply(reply, mention_author=False)
+        print(
+            f"[source_trigger] Manual !{first_word} → replied to "
+            f"{ref_message.author} ✅"
+        )
+    except Exception as e:
+        print(f"[source_trigger] Failed to reply manually: {e}")
+
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Setup
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -417,6 +541,9 @@ def setup(bot: discord.Client):
 
     @bot.listen("on_message")
     async def on_message_source(message: discord.Message):
+        # Manual commands take priority — handle and short-circuit
+        if await _handle_manual(message):
+            return
         await _handle(message)
 
     # Pre-fetch extension names on startup
@@ -424,4 +551,5 @@ def setup(bot: discord.Client):
     async def on_ready_source():
         await _fetch_extension_names()
 
-    print("✅ source_trigger loaded — AI-powered guide responder (Pollinations, free)")
+    cmds = ", ".join(f"{MANUAL_PREFIX}{c}" for c in MANUAL_COMMANDS)
+    print(f"✅ source_trigger loaded — AI guide responder (Pollinations, free) + manual cmds: {cmds}")
