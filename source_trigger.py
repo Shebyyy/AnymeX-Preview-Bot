@@ -293,24 +293,21 @@ async def _classify_message(text: str) -> str:
 
 def _build_reply(classification: str, matched_ext: str | None) -> str | None:
     """Return the reply string, or None if we shouldn't reply."""
-    # If we matched a specific extension, add a helpful note
-    ext_note = f" (for **{matched_ext}**)" if matched_ext else ""
-
     if classification == "setup":
         return (
-            f"📖 **Setup Guide**{ext_note}\n"
+            f"📖 **Setup Guide**\n"
             f"Install AnymeX, add repos & extensions:\n"
             f"<{GUIDE_URL}>"
         )
     if classification == "download":
         return (
-            f"📥 **Download Guide**{ext_note}\n"
+            f"📥 **Download Guide**\n"
             f"How to download anime & manga:\n"
             f"<{DOWNLOAD_URL}>"
         )
     if classification == "both":
         return (
-            f"📖 **Guides**{ext_note} — these should help:\n"
+            f"📖 **Guides** — these should help:\n"
             f"• **Setup** — install AnymeX, add repos & extensions:\n"
             f"  <{GUIDE_URL}>\n"
             f"• **Download** — how to download anime & manga:\n"
