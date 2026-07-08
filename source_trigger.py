@@ -1,16 +1,17 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# source_trigger.py  —  AI-powered guide link responder + manual commands
+# source_trigger.py  —  Fully AI-powered guide link responder + manual commands
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Replaces the old regex-based version. Now uses AI (Pollinations, free, no key)
-# to READ each message and decide which AnymeX guide link to send:
+# Uses AI (Pollinations, free, no key) to READ each message and decide which
+# AnymeX guide link to send:
 #
 #   setup    → https://anymex-extensions.vercel.app/guide
 #   download → https://anymex-extensions.vercel.app/download-guide
 #   both     → send both links
 #   none     → stay silent
 #
-# Same idea as ai_trigger.py (which uses Pollinations for greeting detection).
+# The AI reads the FULL message and classifies intent. Only a tiny junk filter
+# runs before the AI (skip bots, pure links, code blocks) to avoid wasting calls.
 #
 # ── Manual commands (anyone can use, must be a reply) ──
 #   !setup     → reply to the referenced message with the Setup Guide
@@ -23,7 +24,6 @@ import os
 import re
 import time
 import asyncio
-import unicodedata
 import aiohttp
 import discord
 
@@ -33,7 +33,6 @@ import discord
 
 GUIDE_URL        = "https://anymex-extensions.vercel.app/guide"
 DOWNLOAD_URL     = "https://anymex-extensions.vercel.app/download-guide"
-EXTENSIONS_API   = "https://anymex-extensions.vercel.app/api/extensions"
 
 # Only reply in this channel (set to None to reply everywhere)
 ALLOWED_CHANNEL_ID = 1496732120511414332
@@ -74,124 +73,16 @@ POLLINATIONS_MODEL   = "openai"  # GPT-OSS 20B reasoning model
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Lightweight pre-filter (decides if we should even bother the AI)
+# Minimal junk filter — only skips obvious non-messages so the AI doesn't waste
+# calls on bots, pure links, code blocks, etc. The AI handles everything else.
 # ─────────────────────────────────────────────────────────────────────────────
-# We don't want to send EVERY message to the AI — only ones that look like they
-# MIGHT be about AnymeX sources/extensions/downloading. This keeps the free API
-# usage low and avoids false positives on random conversation.
-
-# Words that hint at AnymeX-related help
-_HINT_KEYWORDS = re.compile(
-    r"\b("
-    r"source|sources|src|sauce|"
-    r"extension|extensions|ext|addon|add-?on|plugin|plugins|"
-    r"repo|repos|repository|"
-    r"install|installed|uninstall|reinstall|setup|set\s*up|"
-    r"download|downloading|downloaded|offline|"
-    r"playable|watch|watching|stream|streaming|read|reading|"
-    r"not\s+working|isn't\s+working|isnt\s+working|doesn't\s+work|doesnt\s+work|"
-    r"won't\s+work|wont\s+work|broken|broke|crash|crashed|error|failed|"
-    r"can't|cant|unable|stuck|loading|load|empty|blank|missing|gone|"
-    r"how\s+do\s+i|how\s+to|where\s+(?:do|is|are|can|to)|where's|wheres|"
-    r"can\s+i|need\s+help|help\s+me|pls|please|plz"
-    r")\b",
-    re.IGNORECASE,
-)
-
-# Phrases that are clearly NOT about AnymeX (so we skip the AI entirely)
-_IGNORE_PATTERNS = re.compile(
-    r"\b("
-    r"open[\s-]*source|source[\s-]*code|source[\s-]*file|source[\s-]*of|"
-    r"source[\s-]*repo(?:sitory)?|source[\s-]*is[\s-]*on"
-    r")\b",
-    re.IGNORECASE,
-)
 
 # Pre-filter limits
 _MIN_LENGTH = 3
-_MAX_WORDS  = 60
+_MAX_WORDS  = 100  # generous — let the AI see longer help requests too
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Extension name matching (fuzzy) — kept from the original.
-# A named extension is a STRONG signal that the message is AnymeX-related,
-# so we always send those to the AI even if no other hint keyword matches.
-# ─────────────────────────────────────────────────────────────────────────────
-
-_ext_names: list[str] = []
-_ext_names_lower: list[str] = []
-_ext_last_fetch: float = 0
-_EXT_CACHE_TTL = 30 * 60  # 30 minutes
-
-
-def _normalize_for_match(text: str) -> str:
-    text = text.lower().strip()
-    text = re.sub(r"[\s\-_.:;!?,'\"()\\/\[\]{}]", "", text)
-    text = unicodedata.normalize("NFKC", text)
-    return text
-
-
-async def _fetch_extension_names() -> list[str]:
-    """Fetch all extension names from the API (cached for 30 min)."""
-    global _ext_names, _ext_names_lower, _ext_last_fetch
-
-    if _ext_names and time.time() - _ext_last_fetch < _EXT_CACHE_TTL:
-        return _ext_names
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                EXTENSIONS_API,
-                timeout=aiohttp.ClientTimeout(total=30),
-                headers={"User-Agent": BROWSER_UA},
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    names = set()
-                    for ext in data:
-                        name = ext.get("name", "").strip()
-                        if name and len(name) >= 3:
-                            names.add(name)
-                    _ext_names = sorted(names)
-                    _ext_names_lower = [_normalize_for_match(n) for n in _ext_names]
-                    _ext_last_fetch = time.time()
-                    print(f"[source_trigger] Loaded {len(_ext_names)} extension names from API")
-    except Exception as e:
-        print(f"[source_trigger] Failed to fetch extensions: {e}")
-
-    return _ext_names
-
-
-def _find_matching_extension(text: str) -> str | None:
-    """Check if text contains any known extension name (with fuzzy matching)."""
-    if not _ext_names:
-        return None
-
-    normalized_text = _normalize_for_match(text)
-
-    for i, norm_name in enumerate(_ext_names_lower):
-        if len(norm_name) >= 4 and norm_name in normalized_text:
-            return _ext_names[i]
-
-    words = re.findall(r"\b[\w\-]+\b", text.lower())
-    for word in words:
-        norm_word = _normalize_for_match(word)
-        if len(norm_word) < 3:
-            continue
-
-        for i, norm_name in enumerate(_ext_names_lower):
-            if norm_name == norm_word:
-                return _ext_names[i]
-
-        if len(norm_word) >= 5:
-            for i, norm_name in enumerate(_ext_names_lower):
-                if norm_name.startswith(norm_word) or norm_word.startswith(norm_name):
-                    return _ext_names[i]
-
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AI Prompt — tells the model exactly what each guide covers
+# AI Prompt — tells the model exactly what each guide covers (and what they don't)
 # ─────────────────────────────────────────────────────────────────────────────
 
 AI_PROMPT = """You are a helpful assistant for the AnymeX anime/manga app community on Discord.
@@ -235,13 +126,26 @@ Reply "download" when someone is:
 - Asking about download quality or selecting episodes for download
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NOT COVERED BY EITHER GUIDE (reply "none" for these)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+These topics are NOT in either guide, so reply "none":
+- App UI / browsing experience (recommendations, categories, scrolling, infinite scroll, how content is displayed)
+- Discovery / search results count / how many results show up
+- App features / settings / account / profile questions
+- General anime/manga recommendations (not about the AnymeX app itself)
+- Comparisons with other apps (Mihon, Aniyomi, etc.) unless clearly asking how to set up AnymeX
+- Bug reports about app behavior that aren't setup/download related
+- Casual chat, greetings, thanks, opinions
+- "source code" or "open source" mentions (not about AnymeX sources)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- ONLY respond to messages asking for HELP or reporting a PROBLEM related to AnymeX.
-- Do NOT respond to: casual mentions of "source code" or "open source", general anime/manga chat that isn't about the AnymeX app, off-topic conversation, or messages that are clearly not about AnymeX.
+- ONLY respond to messages asking for HELP or reporting a PROBLEM that a guide actually covers.
+- When in doubt about whether a guide covers the topic, reply "none" — it's better to stay silent than send an irrelevant link.
 - If the message is about BOTH setup AND downloading → reply "both".
 - If it's clearly about one guide → reply "setup" or "download".
-- If it's not asking for help, not about AnymeX, or too vague to tell → reply "none".
+- If it's not asking for help, not about AnymeX, about a topic not covered above, or too vague to tell → reply "none".
 
 Reply with ONLY ONE WORD: setup, download, both, or none."""
 
@@ -308,7 +212,7 @@ async def _classify_message(text: str) -> str:
 # Build the reply message for a given classification
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_reply(classification: str, matched_ext: str | None) -> str | None:
+def _build_reply(classification: str) -> str | None:
     """Return the reply string, or None if we shouldn't reply."""
     if classification == "setup":
         return (
@@ -377,32 +281,26 @@ async def _handle(message: discord.Message):
     if not content or len(content) < _MIN_LENGTH:
         return
 
-    # Ignore obviously-not-AnymeX phrases ("source code", "open source", etc.)
-    if _IGNORE_PATTERNS.search(content):
+    # Skip pure links (nothing to classify)
+    if re.match(r'^https?://\S+$', content.strip()):
+        return
+
+    # Skip code blocks
+    stripped = content.strip()
+    if stripped.startswith('```') and stripped.endswith('```'):
         return
 
     # Skip very long messages (likely not a quick help request)
     if len(content.split()) > _MAX_WORDS:
         return
 
-    # Make sure extension names are loaded
-    await _fetch_extension_names()
-
-    # Pre-filter: does the message look AnymeX-related at all?
-    has_hint = bool(_HINT_KEYWORDS.search(content))
-    matched_ext = _find_matching_extension(content)
-
-    # If there's no hint keyword AND no matched extension, don't bother the AI
-    if not has_hint and not matched_ext:
-        return
-
-    # Ask the AI which guide to send
+    # Ask the AI which guide to send (AI reads the FULL message)
     classification = await _classify_message(content)
     if classification == "none":
         return
 
     # Build the reply
-    reply = _build_reply(classification, matched_ext)
+    reply = _build_reply(classification)
     if not reply:
         return
 
@@ -414,7 +312,6 @@ async def _handle(message: discord.Message):
     print(
         f"[source_trigger] Triggered by {message.author} in #{message.channel}: "
         f"classified as {classification!r}"
-        + (f" (matched ext: {matched_ext})" if matched_ext else "")
     )
 
     try:
@@ -504,7 +401,7 @@ async def _handle_manual(message: discord.Message) -> bool:
         return True
 
     # Build the reply
-    reply = _build_reply(classification, None)
+    reply = _build_reply(classification)
     if not reply:
         try:
             await message.delete()
@@ -546,10 +443,5 @@ def setup(bot: discord.Client):
             return
         await _handle(message)
 
-    # Pre-fetch extension names on startup
-    @bot.listen("on_ready")
-    async def on_ready_source():
-        await _fetch_extension_names()
-
     cmds = ", ".join(f"{MANUAL_PREFIX}{c}" for c in MANUAL_COMMANDS)
-    print(f"✅ source_trigger loaded — AI guide responder (Pollinations, free) + manual cmds: {cmds}")
+    print(f"✅ source_trigger loaded — fully AI guide responder (Pollinations, free) + manual cmds: {cmds}")
