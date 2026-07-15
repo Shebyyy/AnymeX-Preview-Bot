@@ -5,7 +5,9 @@
 # Unicode loophole coverage:
 #   H lookalikes: ǶĦⱧꞕɦНнΗηℋℌℍⒽⓗＨｈᴴₕ𝐇𝐡𝐻𝑯𝒉𝒽𝓗𝓱𝔥𝕙𝕳𝖍𝖧𝗁𝗛𝗵𝘏𝘩𝙃𝙝𝙷𝚑🄷
 #   I lookalikes: ıіΙιίϊΐɪɨᵻȷǀ|ӏᴵℐℑⅈⒾⓗＩｉ𝐈𝐢𝐼𝑰𝒊𝒾𝓘𝓲𝔦𝕀𝕚𝕴𝖎𝖨𝗂𝗜𝗶𝘐𝘪𝙄𝙞𝙸𝚒🄸
-#   Also catches: h| h/ hl h1 h! h¡ (visual tricks for "i")
+#   Also catches: h| h/ hl h1 h! h¡ h; h: (visual tricks for "i")
+#   h! → Hi (exclamation mark = vertical line + dot, looks like i)
+#   h1 → Hi (digit one = vertical line, looks like i)
 #   Does NOT trigger on: high, hiring, hint, history, hill, etc.
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -186,6 +188,9 @@ _I_MAP = str.maketrans({
     "\u1da4": "i",  # ᶤ  MODIFIER LETTER SMALL I WITH STROKE
     "\u1da6": "i",  # ᶦ  MODIFIER LETTER SMALL CAPITAL I
     "\u1da7": "i",  # ᶧ  MODIFIER LETTER SMALL CAPITAL I WITH STROKE
+    # Visual i tricks: common punctuation/number lookalikes
+    "!": "i",   # !  EXCLAMATION MARK (vertical line + dot = looks like i)
+    "1": "i",   # 1  DIGIT ONE (vertical line = looks like i/l)
     # Visual i tricks: pipe, dental click, divides
     "\u01c0": "i",  # ǀ  LATIN LETTER DENTAL CLICK (looks like l/i)
     "\u2223": "i",  # ∣  DIVIDES (looks like l/i)
