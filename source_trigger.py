@@ -217,7 +217,7 @@ def _build_reply(classification: str) -> str | None:
     if classification == "setup":
         return (
             f"📖 **Setup Guide**\n"
-            f"Install AnymeX, add repos & extensions:\n"
+            f"Click this link to learn how to read/watch:\n"
             f"<{GUIDE_URL}>"
         )
     if classification == "download":
@@ -229,7 +229,7 @@ def _build_reply(classification: str) -> str | None:
     if classification == "both":
         return (
             f"📖 **Guides** — these should help:\n"
-            f"• **Setup** — install AnymeX, add repos & extensions:\n"
+            f"• **Setup** — Click this link to learn how to read/watch:\n"
             f"  <{GUIDE_URL}>\n"
             f"• **Download** — how to download anime & manga:\n"
             f"  <{DOWNLOAD_URL}>"
