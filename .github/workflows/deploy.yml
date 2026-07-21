@@ -1,0 +1,100 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASS }}
+          command_timeout: 120m
+          script: |
+            set -e
+            if [ -d "/root/AnymeX-Preview-Bot" ]; then
+              cd /root/AnymeX-Preview-Bot
+              git pull
+            else
+              git clone https://github.com/Shebyyy/AnymeX-Preview-Bot.git /root/AnymeX-Preview-Bot
+              cd /root/AnymeX-Preview-Bot
+            fi
+            if [ ! -f "venv/bin/activate" ]; then
+              rm -rf venv
+              python3 -m venv venv
+            fi
+            source venv/bin/activate
+            pip install -q -r requirements.txt
+            printf 'ALLOWED_ROLE_NAMES=%s\nANILIST_CLIENT_ID=%s\nANILIST_CLIENT_SECRET=%s\nANILIST_ROLE_ANIMESTREAM=%s\nANILIST_ROLE_ANYMEX=%s\nANILIST_ROLE_AZYX=%s\nANILIST_ROLE_SHONENX=%s\nANILIST_WEBHOOK_ANIMESTREAM=%s\nANILIST_WEBHOOK_ANYMEX=%s\nANILIST_WEBHOOK_AZYX=%s\nANILIST_WEBHOOK_SHONENX=%s\nAPI_SECRET=%s\nCOMMENTUM_CHECK_INTERVAL=%s\nCOMMENTUM_PING_URL=%s\nDASHBOARD_CHANNEL_ID=%s\nDISCORD_CLIENT_ID=%s\nDISCORD_CLIENT_SECRET=%s\nDISCORD_TOKEN=%s\nFORCE_SYNC=%s\nGEMINI_API_KEY=%s\nGITHUB_TOKEN=%s\nGROQ_API_KEY=%s\nLOG_CHANNEL_ID=%s\nMAL_CLIENT_ID=%s\nMAL_CLIENT_SECRET=%s\nOAUTH_BASE_URL=%s\nOPENROUTER_API_KEY=%s\nPORT=%s\nPROXY_HOST=%s\nPROXY_PASS=%s\nPROXY_PORT=%s\nPROXY_USER=%s\nSIMKL_CLIENT_ID=%s\nSIMKL_CLIENT_SECRET=%s\nSIMKL_ENCRYPT_KEY=%s\nSITE_URL=%s\nSUPPORT_CHANNEL_ID=%s\nTRAP_BAN_DURATION=%s\nTRAP_CHANNEL_ID=%s\nTRAP_LOG_CHANNEL_ID=%s\nTRAP_WHITELIST_ROLE_IDS=%s\nTRAP_WHITELIST_USER_IDS=%s\nWEB_SECRET=%s\n' \
+              '${{ secrets.ALLOWED_ROLE_NAMES }}' \
+              '${{ secrets.ANILIST_CLIENT_ID }}' \
+              '${{ secrets.ANILIST_CLIENT_SECRET }}' \
+              '${{ secrets.ANILIST_ROLE_ANIMESTREAM }}' \
+              '${{ secrets.ANILIST_ROLE_ANYMEX }}' \
+              '${{ secrets.ANILIST_ROLE_AZYX }}' \
+              '${{ secrets.ANILIST_ROLE_SHONENX }}' \
+              '${{ secrets.ANILIST_WEBHOOK_ANIMESTREAM }}' \
+              '${{ secrets.ANILIST_WEBHOOK_ANYMEX }}' \
+              '${{ secrets.ANILIST_WEBHOOK_AZYX }}' \
+              '${{ secrets.ANILIST_WEBHOOK_SHONENX }}' \
+              '${{ secrets.API_SECRET }}' \
+              '${{ secrets.COMMENTUM_CHECK_INTERVAL }}' \
+              '${{ secrets.COMMENTUM_PING_URL }}' \
+              '${{ secrets.DASHBOARD_CHANNEL_ID }}' \
+              '${{ secrets.DISCORD_CLIENT_ID }}' \
+              '${{ secrets.DISCORD_CLIENT_SECRET }}' \
+              '${{ secrets.DISCORD_TOKEN }}' \
+              '${{ secrets.FORCE_SYNC }}' \
+              '${{ secrets.GEMINI_API_KEY }}' \
+              '${{ secrets.GH_PAT }}' \
+              '${{ secrets.GROQ_API_KEY }}' \
+              '${{ secrets.LOG_CHANNEL_ID }}' \
+              '${{ secrets.MAL_CLIENT_ID }}' \
+              '${{ secrets.MAL_CLIENT_SECRET }}' \
+              '${{ secrets.OAUTH_BASE_URL }}' \
+              '${{ secrets.OPENROUTER_API_KEY }}' \
+              '8081' \
+              '${{ secrets.PROXY_HOST }}' \
+              '${{ secrets.PROXY_PASS }}' \
+              '${{ secrets.PROXY_PORT }}' \
+              '${{ secrets.PROXY_USER }}' \
+              '${{ secrets.SIMKL_CLIENT_ID }}' \
+              '${{ secrets.SIMKL_CLIENT_SECRET }}' \
+              '${{ secrets.SIMKL_ENCRYPT_KEY }}' \
+              '${{ secrets.SITE_URL }}' \
+              '${{ secrets.SUPPORT_CHANNEL_ID }}' \
+              '${{ secrets.TRAP_BAN_DURATION }}' \
+              '${{ secrets.TRAP_CHANNEL_ID }}' \
+              '${{ secrets.TRAP_LOG_CHANNEL_ID }}' \
+              '${{ secrets.TRAP_WHITELIST_ROLE_IDS }}' \
+              '${{ secrets.TRAP_WHITELIST_USER_IDS }}' \
+              '${{ secrets.WEB_SECRET }}' \
+              > .env
+            printf '%s\n' \
+              '[Unit]' \
+              'Description=AnymeX Preview Bot' \
+              'After=network.target' \
+              '' \
+              '[Service]' \
+              'Type=simple' \
+              'User=root' \
+              'WorkingDirectory=/root/AnymeX-Preview-Bot' \
+              'EnvironmentFile=/root/AnymeX-Preview-Bot/.env' \
+              'ExecStart=/root/AnymeX-Preview-Bot/venv/bin/python3 bot.py' \
+              'Restart=always' \
+              'RestartSec=5' \
+              '' \
+              '[Install]' \
+              'WantedBy=multi-user.target' \
+              > /etc/systemd/system/anymex-bot.service
+            systemctl daemon-reload
+            systemctl enable anymex-bot
+            systemctl restart anymex-bot
+            sleep 3
+            systemctl status anymex-bot --no-pager -l
