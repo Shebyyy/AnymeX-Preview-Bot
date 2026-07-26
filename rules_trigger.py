@@ -42,7 +42,7 @@ def _get_entries() -> dict[int, dict]:
 def _build_rule_embed(rule_num: int, rule: dict) -> discord.Embed:
     """Build a Discord embed for a single rule entry."""
     embed = discord.Embed(
-        title=f"📜 Rule #{rule_num} — {rule['title']}",
+        title=f"Rule #{rule_num} — {rule['title']}",
         description=rule["description"],
         color=RULES_COLOR,
     )
