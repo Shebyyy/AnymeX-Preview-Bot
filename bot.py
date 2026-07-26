@@ -28,51 +28,71 @@ SUPPORT_CHANNEL_ID = int(_SUPPORT_CHANNEL_RAW) if _SUPPORT_CHANNEL_RAW.strip().i
 # ── Load FAQ data ───────────────────────────────────────────────────────────────
 FAQ_MAP: dict[int, dict] = {}  # populated in on_ready
 
+
+async def _parse_faq_pages(raw_pages) -> dict[int, dict]:
+    """Parse the 2-page embed JSON into {id: {title, description}} dict."""
+    if not isinstance(raw_pages, list):
+        raise ValueError(f"expected a list of pages, got {type(raw_pages).__name__}")
+
+    entries: dict[int, dict] = {}
+    for page in raw_pages:
+        embeds = page.get("embeds")
+        if not isinstance(embeds, list):
+            continue
+        for emb in embeds:
+            title_raw = emb.get("title", "")
+            desc_raw = emb.get("description", "")
+            if not title_raw:
+                continue
+            num_match = re.match(r"^(\d+)\.\s*", title_raw)
+            if not num_match:
+                continue
+            faq_id = int(num_match.group(1))
+            clean_title = title_raw[num_match.end():].strip()
+            if isinstance(desc_raw, list):
+                desc_raw = "\n".join(str(item) for item in desc_raw)
+            entries[faq_id] = {"title": clean_title, "description": str(desc_raw)}
+    return entries
+
+
 async def load_faq_from_github():
     """
-    Load FAQ data from GitHub (faq.json on the beta branch).
-    The JSON is an array of 2 page objects, each containing an 'embeds' array.
-    We flatten them into FAQ_MAP = {1: {title, description}, 2: {...}, ...}
+    Load FAQ data from GitHub.
+    Primary: GitHub Contents API (same as rest of bot).
+    Fallback: raw.githubusercontent.com direct fetch.
     """
     global FAQ_MAP
+    import traceback
+
+    # ── Method 1: GitHub Contents API (authenticated) ────────────────────────
     try:
         async with aiohttp.ClientSession() as session:
             raw_pages, _ = await github_read_json(session, FILE_FAQ)
-
-        # raw_pages is a list of page objects: [{embeds: [{title, description, ...}]}, ...]
-        if not isinstance(raw_pages, list):
-            print(f"⚠️ faq.json: expected a list, got {type(raw_pages).__name__}")
-            return
-
-        entries: dict[int, dict] = {}
-        for page in raw_pages:
-            embeds = page.get("embeds")
-            if not isinstance(embeds, list):
-                continue
-            for emb in embeds:
-                title_raw = emb.get("title", "")
-                desc_raw = emb.get("description", "")
-                # Skip the header embed (no question number)
-                if not title_raw:
-                    continue
-                # Extract the number from titles like "1. Episodes..." or "10. Source..."
-                num_match = re.match(r"^(\d+)\.\s*", title_raw)
-                if not num_match:
-                    continue
-                faq_id = int(num_match.group(1))
-                # Strip the leading "N. " from the title
-                clean_title = title_raw[num_match.end():].strip()
-                # Normalize description: if it's a list, join with newlines
-                if isinstance(desc_raw, list):
-                    desc_raw = "\n".join(str(item) for item in desc_raw)
-                entries[faq_id] = {"title": clean_title, "description": str(desc_raw)}
-
+        entries = await _parse_faq_pages(raw_pages)
         FAQ_MAP = entries
-
         max_id = max(entries.keys(), default=0)
-        print(f"✅ Loaded {len(entries)} FAQ entries from GitHub (1–{max_id})")
+        print(f"✅ Loaded {len(entries)} FAQ entries via GitHub API (1–{max_id})")
+        return
     except Exception as e:
-        print(f"⚠️ Could not load faq.json: {e}")
+        print(f"⚠️ GitHub API FAQ load failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+    # ── Method 2: Raw URL fallback (no auth needed) ─────────────────────────
+    try:
+        raw_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{FILE_FAQ}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(raw_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status != 200:
+                    print(f"⚠️ Raw FAQ fetch returned HTTP {r.status}")
+                    return
+                raw_pages = json.loads(await r.text())
+        entries = await _parse_faq_pages(raw_pages)
+        FAQ_MAP = entries
+        max_id = max(entries.keys(), default=0)
+        print(f"✅ Loaded {len(entries)} FAQ entries via raw URL fallback (1–{max_id})")
+    except Exception as e:
+        print(f"⚠️ Raw FAQ fallback also failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
 
 # ── Proxy Config ───────────────────────────────────────────────────────────────
 
