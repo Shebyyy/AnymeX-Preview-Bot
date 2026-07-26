@@ -69,13 +69,6 @@ async def load_faq_from_github():
 
         FAQ_MAP = entries
 
-        # Also push to faq_trigger so the prefix handler uses fresh data
-        try:
-            import faq_trigger
-            faq_trigger.set_faq_entries(entries)
-        except ImportError:
-            pass
-
         max_id = max(entries.keys(), default=0)
         print(f"✅ Loaded {len(entries)} FAQ entries from GitHub (1–{max_id})")
     except Exception as e:
@@ -10476,7 +10469,7 @@ async def main():
     )
 
     import faq_trigger
-    faq_trigger.setup(bot)
+    faq_trigger.setup(bot, get_faq_fn=lambda: FAQ_MAP)
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call

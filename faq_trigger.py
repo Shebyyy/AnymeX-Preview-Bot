@@ -6,7 +6,8 @@
 #   !faq12         → sends FAQ #12 embed in the current channel
 #   (reply to a msg) !faq5  → sends FAQ #5 embed AND pings the replied-to user
 #
-# The FAQ data is loaded by bot.py from GitHub and passed in via setup().
+# FAQ data is read live from bot.py's FAQ_MAP via a callback — no separate copy,
+# no race condition.
 # ══════════════════════════════════════════════════════════════════════════════
 
 import re
@@ -19,22 +20,18 @@ import discord
 FAQ_COLOR = 0x6A5ACD
 
 # ─────────────────────────────────────────────────────────────────────────────
-# State (populated by bot.py via setup)
+# State
 # ─────────────────────────────────────────────────────────────────────────────
 
-_faq_entries: dict[int, dict] = {}  # {1: {title, description}, 2: {...}, ...}
 _bot = None
+_get_faq_fn = None  # set by setup() — returns the live FAQ_MAP dict
 
 
-def get_faq_entries() -> dict[int, dict]:
-    """Return the current FAQ map (used by bot.py for slash command autocomplete)."""
-    return _faq_entries
-
-
-def set_faq_entries(entries: dict[int, dict]) -> None:
-    """Update the FAQ map (called by bot.py after loading from GitHub)."""
-    global _faq_entries
-    _faq_entries = entries
+def _get_entries() -> dict[int, dict]:
+    """Get the current FAQ entries dict (always fresh, no copy)."""
+    if _get_faq_fn:
+        return _get_faq_fn()
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,15 +66,22 @@ async def _handle(message: discord.Message):
     if not match:
         return
 
+    entries = _get_entries()
     faq_num = int(match.group(1))
-    faq = _faq_entries.get(faq_num)
+    faq = entries.get(faq_num)
 
     if not faq:
-        max_id = max(_faq_entries.keys(), default=0)
-        await message.channel.send(
-            f"⚠️ FAQ **#{faq_num}** not found. Valid range: 1–{max_id}.",
-            delete_after=8,
-        )
+        max_id = max(entries.keys(), default=0)
+        if max_id == 0:
+            await message.channel.send(
+                "⚠️ FAQ data hasn't loaded yet. Try again in a few seconds.",
+                delete_after=8,
+            )
+        else:
+            await message.channel.send(
+                f"⚠️ FAQ **#{faq_num}** not found. Valid range: 1–{max_id}.",
+                delete_after=8,
+            )
         return
 
     embed = _build_faq_embed(faq_num, faq)
@@ -99,13 +103,22 @@ async def _handle(message: discord.Message):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def setup(bot: discord.Client):
-    global _bot
+def setup(bot: discord.Client, get_faq_fn=None):
+    """
+    Register the !faqN listener.
+
+    Args:
+        bot: The discord client.
+        get_faq_fn: Callable that returns the live FAQ dict (bot.FAQ_MAP).
+                   This avoids maintaining a separate copy and eliminates race conditions.
+    """
+    global _bot, _get_faq_fn
     _bot = bot
+    if get_faq_fn:
+        _get_faq_fn = get_faq_fn
 
     @bot.listen("on_message")
     async def on_message_faq(message: discord.Message):
         await _handle(message)
 
-    max_id = max(_faq_entries.keys(), default=0)
-    print(f"✅ faq_trigger loaded — {len(_faq_entries)} entries (1–{max_id}), prefix: !faqN")
+    print("✅ faq_trigger loaded — prefix: !faqN (reads live from FAQ_MAP)")
