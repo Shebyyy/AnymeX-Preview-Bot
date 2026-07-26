@@ -29,12 +29,55 @@ SUPPORT_CHANNEL_ID = int(_SUPPORT_CHANNEL_RAW) if _SUPPORT_CHANNEL_RAW.strip().i
 FAQ_MAP: dict[int, dict] = {}  # populated in on_ready
 
 async def load_faq_from_github():
+    """
+    Load FAQ data from GitHub (faq.json on the beta branch).
+    The JSON is an array of 2 page objects, each containing an 'embeds' array.
+    We flatten them into FAQ_MAP = {1: {title, description}, 2: {...}, ...}
+    """
     global FAQ_MAP
     try:
         async with aiohttp.ClientSession() as session:
-            data, _ = await github_read_json(session, FILE_FAQ)
-            FAQ_MAP = {entry["id"]: entry for entry in data}
-            print(f"✅ Loaded {len(FAQ_MAP)} FAQ entries from GitHub")
+            raw_pages, _ = await github_read_json(session, FILE_FAQ)
+
+        # raw_pages is a list of page objects: [{embeds: [{title, description, ...}]}, ...]
+        if not isinstance(raw_pages, list):
+            print(f"⚠️ faq.json: expected a list, got {type(raw_pages).__name__}")
+            return
+
+        entries: dict[int, dict] = {}
+        for page in raw_pages:
+            embeds = page.get("embeds")
+            if not isinstance(embeds, list):
+                continue
+            for emb in embeds:
+                title_raw = emb.get("title", "")
+                desc_raw = emb.get("description", "")
+                # Skip the header embed (no question number)
+                if not title_raw:
+                    continue
+                # Extract the number from titles like "1. Episodes..." or "10. Source..."
+                num_match = re.match(r"^(\d+)\.\s*", title_raw)
+                if not num_match:
+                    continue
+                faq_id = int(num_match.group(1))
+                # Strip the leading "N. " from the title
+                clean_title = title_raw[num_match.end():].strip()
+                # Normalize description: if it's a list, join with newlines
+                if isinstance(desc_raw, list):
+                    desc_raw = "\n".join(str(item) for item in desc_raw)
+                entries[faq_id] = {"title": clean_title, "description": str(desc_raw)}
+
+        FAQ_MAP = entries
+
+        # Also push to faq_trigger so the prefix handler uses fresh data
+        try:
+            import faq_trigger
+            faq_trigger.set_faq_entries(entries)
+        except ImportError:
+            pass
+
+        max_id = max(entries.keys(), default=0)
+        print(f"✅ Loaded {len(entries)} FAQ entries from GitHub (1–{max_id})")
     except Exception as e:
         print(f"⚠️ Could not load faq.json: {e}")
 
@@ -9797,13 +9840,143 @@ async def fix_discord_info(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# /faq — slash command with autocomplete search
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _faq_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete callback: fuzzy-match FAQ titles as the user types."""
+    choices: list[app_commands.Choice[str]] = []
+    query = current.lower().strip()
+
+    for faq_id, entry in FAQ_MAP.items():
+        title_lower = entry["title"].lower()
+        # Exact prefix match first
+        if query and title_lower.startswith(query):
+            choices.append(
+                app_commands.Choice(
+                    name=f"#{faq_id} {entry['title'][:80]}",
+                    value=str(faq_id),
+                )
+            )
+        # Then substring match
+        elif query and query in title_lower:
+            choices.append(
+                app_commands.Choice(
+                    name=f"#{faq_id} {entry['title'][:80]}",
+                    value=str(faq_id),
+                )
+            )
+        # No query = show all
+        elif not query:
+            choices.append(
+                app_commands.Choice(
+                    name=f"#{faq_id} {entry['title'][:80]}",
+                    value=str(faq_id),
+                )
+            )
+
+    # Discord limits to 25 choices
+    return choices[:25]
+
+
+@bot.tree.command(name="faq", description="Search and send an FAQ answer")
+@app_commands.describe(
+    query="Type to search FAQ titles (or pick a number)",
+    user="Optional: mention/tag a user with the FAQ",
+    message_url="Optional: Discord message URL to reply to (replies to that message & tags author)",
+)
+@app_commands.autocomplete(query=_faq_autocomplete)
+async def faq_slash(
+    interaction: discord.Interaction,
+    query: str,
+    user: discord.User | None = None,
+    message_url: str | None = None,
+):
+    """Send a FAQ embed. Works with autocomplete selection or a direct number.
+
+    Optional params:
+      - user:       pings that user alongside the embed
+      - message_url: bot replies to that message and pings its author
+    """
+    # If the user selected from autocomplete, query will be the FAQ id as string
+    if query.isdigit():
+        faq_num = int(query)
+        faq = FAQ_MAP.get(faq_num)
+    else:
+        # Try matching by partial title
+        faq_num = None
+        query_lower = query.lower().strip()
+        for fid, entry in FAQ_MAP.items():
+            if query_lower in entry["title"].lower():
+                faq_num = fid
+                faq = entry
+                break
+
+    if not faq or faq_num is None:
+        await interaction.response.send_message(
+            "❌ No matching FAQ found. Use the autocomplete dropdown to pick one.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"❓ FAQ #{faq_num} — {faq['title']}",
+        description=faq["description"],
+        color=0x6A5ACD,
+    )
+    embed.set_footer(text="AnymeX • Frequently Asked Questions")
+
+    # ── Determine send target: message_url reply > user mention > plain send ──
+    target_msg = None
+    if message_url:
+        # Parse Discord message URL: https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
+        url_match = re.search(r"/channels/\d+/(\d+)/(\d+)", message_url)
+        if url_match:
+            channel_id = int(url_match.group(1))
+            msg_id = int(url_match.group(2))
+            try:
+                channel = interaction.guild.get_channel(channel_id)
+                if channel is None:
+                    channel = interaction.client.get_channel(channel_id)
+                if channel:
+                    target_msg = await channel.fetch_message(msg_id)
+            except (discord.HTTPException, discord.Forbidden, AttributeError):
+                pass
+
+    # Defer since we may need to fetch messages (network call)
+    await interaction.response.defer(ephemeral=False)
+
+    if target_msg is not None:
+        # Reply to the referenced message and ping its author
+        try:
+            content = None
+            # If user param is also set, include that ping too
+            if user and user.id != target_msg.author.id:
+                content = f"{user.mention} {target_msg.author.mention}"
+            elif user:
+                content = user.mention
+            await target_msg.reply(embed=embed, content=content, mention_author=bool(content))
+        except discord.HTTPException:
+            # Fallback: send normally in the interaction channel
+            mention = user.mention if user else None
+            await interaction.followup.send(content=mention, embed=embed)
+    elif user:
+        # Just ping the specified user, no reply
+        await interaction.followup.send(content=user.mention, embed=embed)
+    else:
+        # Plain send, no pings
+        await interaction.followup.send(embed=embed)
+
 
 @bot.event
 async def on_message(message: discord.Message):
-    # ── FAQ handler ─────────────────────────────────────────────────────────────
-    # In the support channel, "faq #N" (anywhere in the message) triggers the bot.
-    # • Reply mode:   reply to a message with "faq #N"  → bot replies & pings the original author
-    # • Mention mode: "@user faq #N" (no reply)         → bot sends embed mentioning that user
+    # ── FAQ handler (legacy support channel mode) ────────────────────────────
+    # Kept for backward compat: in the support channel, "faq #N" with a reply/mention
+    # still works as before. The new !faqN prefix and /faq slash cmd are preferred.
     if (
         not message.author.bot
         and SUPPORT_CHANNEL_ID
@@ -9811,7 +9984,8 @@ async def on_message(message: discord.Message):
         and (message.reference is not None or len(message.mentions) > 0)
     ):
         faq_match = re.search(r"\bfaq\s*#?(\d+)\b", message.content, re.IGNORECASE)
-        if faq_match:
+        if faq_match and not re.match(r"^!faq\d+$", message.content.strip(), re.IGNORECASE):
+            # Only trigger if NOT a !faqN prefix (that's handled by faq_trigger)
             faq_num = int(faq_match.group(1))
             faq = FAQ_MAP.get(faq_num)
 
@@ -10300,6 +10474,9 @@ async def main():
         userdata_repo=USERDATA_REPO,
         userdata_branch=USERDATA_BRANCH,
     )
+
+    import faq_trigger
+    faq_trigger.setup(bot)
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call

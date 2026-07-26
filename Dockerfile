@@ -11,6 +11,7 @@ COPY hi_trigger.py .
 COPY ai_trigger.py .
 COPY source_trigger.py .
 COPY trap_trigger.py .
+COPY faq_trigger.py .
 
 EXPOSE 8080
 
