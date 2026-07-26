@@ -27,6 +27,7 @@ SUPPORT_CHANNEL_ID = int(_SUPPORT_CHANNEL_RAW) if _SUPPORT_CHANNEL_RAW.strip().i
 
 # ── Load FAQ data ───────────────────────────────────────────────────────────────
 FAQ_MAP: dict[int, dict] = {}  # populated in on_ready
+RULES_MAP: dict[int, dict] = {}  # populated in on_ready
 
 
 async def _parse_faq_pages(raw_pages) -> dict[int, dict]:
@@ -109,6 +110,43 @@ async def load_faq_from_github():
         print(f"✅ Loaded {len(entries)} FAQ entries via raw URL fallback (1–{max_id})")
     except Exception as e:
         print(f"⚠️ Raw FAQ fallback also failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+
+async def load_rules_from_github():
+    """Load rules data from GitHub (same 2-method approach as FAQ)."""
+    global RULES_MAP
+    import traceback
+
+    # ── Method 1: GitHub Contents API (authenticated) ────────────────────────
+    try:
+        async with aiohttp.ClientSession() as session:
+            raw_pages, _ = await github_read_json(session, FILE_RULES)
+        entries = await _parse_faq_pages(raw_pages)
+        RULES_MAP = entries
+        max_id = max(entries.keys(), default=0)
+        print(f"✅ Loaded {len(entries)} Rules entries via GitHub API (1–{max_id})")
+        return
+    except Exception as e:
+        print(f"⚠️ GitHub API Rules load failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+    # ── Method 2: Raw URL fallback (no auth needed) ─────────────────────────
+    try:
+        raw_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{FILE_RULES}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(raw_url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status != 200:
+                    print(f"⚠️ Raw Rules fetch returned HTTP {r.status}")
+                    return
+                raw_text = await r.text()
+                raw_pages = await _safe_json_loads(raw_text)
+        entries = await _parse_faq_pages(raw_pages)
+        RULES_MAP = entries
+        max_id = max(entries.keys(), default=0)
+        print(f"✅ Loaded {len(entries)} Rules entries via raw URL fallback (1–{max_id})")
+    except Exception as e:
+        print(f"⚠️ Raw Rules fallback also failed: {type(e).__name__}: {e}")
         traceback.print_exc()
 
 # ── Proxy Config ───────────────────────────────────────────────────────────────
@@ -1319,6 +1357,7 @@ FILE_PREFIXES = "prefixes.json"
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
 FILE_FAQ = "faq.json"
+FILE_RULES = "rules.json"
 FILE_ADMINS = "admins.json"  # stored in private userdata repo alongside users.json
 FILE_BANNED = "banned.json"  # stored in private userdata repo alongside users.json
 
@@ -5792,6 +5831,13 @@ async def on_ready():
             except Exception as e:
                 print(f"⚠️ load_faq_from_github failed: {e}")
 
+            # ── Always: load Rules into memory ────────────────────────────────────
+            try:
+                print("🔄 Loading Rules from GitHub...")
+                await load_rules_from_github()
+            except Exception as e:
+                print(f"⚠️ load_rules_from_github failed: {e}")
+
             # ── Repopulator: run if 7 days have passed since last run ─────────────
             # Checks last_repopulated.json in private repo.
             # This means deploys/restarts never cause an unnecessary full API sweep.
@@ -10002,6 +10048,118 @@ async def faq_slash(
         await interaction.followup.send(embed=embed)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# /rules — slash command with autocomplete search
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _rules_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete callback: fuzzy-match rule titles as the user types."""
+    choices: list[app_commands.Choice[str]] = []
+    query = current.lower().strip()
+
+    for rule_id, entry in RULES_MAP.items():
+        title_lower = entry["title"].lower()
+        if query and title_lower.startswith(query):
+            choices.append(
+                app_commands.Choice(
+                    name=f"#{rule_id} {entry['title'][:80]}",
+                    value=str(rule_id),
+                )
+            )
+        elif query and query in title_lower:
+            choices.append(
+                app_commands.Choice(
+                    name=f"#{rule_id} {entry['title'][:80]}",
+                    value=str(rule_id),
+                )
+            )
+        elif not query:
+            choices.append(
+                app_commands.Choice(
+                    name=f"#{rule_id} {entry['title'][:80]}",
+                    value=str(rule_id),
+                )
+            )
+
+    return choices[:25]
+
+
+@bot.tree.command(name="rules", description="Search and send a server rule")
+@app_commands.describe(
+    query="Type to search rule titles (or pick a number)",
+    user="Optional: mention/tag a user with the rule",
+    message_url="Optional: Discord message URL to reply to",
+)
+@app_commands.autocomplete(query=_rules_autocomplete)
+async def rules_slash(
+    interaction: discord.Interaction,
+    query: str,
+    user: discord.User | None = None,
+    message_url: str | None = None,
+):
+    if query.isdigit():
+        rule_num = int(query)
+        rule = RULES_MAP.get(rule_num)
+    else:
+        rule_num = None
+        query_lower = query.lower().strip()
+        for rid, entry in RULES_MAP.items():
+            if query_lower in entry["title"].lower():
+                rule_num = rid
+                rule = entry
+                break
+
+    if not rule or rule_num is None:
+        await interaction.response.send_message(
+            "❌ No matching rule found. Use the autocomplete dropdown to pick one.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"📜 Rule #{rule_num} — {rule['title']}",
+        description=rule["description"],
+        color=0x01CBE6,
+    )
+    embed.set_footer(text="AnymeX • Server Rules")
+
+    target_msg = None
+    if message_url:
+        url_match = re.search(r"/channels/\d+/(\d+)/(\d+)", message_url)
+        if url_match:
+            channel_id = int(url_match.group(1))
+            msg_id = int(url_match.group(2))
+            try:
+                channel = interaction.guild.get_channel(channel_id)
+                if channel is None:
+                    channel = interaction.client.get_channel(channel_id)
+                if channel:
+                    target_msg = await channel.fetch_message(msg_id)
+            except (discord.HTTPException, discord.Forbidden, AttributeError):
+                pass
+
+    await interaction.response.defer(ephemeral=False)
+
+    if target_msg is not None:
+        try:
+            content = None
+            if user and user.id != target_msg.author.id:
+                content = f"{user.mention} {target_msg.author.mention}"
+            elif user:
+                content = user.mention
+            await target_msg.reply(embed=embed, content=content, mention_author=bool(content))
+        except discord.HTTPException:
+            mention = user.mention if user else None
+            await interaction.followup.send(content=mention, embed=embed)
+    elif user:
+        await interaction.followup.send(content=user.mention, embed=embed)
+    else:
+        await interaction.followup.send(embed=embed)
+
+
 @bot.event
 async def on_message(message: discord.Message):
     # ── FAQ handler (legacy support channel mode) ────────────────────────────
@@ -10014,7 +10172,7 @@ async def on_message(message: discord.Message):
         and (message.reference is not None or len(message.mentions) > 0)
     ):
         faq_match = re.search(r"\bfaq\s*#?(\d+)\b", message.content, re.IGNORECASE)
-        if faq_match and not re.match(r"^!faq\d+$", message.content.strip(), re.IGNORECASE):
+        if faq_match and not re.match(r"^!(?:faq|log)\d+$", message.content.strip(), re.IGNORECASE):
             # Only trigger if NOT a !faqN prefix (that's handled by faq_trigger)
             faq_num = int(faq_match.group(1))
             faq = FAQ_MAP.get(faq_num)
@@ -10507,6 +10665,9 @@ async def main():
 
     import faq_trigger
     faq_trigger.setup(bot, get_faq_fn=lambda: FAQ_MAP)
+
+    import rules_trigger
+    rules_trigger.setup(bot, get_rules_fn=lambda: RULES_MAP)
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
