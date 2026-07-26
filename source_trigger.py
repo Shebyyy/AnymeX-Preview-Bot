@@ -175,7 +175,7 @@ async def _classify_message(text: str) -> str:
                 POLLINATIONS_API_URL,
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()

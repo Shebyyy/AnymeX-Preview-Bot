@@ -265,7 +265,7 @@ async def _ask_pollinations(text: str) -> bool:
                 POLLINATIONS_API_URL,
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
