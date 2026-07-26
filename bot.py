@@ -102,7 +102,7 @@ async def load_faq_from_github():
                     print(f"⚠️ Raw FAQ fetch returned HTTP {r.status}")
                     return
                 raw_text = await r.text()
-                raw_pages = _safe_json_loads(raw_text)
+                raw_pages = await _safe_json_loads(raw_text)
         entries = await _parse_faq_pages(raw_pages)
         FAQ_MAP = entries
         max_id = max(entries.keys(), default=0)
