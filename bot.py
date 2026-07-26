@@ -10040,10 +10040,8 @@ async def faq_slash(
             content = None
             # If user param is also set, include that ping too
             if user and user.id != target_msg.author.id:
-                content = f"{user.mention} {target_msg.author.mention}"
-            elif user:
-                content = user.mention
-            await target_msg.reply(embed=embed, content=content, mention_author=bool(content))
+                content = f"{user.mention}"
+            await target_msg.reply(embed=embed, content=content, mention_author=True)
         except discord.HTTPException:
             # Fallback: send normally in the interaction channel
             mention = user.mention if user else None
@@ -10169,10 +10167,8 @@ async def rules_slash(
         try:
             content = None
             if user and user.id != target_msg.author.id:
-                content = f"{user.mention} {target_msg.author.mention}"
-            elif user:
-                content = user.mention
-            await target_msg.reply(embed=embed, content=content, mention_author=bool(content))
+                content = f"{user.mention}"
+            await target_msg.reply(embed=embed, content=content, mention_author=True)
         except discord.HTTPException:
             mention = user.mention if user else None
             await interaction.followup.send(content=mention, embed=embed)
