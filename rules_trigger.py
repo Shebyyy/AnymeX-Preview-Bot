@@ -42,7 +42,7 @@ def _get_entries() -> dict[int, dict]:
 def _build_rule_embed(rule_num: int, rule: dict) -> discord.Embed:
     """Build a Discord embed for a single rule entry."""
     embed = discord.Embed(
-        title=f"Rule #{rule_num} — {rule['title']}",
+        title=f"📜 Rule #{rule_num} — {rule['title']}",
         description=rule["description"],
         color=RULES_COLOR,
     )
@@ -96,6 +96,12 @@ async def _handle(message: discord.Message):
     else:
         # Normal mode — just send the embed
         await message.channel.send(embed=embed)
+
+    # Delete the trigger message
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

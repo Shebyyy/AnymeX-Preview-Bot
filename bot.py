@@ -10048,6 +10048,12 @@ async def faq_slash(
             # Fallback: send normally in the interaction channel
             mention = user.mention if user else None
             await interaction.followup.send(content=mention, embed=embed)
+            return
+        # Delete the deferred "thinking" response since we replied to the target message
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
     elif user:
         # Just ping the specified user, no reply
         await interaction.followup.send(content=user.mention, embed=embed)
@@ -10170,6 +10176,12 @@ async def rules_slash(
         except discord.HTTPException:
             mention = user.mention if user else None
             await interaction.followup.send(content=mention, embed=embed)
+            return
+        # Delete the deferred "thinking" response since we replied to the target message
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
     elif user:
         await interaction.followup.send(content=user.mention, embed=embed)
     else:

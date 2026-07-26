@@ -97,6 +97,12 @@ async def _handle(message: discord.Message):
         # Normal mode — just send the embed
         await message.channel.send(embed=embed)
 
+    # Delete the trigger message
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Setup
