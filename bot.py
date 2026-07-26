@@ -9964,6 +9964,7 @@ async def _faq_autocomplete(
     query="Type to search FAQ titles (or pick a number)",
     user="Optional: mention/tag a user with the FAQ",
     message_url="Optional: Discord message URL to reply to (replies to that message & tags author)",
+    message_id="Optional: Discord message ID to reply to in this channel",
 )
 @app_commands.autocomplete(query=_faq_autocomplete)
 async def faq_slash(
@@ -9971,6 +9972,7 @@ async def faq_slash(
     query: str,
     user: discord.User | None = None,
     message_url: str | None = None,
+    message_id: str | None = None,
 ):
     """Send a FAQ embed. Works with autocomplete selection or a direct number.
 
@@ -10006,7 +10008,7 @@ async def faq_slash(
     )
     embed.set_footer(text="AnymeX • Frequently Asked Questions")
 
-    # ── Determine send target: message_url reply > user mention > plain send ──
+    # ── Determine send target: message_url > message_id > user mention > plain send ──
     target_msg = None
     if message_url:
         # Parse Discord message URL: https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
@@ -10022,6 +10024,12 @@ async def faq_slash(
                     target_msg = await channel.fetch_message(msg_id)
             except (discord.HTTPException, discord.Forbidden, AttributeError):
                 pass
+    elif message_id and message_id.strip().isdigit():
+        # Fetch message by ID from the current channel
+        try:
+            target_msg = await interaction.channel.fetch_message(int(message_id.strip()))
+        except (discord.HTTPException, discord.Forbidden, AttributeError):
+            pass
 
     # Defer since we may need to fetch messages (network call)
     await interaction.response.defer(ephemeral=False)
@@ -10092,6 +10100,7 @@ async def _rules_autocomplete(
     query="Type to search rule titles (or pick a number)",
     user="Optional: mention/tag a user with the rule",
     message_url="Optional: Discord message URL to reply to",
+    message_id="Optional: Discord message ID to reply to in this channel",
 )
 @app_commands.autocomplete(query=_rules_autocomplete)
 async def rules_slash(
@@ -10099,6 +10108,7 @@ async def rules_slash(
     query: str,
     user: discord.User | None = None,
     message_url: str | None = None,
+    message_id: str | None = None,
 ):
     if query.isdigit():
         rule_num = int(query)
@@ -10140,6 +10150,12 @@ async def rules_slash(
                     target_msg = await channel.fetch_message(msg_id)
             except (discord.HTTPException, discord.Forbidden, AttributeError):
                 pass
+    elif message_id and message_id.strip().isdigit():
+        # Fetch message by ID from the current channel
+        try:
+            target_msg = await interaction.channel.fetch_message(int(message_id.strip()))
+        except (discord.HTTPException, discord.Forbidden, AttributeError):
+            pass
 
     await interaction.response.defer(ephemeral=False)
 
