@@ -55,6 +55,22 @@ async def _parse_faq_pages(raw_pages) -> dict[int, dict]:
     return entries
 
 
+async def _safe_json_loads(text: str):
+    """Parse JSON that may be a valid array, or multiple bare objects without [] wrapper."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # If we get "Extra data", the file likely has bare objects: { ... }, { ... }
+    # Wrap in array brackets and retry
+    wrapped = f"[{text}]"
+    try:
+        return json.loads(wrapped)
+    except json.JSONDecodeError:
+        raise
+
+
 async def load_faq_from_github():
     """
     Load FAQ data from GitHub.
@@ -85,7 +101,8 @@ async def load_faq_from_github():
                 if r.status != 200:
                     print(f"⚠️ Raw FAQ fetch returned HTTP {r.status}")
                     return
-                raw_pages = json.loads(await r.text())
+                raw_text = await r.text()
+                raw_pages = _safe_json_loads(raw_text)
         entries = await _parse_faq_pages(raw_pages)
         FAQ_MAP = entries
         max_id = max(entries.keys(), default=0)
