@@ -13,7 +13,15 @@ import json
 import re
 import threading
 import urllib.parse
+import socket as _socket
 from cryptography.fernet import Fernet
+
+# ── Force IPv4 (VPS has broken IPv6 — aiohttp times out on IPv6) ──────────────
+_orig_getaddrinfo = _socket.getaddrinfo
+def _force_ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    results = _orig_getaddrinfo(host, port, _socket.AF_INET, type, proto, flags)
+    return results if results else _orig_getaddrinfo(host, port, family, type, proto, flags)
+_socket.getaddrinfo = _force_ipv4_getaddrinfo
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
