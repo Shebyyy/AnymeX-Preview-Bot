@@ -151,12 +151,19 @@ async def load_rules_from_github():
 
 # ── Proxy Config ───────────────────────────────────────────────────────────────
 
+_PROXY_ENABLED = os.environ.get("PROXY_ENABLED", "false").lower() in ("true", "1", "yes")
 _PROXY_HOST = os.environ.get("PROXY_HOST")
 _PROXY_PORT = os.environ.get("PROXY_PORT")
 _PROXY_USER = os.environ.get("PROXY_USER")
 _PROXY_PASS = os.environ.get("PROXY_PASS")
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0)) or None
 OWNER_ID = 612532963938271232  # receives proxy startup/switch DMs
+
+if not _PROXY_ENABLED:
+    _PROXY_HOST = _PROXY_PORT = _PROXY_USER = _PROXY_PASS = None
+    print("ℹ️  Proxy DISABLED via PROXY_ENABLED=false — connecting directly to Discord")
+else:
+    print(f"✅ Proxy ENABLED — will use proxy for Discord gateway connection")
 
 
 
@@ -598,6 +605,11 @@ async def _background_proxy_finder():
     """
     global _proxy_list, _current_proxy
 
+    if not _PROXY_ENABLED:
+        # Proxy disabled — just sleep forever so the task doesn't exit
+        while True:
+            await asyncio.sleep(3600)
+
     while True:
         try:
             print("🔍 [ProxyFinder] Fetching fresh proxy list...")
@@ -943,6 +955,8 @@ async def anilist_monitor():
 @tasks.loop(minutes=1)
 async def proxy_health_check():
     """Ping current proxy every 1 min. Verify + rotate if dead."""
+    if not _PROXY_ENABLED:
+        return
     if not _current_proxy:
         return
     alive, latency = await _verify_proxy(_current_proxy)
@@ -956,6 +970,24 @@ async def proxy_health_check():
 async def start_bot_with_proxy():
     global _current_proxy, _env_proxy_failed, _proxy_list
 
+    # ── Proxy disabled? Just connect directly ──────────────────────────────
+    if not _PROXY_ENABLED:
+        print("✅ [Startup] PROXY_ENABLED=false — connecting to Discord directly (no proxy)")
+        bot.http.proxy = None
+        _current_proxy = None
+        try:
+            await bot.start(DISCORD_TOKEN)
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                retry_after = float(e.response.headers.get("Retry-After", 60))
+                print(f"⚠️ Rate limited. Waiting {retry_after:.0f}s...")
+                await asyncio.sleep(retry_after)
+                await bot.start(DISCORD_TOKEN)
+            else:
+                raise
+        return
+
+    # ── Proxy enabled: normal proxy startup flow ────────────────────────────
     # Startup proxy priority:
     #   0. ALWAYS seed _proxy_list from proxies.json (GitHub) first — so the full
     #      validated pool of up to 50 proxies is available from the very first moment,
@@ -5739,12 +5771,46 @@ async def movie_autocomplete(
 
 @bot.event
 async def on_disconnect():
-    """Fires when bot loses connection — could be a dead proxy."""
-    print("⚠️ Bot disconnected from Discord.")
-    if _current_proxy:
-        # Dont immediately rotate — discord.py will try to reconnect by itself first.
-        # Only rotate if health check also fails.
-        print("⚠️ Will verify proxy on next health check cycle.")
+    """Fires when bot loses connection - immediately rotates dead proxy."""
+    global _current_proxy, _env_proxy_failed, _proxy_list
+    print(f"[on_disconnect] Bot disconnected. Proxy: {_current_proxy or 'direct'}")
+    if _PROXY_ENABLED and _current_proxy:
+        alive, lat = await _verify_proxy(_current_proxy)
+        if not alive:
+            print("[on_disconnect] Proxy dead - rotating now")
+            old = _current_proxy
+            for p in _proxy_list:
+                if p == old:
+                    continue
+                try:
+                    alive2, lat2 = await _verify_proxy(p)
+                    if alive2:
+                        _current_proxy = p
+                        bot.http.proxy = _current_proxy
+                        print(f"[on_disconnect] Switched: {old} -> {_current_proxy}")
+                        break
+                except Exception:
+                    continue
+            else:
+                if ENV_PROXY_URL and ENV_PROXY_URL != old and not _env_proxy_failed:
+                    try:
+                        alive3, lat3 = await _verify_proxy(ENV_PROXY_URL)
+                        if alive3:
+                            _current_proxy = ENV_PROXY_URL
+                            bot.http.proxy = _current_proxy
+                            print("[on_disconnect] Fell back to ENV proxy")
+                        else:
+                            _env_proxy_failed = True
+                    except Exception:
+                        _env_proxy_failed = True
+                if _current_proxy == old or not _current_proxy:
+                    _current_proxy = None
+                    bot.http.proxy = None
+                    print("[on_disconnect] All proxies dead - going direct")
+        else:
+            print(f"[on_disconnect] Proxy OK ({lat:.2f}s)")
+    else:
+        print("[on_disconnect] Running direct - discord.py will reconnect")
 
 @bot.event
 async def on_ready():
@@ -5787,14 +5853,17 @@ async def on_ready():
 
         import asyncio
 
-        # ── 4. Start proxy tasks ──────────────────────────────────────────────────
-        if not proxy_health_check.is_running():
-            proxy_health_check.start()
+        # ── 4. Start proxy tasks (only if proxy enabled) ──────────────────────────
+        if _PROXY_ENABLED:
+            if not proxy_health_check.is_running():
+                proxy_health_check.start()
+            asyncio.create_task(_background_proxy_finder())
+        else:
+            print("ℹ️ Proxy tasks skipped (PROXY_ENABLED=false)")
         asyncio.create_task(_al_load_state())
         if not anilist_monitor.is_running():
             anilist_monitor.start()
             print("✅ AniList monitor started (1 min interval)")
-        asyncio.create_task(_background_proxy_finder())
 
         # ── 5. Heavy init in background — never blocks commands ───────────────────
         async def _bg_init():
@@ -6162,6 +6231,28 @@ class ConfirmView(discord.ui.View):
 async def handle_add(interaction, anilist_id: int, reason: str, media_type: str):
     from datetime import datetime
     await interaction.response.defer()
+
+    try:
+        return await _handle_add_inner(interaction, anilist_id, reason, media_type)
+    except Exception as e:
+        import traceback
+        print(f"[handle_add] ERROR: {e}")
+        traceback.print_exc()
+        try:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Something went wrong",
+                    description=f"Could not process your request. Error: `{str(e)[:200]}`\nPlease try again later.",
+                    color=0xFF4444,
+                ),
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+
+
+async def _handle_add_inner(interaction, anilist_id: int, reason: str, media_type: str):
+    from datetime import datetime
 
     reason = reason.strip()
     if len(reason) < 30:
