@@ -8636,11 +8636,14 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
 
     async with aiohttp.ClientSession() as session:
         # ── Step 1: Load all data at once ─────────────────────────────────────
+        print("[Repopulator] Loading data from GitHub...", flush=True)
         users, users_sha = await read_users(session)
         anime_entries, anime_sha = await github_read_json(session, FILE_ANIME)
         manga_entries, manga_sha = await github_read_json(session, FILE_MANGA)
         show_entries, show_sha = await github_read_json(session, FILE_SHOWS)
         movie_entries, movie_sha = await github_read_json(session, FILE_MOVIES)
+
+        print(f"[Repopulator] Loaded: {len(users)} users, {len(anime_entries)} anime, {len(manga_entries)} manga, {len(show_entries)} shows, {len(movie_entries)} movies", flush=True)
 
         if not users:
             result["note"] = "No users found in users.json — nothing to repopulate."
@@ -8757,16 +8760,31 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         # ── Helper: match a user snapshot by any service ID ───────────────────
         admins, admins_sha = await read_admins(session)
 
+        # Build discord_id lookup as fallback
+        dc_id_to_profile: dict[int, dict] = {}
+        for discord_id, profile in users.items():
+            try:
+                dc_id_to_profile[int(discord_id)] = profile
+            except (ValueError, TypeError):
+                pass
+
         def _match_profile(u: dict):
             al_uid = u.get("anilist", {}).get("id")
             mal_uid = u.get("mal", {}).get("id")
             simkl_uname = u.get("simkl", {}).get("username")
+            dc_uid = u.get("discord", {}).get("id")
             if al_uid and al_uid in al_id_to_profile:
                 return al_id_to_profile[al_uid]
             if mal_uid and mal_uid in mal_id_to_profile:
                 return mal_id_to_profile[mal_uid]
             if simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
                 return simkl_uname_to_profile[simkl_uname.lower()]
+            # Fallback: match by Discord ID (handles entries with no service IDs)
+            if dc_uid:
+                try:
+                    return dc_id_to_profile.get(int(dc_uid))
+                except (ValueError, TypeError):
+                    return dc_id_to_profile.get(dc_uid)
             return None
 
         # ── Step 3: Update anime entries ──────────────────────────────────────
@@ -8987,6 +9005,7 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 admins_changed = True
                 result["admins_updated"] += 1
         # ── Step 6: Write all files in parallel ───────────────────────────────
+        print(f"[Repopulator] Writing back to GitHub...", flush=True)
         write_tasks = [
             write_users(session, users, users_sha, f"chore: repopulate user profiles ({triggered_by})"),
             github_write_json(session, FILE_ANIME, anime_entries, anime_sha, f"chore: sync anime entry usernames ({triggered_by})"),
@@ -8996,7 +9015,11 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         ]
         if admins_changed:
             write_tasks.append(write_admins(session, admins, admins_sha, f"chore: sync admin profiles from users.json ({triggered_by})"))
-        await asyncio.gather(*write_tasks, return_exceptions=True)
+        write_results = await asyncio.gather(*write_tasks, return_exceptions=True)
+        for wr in write_results:
+            if isinstance(wr, Exception):
+                print(f"[Repopulator] Write error: {wr}", flush=True)
+        print(f"[Repopulator] Done. Users:{result['users_updated']} updated, Anime:{result['anime_entries_updated']}, Manga:{result['manga_entries_updated']}, Shows:{result['show_entries_updated']}, Movies:{result['movie_entries_updated']}", flush=True)
 
     return result
 
