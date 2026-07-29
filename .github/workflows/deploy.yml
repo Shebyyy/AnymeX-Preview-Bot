@@ -75,6 +75,7 @@ jobs:
               '${{ secrets.TRAP_WHITELIST_ROLE_IDS }}' \
               '${{ secrets.TRAP_WHITELIST_USER_IDS }}' \
               '${{ secrets.WEB_SECRET }}' \
+              '${{ secrets.PROXY_ENABLED }}' \
               > .env
             printf '%s\n' \
               '[Unit]' \
