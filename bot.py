@@ -9094,34 +9094,65 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             if updated:
                 admins_changed = True
                 result["admins_updated"] += 1
-        # ── Step 6: Write all files in parallel ───────────────────────────────
-        print(f"[Repopulator] Writing back to GitHub...", flush=True)
-        write_tasks = [
-            write_users(session, users, users_sha, f"chore: repopulate user profiles ({triggered_by})"),
-            github_write_json(session, FILE_ANIME, anime_entries, anime_sha, f"chore: sync anime entry usernames ({triggered_by})"),
-            github_write_json(session, FILE_MANGA, manga_entries, manga_sha, f"chore: sync manga entry usernames ({triggered_by})"),
-            github_write_json(session, FILE_SHOWS, show_entries, show_sha, f"chore: sync show entry usernames ({triggered_by})"),
-            github_write_json(session, FILE_MOVIES, movie_entries, movie_sha, f"chore: sync movie entry usernames ({triggered_by})"),
-        ]
-        if admins_changed:
-            write_tasks.append(write_admins(session, admins, admins_sha, f"chore: sync admin profiles from users.json ({triggered_by})"))
-        write_results = await asyncio.gather(*write_tasks, return_exceptions=True)
+        # ── Step 6: Write all files (sequential, fresh SHA per file) ────────
+        # Re-read each file's SHA right before writing to avoid staleness
+        # caused by the long processing gap between initial read and final write.
+        print(f"[Repopulator] Writing back to GitHub (sequential, fresh SHAs)...", flush=True)
+        write_results = []
         write_file_names = ["users", "anime", "manga", "shows", "movies"]
+
+        for fname, do_write in [
+            ("users",   lambda: write_users(session, users, users_sha, f"chore: repopulate user profiles ({triggered_by})")),
+            ("anime",   lambda: github_write_json(session, FILE_ANIME, anime_entries, anime_sha, f"chore: sync anime entry usernames ({triggered_by})")),
+            ("manga",   lambda: github_write_json(session, FILE_MANGA, manga_entries, manga_sha, f"chore: sync manga entry usernames ({triggered_by})")),
+            ("shows",   lambda: github_write_json(session, FILE_SHOWS, show_entries, show_sha, f"chore: sync show entry usernames ({triggered_by})")),
+            ("movies",  lambda: github_write_json(session, FILE_MOVIES, movie_entries, movie_sha, f"chore: sync movie entry usernames ({triggered_by})")),
+        ]:
+            try:
+                # Re-read fresh SHA for this file right before writing
+                if fname == "users":
+                    _, users_sha = await read_users(session)
+                elif fname == "anime":
+                    _, anime_sha = await github_read_json(session, FILE_ANIME)
+                elif fname == "manga":
+                    _, manga_sha = await github_read_json(session, FILE_MANGA)
+                elif fname == "shows":
+                    _, show_sha = await github_read_json(session, FILE_SHOWS)
+                elif fname == "movies":
+                    _, movie_sha = await github_read_json(session, FILE_MOVIES)
+                wr = await do_write()
+                write_results.append(wr)
+                if wr is True:
+                    print(f"[Repopulator] Write OK for {fname}", flush=True)
+                else:
+                    print(f"[Repopulator] Write FAILED (returned False) for {fname}", flush=True)
+                    result["write_errors"] = result.get("write_errors", [])
+                    result["write_errors"].append(f"{fname}: write returned False")
+            except Exception as e:
+                print(f"[Repopulator] Write EXCEPTION for {fname}: {e}", flush=True)
+                write_results.append(e)
+                result["write_errors"] = result.get("write_errors", [])
+                result["write_errors"].append(f"{fname}: {e}")
+
+        # admins (only if changed)
         if admins_changed:
             write_file_names.append("admins")
-        for idx, wr in enumerate(write_results):
-            fname = write_file_names[idx] if idx < len(write_file_names) else f"file_{idx}"
-            if isinstance(wr, Exception):
-                print(f"[Repopulator] Write EXCEPTION for {fname}: {wr}", flush=True)
+            try:
+                _, admins_sha = await read_admins(session)
+                wr = await write_admins(session, admins, admins_sha, f"chore: sync admin profiles from users.json ({triggered_by})")
+                write_results.append(wr)
+                if wr is True:
+                    print(f"[Repopulator] Write OK for admins", flush=True)
+                else:
+                    print(f"[Repopulator] Write FAILED (returned False) for admins", flush=True)
+                    result["write_errors"] = result.get("write_errors", [])
+                    result["write_errors"].append(f"admins: write returned False")
+            except Exception as e:
+                print(f"[Repopulator] Write EXCEPTION for admins: {e}", flush=True)
+                write_results.append(e)
                 result["write_errors"] = result.get("write_errors", [])
-                result["write_errors"].append(f"{fname}: {wr}")
-            elif wr is False:
-                print(f"[Repopulator] Write FAILED (returned False) for {fname} — SHA conflict or API error", flush=True)
-                result["write_errors"] = result.get("write_errors", [])
-                result["write_errors"].append(f"{fname}: write returned False")
-            else:
-                print(f"[Repopulator] Write OK for {fname}", flush=True)
-                print(f"[Repopulator] Write error: {wr}", flush=True)
+                result["write_errors"].append(f"admins: {e}")
+
         print(f"[Repopulator] Done. Users:{result['users_updated']} updated, Anime:{result['anime_entries_updated']}, Manga:{result['manga_entries_updated']}, Shows:{result['show_entries_updated']}, Movies:{result['movie_entries_updated']}", flush=True)
 
     return result
