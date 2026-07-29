@@ -9,6 +9,7 @@ import base64
 import hashlib
 import secrets
 import time
+
 import json
 import re
 import threading
@@ -8768,11 +8769,29 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             except (ValueError, TypeError):
                 pass
 
-        def _match_profile(u: dict):
+        def _match_profile(u: dict, debug_title: str = ""):
+            """Match an entry's user snapshot to a refreshed profile.
+            Supports both new nested format {discord: {id: ...}, anilist: {id: ...}}
+            and old flat format {discord_id: ..., anilist_user_id: ...}."""
+            if not u or not isinstance(u, dict):
+                return None
+
+            # Try nested format first (current _build_user_snapshot format)
             al_uid = u.get("anilist", {}).get("id")
             mal_uid = u.get("mal", {}).get("id")
             simkl_uname = u.get("simkl", {}).get("username")
             dc_uid = u.get("discord", {}).get("id")
+
+            # Also try old flat format (entries created before snapshot format)
+            if not al_uid:
+                al_uid = u.get("anilist_user_id")
+            if not mal_uid:
+                mal_uid = u.get("mal_user_id")
+            if not simkl_uname:
+                simkl_uname = u.get("simkl_username")
+            if not dc_uid:
+                dc_uid = u.get("discord_id") or u.get("added_by_discord_id")
+
             if al_uid and al_uid in al_id_to_profile:
                 return al_id_to_profile[al_uid]
             if mal_uid and mal_uid in mal_id_to_profile:
@@ -8782,9 +8801,15 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
             # Fallback: match by Discord ID (handles entries with no service IDs)
             if dc_uid:
                 try:
-                    return dc_id_to_profile.get(int(dc_uid))
+                    dc_int = int(dc_uid)
+                    if dc_int in dc_id_to_profile:
+                        return dc_id_to_profile[dc_int]
                 except (ValueError, TypeError):
-                    return dc_id_to_profile.get(dc_uid)
+                    if dc_uid in dc_id_to_profile:
+                        return dc_id_to_profile[dc_uid]
+
+            if debug_title:
+                print(f'  [Repopulator] No match for "{debug_title}": al={al_uid}, mal={mal_uid}, simkl={simkl_uname}, dc={dc_uid}', flush=True)
             return None
 
         # ── Step 3: Update anime entries ──────────────────────────────────────
@@ -8808,16 +8833,29 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 changed = True
 
             # Update top-level user snapshot
-            matched = _match_profile(entry.get("user", {}))
+            matched = _match_profile(entry.get("user", {}), debug_title=entry.get("title", ""))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
                 changed = True
+            else:
+                # Fallback: try matching via added_by_discord_id for old-format entries
+                fallback_dc = entry.get("added_by_discord_id")
+                if fallback_dc:
+                    try:
+                        fp = dc_id_to_profile.get(int(fallback_dc))
+                        if fp:
+                            entry["user"] = _build_user_snapshot(fp)
+                            _mark_admin_flag(entry["user"], admins)
+                            changed = True
+                            print(f'  [Repopulator] Fixed old-format user for "{entry.get("title", "")}" via discord_id={fallback_dc}', flush=True)
+                    except (ValueError, TypeError):
+                        pass
 
             # Update per-reason user snapshots inside reasons[]
             for reason in entry.get("reasons", []):
                 r_user = reason.get("user", {})
-                r_matched = _match_profile(r_user)
+                r_matched = _match_profile(r_user, debug_title=entry.get("title", ""))
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
                     _mark_admin_flag(reason["user"], admins)
@@ -8855,15 +8893,28 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["reasons"] = [first]
                 changed = True
 
-            matched = _match_profile(entry.get("user", {}))
+            matched = _match_profile(entry.get("user", {}), debug_title=entry.get("title", ""))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
                 changed = True
+            else:
+                # Fallback: try matching via added_by_discord_id for old-format entries
+                fallback_dc = entry.get("added_by_discord_id")
+                if fallback_dc:
+                    try:
+                        fp = dc_id_to_profile.get(int(fallback_dc))
+                        if fp:
+                            entry["user"] = _build_user_snapshot(fp)
+                            _mark_admin_flag(entry["user"], admins)
+                            changed = True
+                            print(f'  [Repopulator] Fixed old-format user for "{entry.get("title", "")}" via discord_id={fallback_dc}', flush=True)
+                    except (ValueError, TypeError):
+                        pass
 
             for reason in entry.get("reasons", []):
                 r_user = reason.get("user", {})
-                r_matched = _match_profile(r_user)
+                r_matched = _match_profile(r_user, debug_title=entry.get("title", ""))
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
                     _mark_admin_flag(reason["user"], admins)
@@ -8899,15 +8950,28 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["reasons"] = [first]
                 changed = True
 
-            matched = _match_profile(entry.get("user", {}))
+            matched = _match_profile(entry.get("user", {}), debug_title=entry.get("title", ""))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
                 changed = True
+            else:
+                # Fallback: try matching via added_by_discord_id for old-format entries
+                fallback_dc = entry.get("added_by_discord_id")
+                if fallback_dc:
+                    try:
+                        fp = dc_id_to_profile.get(int(fallback_dc))
+                        if fp:
+                            entry["user"] = _build_user_snapshot(fp)
+                            _mark_admin_flag(entry["user"], admins)
+                            changed = True
+                            print(f'  [Repopulator] Fixed old-format user for "{entry.get("title", "")}" via discord_id={fallback_dc}', flush=True)
+                    except (ValueError, TypeError):
+                        pass
 
             for reason in entry.get("reasons", []):
                 r_user = reason.get("user", {})
-                r_matched = _match_profile(r_user)
+                r_matched = _match_profile(r_user, debug_title=entry.get("title", ""))
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
                     _mark_admin_flag(reason["user"], admins)
@@ -8945,15 +9009,28 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
                 entry["reasons"] = [first]
                 changed = True
 
-            matched = _match_profile(entry.get("user", {}))
+            matched = _match_profile(entry.get("user", {}), debug_title=entry.get("title", ""))
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
                 changed = True
+            else:
+                # Fallback: try matching via added_by_discord_id for old-format entries
+                fallback_dc = entry.get("added_by_discord_id")
+                if fallback_dc:
+                    try:
+                        fp = dc_id_to_profile.get(int(fallback_dc))
+                        if fp:
+                            entry["user"] = _build_user_snapshot(fp)
+                            _mark_admin_flag(entry["user"], admins)
+                            changed = True
+                            print(f'  [Repopulator] Fixed old-format user for "{entry.get("title", "")}" via discord_id={fallback_dc}', flush=True)
+                    except (ValueError, TypeError):
+                        pass
 
             for reason in entry.get("reasons", []):
                 r_user = reason.get("user", {})
-                r_matched = _match_profile(r_user)
+                r_matched = _match_profile(r_user, debug_title=entry.get("title", ""))
                 if r_matched:
                     reason["user"] = _build_user_snapshot(r_matched)
                     _mark_admin_flag(reason["user"], admins)
@@ -9016,8 +9093,21 @@ async def run_repopulator(triggered_by: str = "system") -> dict:
         if admins_changed:
             write_tasks.append(write_admins(session, admins, admins_sha, f"chore: sync admin profiles from users.json ({triggered_by})"))
         write_results = await asyncio.gather(*write_tasks, return_exceptions=True)
-        for wr in write_results:
+        write_file_names = ["users", "anime", "manga", "shows", "movies"]
+        if admins_changed:
+            write_file_names.append("admins")
+        for idx, wr in enumerate(write_results):
+            fname = write_file_names[idx] if idx < len(write_file_names) else f"file_{idx}"
             if isinstance(wr, Exception):
+                print(f"[Repopulator] Write EXCEPTION for {fname}: {wr}", flush=True)
+                result["write_errors"] = result.get("write_errors", [])
+                result["write_errors"].append(f"{fname}: {wr}")
+            elif wr is False:
+                print(f"[Repopulator] Write FAILED (returned False) for {fname} — SHA conflict or API error", flush=True)
+                result["write_errors"] = result.get("write_errors", [])
+                result["write_errors"].append(f"{fname}: write returned False")
+            else:
+                print(f"[Repopulator] Write OK for {fname}", flush=True)
                 print(f"[Repopulator] Write error: {wr}", flush=True)
         print(f"[Repopulator] Done. Users:{result['users_updated']} updated, Anime:{result['anime_entries_updated']}, Manga:{result['manga_entries_updated']}, Shows:{result['show_entries_updated']}, Movies:{result['movie_entries_updated']}", flush=True)
 
@@ -9062,6 +9152,9 @@ def _build_repopulator_embed(result: dict, title: str) -> discord.Embed:
     )
     if result.get("note"):
         embed.add_field(name="ℹ️ Note", value=result["note"], inline=False)
+    if result.get("write_errors"):
+        err_text = chr(10).join(f"• {e}" for e in result["write_errors"])
+        embed.add_field(name="❌ Write Failures", value=err_text, inline=False)
     embed.set_footer(text=f"Triggered by: {result.get('triggered_by', 'system')}")
     return embed
 
@@ -9949,13 +10042,22 @@ async def fix_discord_info(interaction: discord.Interaction):
         anime_updated = 0
         for entry in anime_entries:
             u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
+            al_uid = u.get("anilist", {}).get("id") or u.get("anilist_user_id")
+            mal_uid = u.get("mal", {}).get("id") or u.get("mal_user_id")
+            simkl_uname = u.get("simkl", {}).get("username") or u.get("simkl_username")
+            dc_uid = u.get("discord", {}).get("id") or u.get("discord_id") or entry.get("added_by_discord_id")
             matched = None
             if al_uid and al_uid in al_id_to_profile:
                 matched = al_id_to_profile[al_uid]
             elif mal_uid and mal_uid in mal_id_to_profile:
                 matched = mal_id_to_profile[mal_uid]
+            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                matched = simkl_uname_to_profile[simkl_uname.lower()]
+            elif dc_uid:
+                try:
+                    matched = dc_id_to_profile.get(int(dc_uid))
+                except (ValueError, TypeError):
+                    matched = dc_id_to_profile.get(dc_uid)
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
@@ -9965,13 +10067,22 @@ async def fix_discord_info(interaction: discord.Interaction):
         manga_updated = 0
         for entry in manga_entries:
             u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
+            al_uid = u.get("anilist", {}).get("id") or u.get("anilist_user_id")
+            mal_uid = u.get("mal", {}).get("id") or u.get("mal_user_id")
+            simkl_uname = u.get("simkl", {}).get("username") or u.get("simkl_username")
+            dc_uid = u.get("discord", {}).get("id") or u.get("discord_id") or entry.get("added_by_discord_id")
             matched = None
             if al_uid and al_uid in al_id_to_profile:
                 matched = al_id_to_profile[al_uid]
             elif mal_uid and mal_uid in mal_id_to_profile:
                 matched = mal_id_to_profile[mal_uid]
+            elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
+                matched = simkl_uname_to_profile[simkl_uname.lower()]
+            elif dc_uid:
+                try:
+                    matched = dc_id_to_profile.get(int(dc_uid))
+                except (ValueError, TypeError):
+                    matched = dc_id_to_profile.get(dc_uid)
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
@@ -9981,9 +10092,10 @@ async def fix_discord_info(interaction: discord.Interaction):
         show_updated = 0
         for entry in show_entries:
             u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
-            simkl_uname = u.get("simkl", {}).get("username")
+            al_uid = u.get("anilist", {}).get("id") or u.get("anilist_user_id")
+            mal_uid = u.get("mal", {}).get("id") or u.get("mal_user_id")
+            simkl_uname = u.get("simkl", {}).get("username") or u.get("simkl_username")
+            dc_uid = u.get("discord", {}).get("id") or u.get("discord_id") or entry.get("added_by_discord_id")
             matched = None
             if al_uid and al_uid in al_id_to_profile:
                 matched = al_id_to_profile[al_uid]
@@ -9991,6 +10103,11 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = mal_id_to_profile[mal_uid]
             elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
                 matched = simkl_uname_to_profile[simkl_uname.lower()]
+            elif dc_uid:
+                try:
+                    matched = dc_id_to_profile.get(int(dc_uid))
+                except (ValueError, TypeError):
+                    matched = dc_id_to_profile.get(dc_uid)
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
@@ -10000,9 +10117,10 @@ async def fix_discord_info(interaction: discord.Interaction):
         movie_updated = 0
         for entry in movie_entries:
             u = entry.get("user", {})
-            al_uid = u.get("anilist", {}).get("id")
-            mal_uid = u.get("mal", {}).get("id")
-            simkl_uname = u.get("simkl", {}).get("username")
+            al_uid = u.get("anilist", {}).get("id") or u.get("anilist_user_id")
+            mal_uid = u.get("mal", {}).get("id") or u.get("mal_user_id")
+            simkl_uname = u.get("simkl", {}).get("username") or u.get("simkl_username")
+            dc_uid = u.get("discord", {}).get("id") or u.get("discord_id") or entry.get("added_by_discord_id")
             matched = None
             if al_uid and al_uid in al_id_to_profile:
                 matched = al_id_to_profile[al_uid]
@@ -10010,6 +10128,11 @@ async def fix_discord_info(interaction: discord.Interaction):
                 matched = mal_id_to_profile[mal_uid]
             elif simkl_uname and simkl_uname.lower() in simkl_uname_to_profile:
                 matched = simkl_uname_to_profile[simkl_uname.lower()]
+            elif dc_uid:
+                try:
+                    matched = dc_id_to_profile.get(int(dc_uid))
+                except (ValueError, TypeError):
+                    matched = dc_id_to_profile.get(dc_uid)
             if matched:
                 entry["user"] = _build_user_snapshot(matched)
                 _mark_admin_flag(entry["user"], admins)
