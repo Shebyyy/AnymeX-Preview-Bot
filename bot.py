@@ -4531,25 +4531,38 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str, *, rep
 async def github_write_json(
     session: aiohttp.ClientSession, filepath: str, data, sha, commit_msg: str, *, repo: str | None = None, branch: str | None = None
 ) -> bool:
-    """Write/update a JSON file on GitHub. Returns True on success."""
+    """Write/update a JSON file on GitHub. Retries once with fresh SHA on conflict."""
     _repo = repo or GITHUB_REPO
     _branch = branch or GITHUB_BRANCH
-    payload = {
-        "message": commit_msg,
-        "content": base64.b64encode(
-            json.dumps(data, indent=2, ensure_ascii=False).encode()
-        ).decode(),
-        "branch": _branch,
-    }
-    if sha:
-        payload["sha"] = sha
-    async with session.put(
-        f"{GITHUB_API}/repos/{GITHUB_OWNER}/{_repo}/contents/{filepath}",
-        headers=gh_headers(),
-        json=payload,
-        timeout=aiohttp.ClientTimeout(total=20),
-    ) as r:
-        return r.status in (200, 201)
+    for attempt in range(2):
+        payload = {
+            "message": commit_msg,
+            "content": base64.b64encode(
+                json.dumps(data, indent=2, ensure_ascii=False).encode()
+            ).decode(),
+            "branch": _branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        async with session.put(
+            f"{GITHUB_API}/repos/{GITHUB_OWNER}/{_repo}/contents/{filepath}",
+            headers=gh_headers(),
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as r:
+            if r.status in (200, 201):
+                return True
+            body = await r.text()
+            if attempt == 0 and r.status in (409, 422) and sha:
+                print(f"[GitHub Write] SHA conflict for {filepath} — re-reading for retry...", flush=True)
+                try:
+                    _, sha = await github_read_json(session, filepath, repo=_repo, branch=_branch)
+                except Exception:
+                    pass
+                continue
+            print(f"[GitHub Write FAIL] {filepath} in {_repo}/{_branch} — status={r.status} sha={'yes' if sha else 'no'} body={body[:300]}", flush=True)
+            return False
+    return False
 
 
 # ── Userdata convenience wrappers (private repo) ─────────────────────────────────
