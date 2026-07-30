@@ -1828,7 +1828,7 @@ async def deep_link_redirect(request):
 </body>
 </html>"""
 
-        return web.Response(text=html, content_type="text/html; charset=utf-8")
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
     except Exception as e:
         traceback.print_exc()
         return web.Response(status=500, text=f"Error: {e}")
