@@ -1768,6 +1768,67 @@ async def health(request):
     return web.Response(text="✅ Bot is running!")
 
 
+async def deep_link_redirect(request):
+    """Deep link redirect for Discord notification buttons.
+    Discord buttons require https://, so we redirect through this endpoint:
+      /open?source=anilist&type=anime&id=16498
+    → bounces to anymex://anilist/anime/16498#comment
+    """
+    source = request.query.get("source", "anilist")
+    media_type = request.query.get("type", "anime")
+    media_id = request.query.get("id", "")
+
+    if not media_id:
+        return web.Response(status=400, text="Missing id")
+
+    # Normalise source aliases
+    host = "mal" if source == "myanimelist" else source  # anilist | mal | simkl
+
+    # Supported media types
+    safe_type = media_type if media_type in ("anime", "manga", "tv", "movie") else "anime"
+
+    deep_link = f"anymex://{host}/{safe_type}/{media_id}#comment"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Opening AnyMex…</title>
+  <meta http-equiv="refresh" content="0;url={deep_link}"/>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{min-height:100vh;display:flex;align-items:center;justify-content:center;
+         background:#0d0d0d;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e0e0e0}}
+    .card{{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:40px 48px;
+           text-align:center;max-width:420px;width:90%}}
+    .logo{{font-size:2.5rem;margin-bottom:12px}}
+    h1{{font-size:1.2rem;font-weight:600;margin-bottom:8px;color:#fff}}
+    p{{font-size:.9rem;color:#888;margin-bottom:24px}}
+    a.btn{{display:inline-block;background:#5865F2;color:#fff;text-decoration:none;
+           padding:12px 28px;border-radius:8px;font-weight:600;font-size:.95rem}}
+    a.btn:hover{{opacity:.85}}
+    .dl{{margin-top:20px;font-size:.8rem;color:#555}}
+    .dl a{{color:#5865F2;text-decoration:none}}
+  </style>
+  <script>window.location.href={deep_link!r};</script>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">✦</div>
+    <h1>Opening AnyMex…</h1>
+    <p>If the app didn't open automatically, tap the button below.</p>
+    <a class="btn" href="{deep_link}">Open in AnyMex</a>
+    <div class="dl">Don't have the app?
+      <a href="https://github.com/RyanYuuki/AnymeX/releases">Download AnyMex</a>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    return web.Response(text=html, content_type="text/html; charset=utf-8")
+
+
 def _check_auth(request):
     """Return True if the request carries a valid API_SECRET."""
     if not API_SECRET:
@@ -4434,6 +4495,7 @@ async def start_health_server():
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    app.router.add_get("/open", deep_link_redirect)
     # ── OAuth callbacks ──────────────────────────────────────────────────────────
     app.router.add_get("/oauth/anilist/callback", anilist_callback)
     app.router.add_get("/oauth/mal/callback", mal_callback)
