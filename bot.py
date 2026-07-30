@@ -1774,22 +1774,24 @@ async def deep_link_redirect(request):
       /open?source=anilist&type=anime&id=16498
     → bounces to anymex://anilist/anime/16498#comment
     """
-    source = request.query.get("source", "anilist")
-    media_type = request.query.get("type", "anime")
-    media_id = request.query.get("id", "")
+    import traceback
+    try:
+        source = request.query.get("source", "anilist")
+        media_type = request.query.get("type", "anime")
+        media_id = request.query.get("id", "")
 
-    if not media_id:
-        return web.Response(status=400, text="Missing id")
+        if not media_id:
+            return web.Response(status=400, text="Missing id")
 
-    # Normalise source aliases
-    host = "mal" if source == "myanimelist" else source  # anilist | mal | simkl
+        # Normalise source aliases
+        host = "mal" if source == "myanimelist" else source  # anilist | mal | simkl
 
-    # Supported media types
-    safe_type = media_type if media_type in ("anime", "manga", "tv", "movie") else "anime"
+        # Supported media types
+        safe_type = media_type if media_type in ("anime", "manga", "tv", "movie") else "anime"
 
-    deep_link = f"anymex://{host}/{safe_type}/{media_id}#comment"
+        deep_link = f"anymex://{host}/{safe_type}/{media_id}#comment"
 
-    html = f"""<!DOCTYPE html>
+        html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
@@ -1826,7 +1828,10 @@ async def deep_link_redirect(request):
 </body>
 </html>"""
 
-    return web.Response(text=html, content_type="text/html; charset=utf-8")
+        return web.Response(text=html, content_type="text/html; charset=utf-8")
+    except Exception as e:
+        traceback.print_exc()
+        return web.Response(status=500, text=f"Error: {e}")
 
 
 def _check_auth(request):
