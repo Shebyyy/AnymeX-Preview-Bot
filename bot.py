@@ -1894,6 +1894,8 @@ async def _api_check_media(request, media_type: str):
     req_simkl_id   = request.rel_url.query.get("simkl_user_id")
 
     if media_type in ("anime", "manga"):
+        if id_type == "simkl":
+            return web.json_response({"error": "simkl id_type is only supported for shows and movies, not anime/manga"}, status=400)
         filepath = FILE_ANIME if media_type == "anime" else FILE_MANGA
         async with aiohttp.ClientSession() as session:
             entries, _ = await github_read_json(session, filepath)
@@ -9909,7 +9911,7 @@ async def api_vote_handler(request, media_type: str):
     elif id_type == "mal":
         entry = next((e for e in entries if e.get("mal_id") == media_id), None)
     elif id_type == "simkl":
-        entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
+        return web.json_response({"error": "simkl id_type is only supported for shows and movies, not anime/manga"}, status=400)
     else:
         entry = next((e for e in entries if e.get("anilist_id") == media_id), None)
 
@@ -9987,6 +9989,8 @@ async def api_get_votes(request, media_type: str):
                 return web.json_response({"error": f"No {media_type} with mal_id={media_id} found."}, status=404)
             anilist_id = entry["anilist_id"]
         elif id_type == "simkl":
+            if media_type in ("anime", "manga"):
+                return web.json_response({"error": "simkl id_type is only supported for shows and movies, not anime/manga"}, status=400)
             media_file = FILE_SHOWS if media_type == "show" else FILE_MOVIES
             entries, _ = await github_read_json(session, media_file)
             entry = next((e for e in entries if e.get("simkl_id") == media_id), None)
