@@ -20,7 +20,8 @@ jobs:
             set -e
             if [ -d "/root/AnymeX-Preview-Bot" ]; then
               cd /root/AnymeX-Preview-Bot
-              git pull
+              git fetch origin
+              git reset --hard origin/main
             else
               git clone https://github.com/Shebyyy/AnymeX-Preview-Bot.git /root/AnymeX-Preview-Bot
               cd /root/AnymeX-Preview-Bot
