@@ -35,17 +35,17 @@ GUIDE_URL        = "https://anymex-extensions.vercel.app/guide"
 DOWNLOAD_URL     = "https://anymex-extensions.vercel.app/download-guide"
 
 # Only reply in this channel (set to None to reply everywhere)
-ALLOWED_CHANNEL_ID = 1496732120511414332
+ALLOWED_CHANNEL_ID = 1497202485469773947  # #support/help (new server)
 
 # Cooldown per channel (seconds) — prevents spam
 COOLDOWN_SECONDS = 30
 
 # Roles that should NOT receive the guide link
 EXCLUDED_ROLE_IDS = {
-    1496743097395314829,  # Owner
-    1496743497091252254,  # Admin
-    1496581599557582950,  # Mod
-    1497134255954726912,  # Nub dev
+    1497202483519553634,  # Owner
+    1497202483519553633,  # Admin
+    1497202483519553632,  # Moderator
+    1497202483519553631,  # Nub dev
 }
 
 # Users that should NOT receive the guide link

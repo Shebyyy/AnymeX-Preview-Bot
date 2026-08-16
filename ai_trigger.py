@@ -32,7 +32,7 @@ import discord
 # ─────────────────────────────────────────────────────────────────────────────
 
 TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
-REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
+REPLY_MESSAGE      = "Single yet? 🤔"
 
 # ── Pollinations API (text — FREE, no key needed!) ──
 POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"

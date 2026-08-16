@@ -21,7 +21,7 @@ import discord
 # ─────────────────────────────────────────────────────────────────────────────
 
 TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
-REPLY_MESSAGE      = "Single yet? <:hmmm:1497190580344586422>"
+REPLY_MESSAGE      = "Single yet? 🤔"
 WEBHOOK_USERNAME       = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
 WEBHOOK_AVATAR_URL     = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
