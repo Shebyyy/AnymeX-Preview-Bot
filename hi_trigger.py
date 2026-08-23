@@ -78,18 +78,17 @@ _VISION_PROMPT = """Look at this image. Does the text in it visually look like t
 You are a visual pattern detector. Ignore Unicode values — only look at SHAPES.
 
 Recognize these visual trick patterns:
-- Pipe as i: "H|" looks like "Hi"
+- Pipe as i: "H|" looks like "Hi", lone "|" can be i
+- Slash as i: "/" can resemble i, so "|-|/" looks like "Hi"
 - Exclamation as i: "H!" looks like "Hi"
-- Digit as i: "H1" looks like "Hi"
 - ASCII art H: "|-|" looks like "H", so "|-| |" looks like "Hi"
-- Forward slash as i: "H/" or "|-|/" looks like "Hi"
-- Any combination of vertical lines, dashes, slashes that form letter shapes
+- Any combination of vertical lines, dashes, slashes that form letter shapes resembling h+i
+- L33tspeak: "H1" where 1 = i
 - Upside-down, mirrored, or Zalgo-decorated text that still reads as "hi"
 - Mixed scripts where characters visually resemble Latin h and i
-- Any creative arrangement of symbols that visually spells "hi" or a greeting
 
 Only say "yes" if it VISUALLY RESEMBLES "hi" or a greeting word.
-If it looks like random symbols/characters with no recognizable word shape, say "no".
+If it looks like a normal English word (high, hiring, hint) or random symbols with no recognizable hi shape, say "no".
 
 Reply only "yes" or "no"."""
 
@@ -151,7 +150,7 @@ def _render_text_as_image(text: str) -> str | None:
 
 # ── Segment extraction for longer messages ──
 # Characters commonly used in visual tricks (non-letter, non-digit)
-_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"")
+_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"" + "1")  # 1 = visual i
 
 
 def _is_suspicious(text: str) -> bool:
@@ -194,13 +193,22 @@ def _extract_segments(text: str) -> list[str]:
 
 
 def _should_try_vision(text: str) -> bool:
-    """Pre-filter: only short, non-empty, non-code, non-URL messages."""
+    """Pre-filter: only send messages that could be visual tricks to vision.
+
+    Skips: URLs, code blocks, empty, too-long, and pure ASCII text without
+    trick characters (normal words like 'high', 'hello' are handled by ai_trigger).
+    Allows: text with special chars (H|, |-| |), non-ASCII (Ƕi, Ħi), etc.
+    """
     stripped = text.strip()
     if not stripped or len(stripped) > VISION_DIRECT_MAX:
         return False
     if stripped.startswith("```"):
         return False
     if re.match(r"^https?://\S+$", stripped):
+        return False
+    # Skip pure ASCII text with no trick characters
+    # Normal greetings (hello, hey) and false positives (high, hiring) go to ai_trigger
+    if stripped.isascii() and not _is_suspicious(stripped):
         return False
     return True
 
