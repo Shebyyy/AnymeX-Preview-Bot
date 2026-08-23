@@ -4,14 +4,18 @@
 #
 # Architecture:
 #   Layer 1: Simple regex fast path (plain hi, Hi, HI, hii, 𝐇𝐢, Ｈｉ)
-#   Layer 2: Pollinations TEXT AI — understands visual tricks through reasoning
+#   Layer 2: Race ALL free AI models in parallel — first "yes" wins
+#
+# AI sources (all FREE):
+#   - Pollinations: openai (GPT-OSS 20B) — no API key needed
+#   - OpenRouter: 18 free models — uses OPENROUTER_API_KEY env var
 #
 # No manual Unicode/ASCII art maps. The AI reasons about visual patterns.
-# Covers: |-| |, H|, H!, H1, |-|/, Unicode tricks, Zalgo, l33tspeak, etc.
-#
 # ══════════════════════════════════════════════════════════════════════════════
 
+import os
 import re
+import asyncio
 import unicodedata
 import aiohttp
 import discord
@@ -25,20 +29,60 @@ REPLY_MESSAGE      = "Single yet? 🤔"
 WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
 WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
-# ── Pollinations API (FREE, no key needed) ──
-POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"
-POLLINATIONS_MODEL   = "openai"  # GPT-OSS — smart, free
-
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # Max message length to check (longer messages → ai_trigger handles)
 AI_MAX_LENGTH = 50
 
+# ── OpenRouter ──
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# ── Pollinations (no key needed) ──
+POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALL free models — every single one, fired in parallel
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Pollinations free models (no API key)
+POLLINATIONS_MODELS = [
+    "openai",  # GPT-OSS 20B reasoning
+]
+
+# OpenRouter free models (needs OPENROUTER_API_KEY)
+OPENROUTER_MODELS = [
+    # Big smart text models
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    # Google
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    # Vision models (also handle text fine)
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    # Thinking/reasoning models
+    "thinkingmachines/inkling:free",
+    "thinkingmachines/inkling-small:free",
+    # GLM
+    "z-ai/glm-5.2:free",
+    # Dots
+    "dots-studio/dots-3-note-preview:free",
+    # Small / niche
+    "liquid/lfm-2.5-2.6b:free",
+    # Code models (still smart enough for this)
+    "cohere/north-mini-code:free",
+    "poolside/laguna-s-2.1:free",
+    "poolside/laguna-xs-2.1:free",
+]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 1: Simple regex fast path (instant, no API call)
 # ─────────────────────────────────────────────────────────────────────────────
-# NFKC normalization handles Unicode equivalents (𝐇𝐢 → Hi, Ｈｉ → Hi)
-# Then strip junk and check for h + 1-5 i's.
 
 _JUNK = re.compile(
     r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_//\\:;'\"\(\)\[\]\{\}\u0300-\u036f]+"
@@ -54,67 +98,35 @@ def _is_simple_hi(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Layer 2: Pollinations TEXT AI — visual trick detection
+# Layer 2: Race ALL free AI models in parallel
 # ─────────────────────────────────────────────────────────────────────────────
-# Instead of manual maps, the AI reasons about visual patterns.
-# It knows |-| looks like H, | looks like i, 1 looks like i, etc.
-# This generalizes to ANY visual trick, not just hardcoded patterns.
 
 _AI_PROMPT = """You are a visual text pattern detector for a Discord bot.
 
 Your job: determine if the given text is a creative/trick way of writing "hi" or a greeting.
 
-People try to bypass simple "hi" detection using visual tricks. The AI should REASON about what the text LOOKS LIKE visually:
+People bypass "hi" detection using visual tricks. REASON about what the text LOOKS LIKE visually:
+- ASCII art: "|-|" looks like H, so "|-| |" = Hi
+- Pipe as i: "H|" = Hi, lone "|" = i
+- Slash as i: "/" resembles i, "|-|/" = Hi
+- Exclamation as i: "H!" = Hi
+- L33tspeak: "1" = i, "H1" = Hi
+- Unicode lookalikes, fullwidth, decorated, Zalgo, Braille, Morse, binary
 
-Common visual trick patterns:
-- ASCII art letters: "|-|" looks like H (two vertical lines + horizontal dash), so "|-| |" = Hi
-- Pipe as i: "H|" looks like Hi, lone "|" can represent i
-- Slash as i: "/" can resemble the stem of i, so "|-|/" = Hi
-- Exclamation as i: "H!" looks like Hi (the ! dot is like the i dot)
-- L33tspeak substitutions: "1" looks like i, so "H1" = Hi
-- Unicode lookalikes from other scripts (Cyrillic Н, Greek Η, etc.)
-- Fullwidth: Ｈｉ
-- Decorated: 𝐇𝐢, 𝓗𝓲, ℍ𝕚, etc.
-- Zalgo/combining marks on top of h and i
-- Upside-down or mirrored text
-- Regional indicators: 🇭🇮
-- Braille: ⠓⠊
-- Morse/binary/encoded forms of "hi"
-
-IMPORTANT DISTINCTIONS:
-- "|-| |" → YES (H + | = Hi visually)
-- "H|" → YES (H + | = Hi visually)
-- "H!" → YES (H + ! = Hi visually)
-- "H1" → YES (H + 1 = Hi in l33tspeak)
-- "high" → NO (this is a normal English word meaning "tall", not a greeting)
-- "hiring" → NO (normal word)
-- "hint" → NO (normal word)
-- "this" → NO (contains "hi" but is a different word)
-- "child" → NO (contains "hi" but is a different word)
-- "hiiiiiiiiii" (6+ i's) → NO (that's just spam, not a greeting)
+YES examples: "|-| |", "H|", "H!", "H1", "|-|/", "🐀🇮"
+NO examples: "high", "hiring", "hint", "this", "child", "hiiiiiiiiii" (6+ i's)
 
 Reply only "yes" or "no"."""
 
 
-# Characters that suggest the text might be a visual trick (non-standard for greetings)
 _TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"" + "1")
 
 
 def _is_suspicious(text: str) -> bool:
-    """Quick check: does this text contain characters used in visual tricks?"""
     return any(c in _TRICK_CHARS for c in text.strip())
 
 
 def _should_ask_ai(text: str) -> bool:
-    """Pre-filter: only send suspicious or non-ASCII text to AI.
-
-    Skips:
-    - URLs, code blocks, empty, too long
-    - Pure ASCII text without trick characters (normal words go to ai_trigger)
-    Allows:
-    - Text with special chars (H|, |-| |)
-    - Non-ASCII Unicode (Ƕi, Ħi, 𝐇𝐢)
-    """
     stripped = text.strip()
     if not stripped or len(stripped) > AI_MAX_LENGTH:
         return False
@@ -122,27 +134,19 @@ def _should_ask_ai(text: str) -> bool:
         return False
     if re.match(r"^https?://\S+$", stripped):
         return False
-    # Pure ASCII without trick chars → let ai_trigger handle it
     if stripped.isascii() and not _is_suspicious(stripped):
         return False
     return True
 
 
 def _extract_suspicious_words(text: str) -> list[str]:
-    """From a longer message, extract words that look like visual tricks.
-
-    For "check this |-| | out" → ["|-| |"]
-    Only words with trick characters are returned.
-    """
     words = text.split()
     results = []
     for i, w in enumerate(words):
         if not _is_suspicious(w):
             continue
-        # Single word
         if len(w) <= AI_MAX_LENGTH:
             results.append(w)
-        # Pair with adjacent word if short enough
         if i < len(words) - 1:
             pair = w + " " + words[i + 1]
             if len(pair) <= AI_MAX_LENGTH:
@@ -154,55 +158,140 @@ def _extract_suspicious_words(text: str) -> list[str]:
     return results
 
 
-async def _ask_pollinations(text: str) -> bool:
-    """Send text to Pollinations AI. Returns True if it's a visual "hi" trick."""
+# ── Per-model API call ──
+
+async def _ask_openrouter_model(session: aiohttp.ClientSession, model: str, text: str) -> bool:
+    """Ask one OpenRouter model. Returns True if "yes"."""
     try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "model": POLLINATIONS_MODEL,
-                "messages": [
-                    {"role": "system", "content": _AI_PROMPT},
-                    {"role": "user", "content": text},
-                ],
-                "max_tokens": 5,
-                "temperature": 0.1,
-            }
-            headers = {
-                "Content-Type": "application/json",
-                "User-Agent": BROWSER_UA,
-            }
-            async with session.post(
-                POLLINATIONS_API_URL,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    print(f"[hi_trigger] Pollinations HTTP {resp.status}: {body[:200]}")
-                    return False
-
-                data = await resp.json()
-                reply = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    .strip()
-                    .lower()
-                )
-
-                if reply.startswith("yes"):
-                    print(f"[hi_trigger] AI detected hi in \"{text[:50]}\" → {reply}")
-                    return True
-                print(f"[hi_trigger] AI: not hi \"{text[:50]}\" → {reply}")
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _AI_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": 5,
+            "temperature": 0.1,
+        }
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://anymex-bot.render.com",
+            "X-Title": "AnymeX-Preview-Bot",
+            "User-Agent": BROWSER_UA,
+        }
+        async with session.post(
+            OPENROUTER_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status == 429:
+                print(f"  [hi] {model}: rate limited")
                 return False
-
-    except aiohttp.ClientTimeout:
-        print(f"[hi_trigger] Pollinations timeout: \"{text[:50]}\"")
-        return False
+            if resp.status != 200:
+                return False
+            data = await resp.json()
+            reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+            if reply.startswith("yes"):
+                print(f"  [hi] ✅ {model}: YES → \"{text[:40]}\"")
+                return True
+            print(f"  [hi]    {model}: no → \"{text[:40]}\"")
+            return False
+    except asyncio.CancelledError:
+        raise  # Don't swallow cancellation
     except Exception as e:
-        print(f"[hi_trigger] Pollinations error: {e}")
+        print(f"  [hi]    {model}: error ({type(e).__name__})")
         return False
+
+
+async def _ask_pollinations_model(session: aiohttp.ClientSession, model: str, text: str) -> bool:
+    """Ask one Pollinations model. Returns True if "yes"."""
+    try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _AI_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": 5,
+            "temperature": 0.1,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": BROWSER_UA,
+        }
+        async with session.post(
+            POLLINATIONS_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as resp:
+            if resp.status != 200:
+                print(f"  [hi] pollinations/{model}: HTTP {resp.status}")
+                return False
+            data = await resp.json()
+            reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+            if reply.startswith("yes"):
+                print(f"  [hi] ✅ pollinations/{model}: YES → \"{text[:40]}\"")
+                return True
+            print(f"  [hi]    pollinations/{model}: no → \"{text[:40]}\"")
+            return False
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [hi]    pollinations/{model}: error ({type(e).__name__})")
+        return False
+
+
+async def _race_all_models(text: str) -> bool:
+    """Fire ALL free models in parallel. Return True on first YES.
+
+    Uses asyncio.as_completed so we don't wait for slow models —
+    as soon as any model says "yes", we return True immediately.
+    """
+    print(f"[hi_trigger] Racing all models for: \"{text[:50]}\"")
+
+    tasks = []
+
+    # Build all tasks
+    async with aiohttp.ClientSession() as session:
+        # Pollinations models (no API key)
+        for model in POLLINATIONS_MODELS:
+            tasks.append(asyncio.create_task(
+                _ask_pollinations_model(session, model, text),
+                name=f"pollinations/{model}",
+            ))
+
+        # OpenRouter models (needs API key)
+        if OPENROUTER_API_KEY:
+            for model in OPENROUTER_MODELS:
+                tasks.append(asyncio.create_task(
+                    _ask_openrouter_model(session, model, text),
+                    name=f"openrouter/{model}",
+                ))
+        else:
+            print("[hi_trigger] No OPENROUTER_API_KEY — skipping 18 OpenRouter models")
+
+        if not tasks:
+            print("[hi_trigger] No AI models available at all!")
+            return False
+
+        # Process results as they arrive — first YES wins
+        try:
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                if result:
+                    # Cancel remaining tasks — we got our answer
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    # Wait for cancellations to finish (ignore errors)
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    return True
+        except Exception:
+            pass
+
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,7 +303,6 @@ _bot = None
 
 async def _trigger(message: discord.Message):
     """Fire the reply — shared by both layers."""
-    # Mark as caught so ai_trigger skips this message
     try:
         import ai_trigger
         ai_trigger.mark_caught_by_hi(message.id)
@@ -240,7 +328,7 @@ async def _trigger(message: discord.Message):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status in (200, 204):
-                        print(f"[hi_trigger] Sent via webhook with profile + mention ✅")
+                        print(f"[hi_trigger] Sent via webhook ✅")
                         return
                     body = await resp.text()
                     print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
@@ -278,8 +366,8 @@ async def _handle(message: discord.Message):
             await _trigger(message)
             return
 
-        # Layer 2: Pollinations TEXT AI
-        if _should_ask_ai(seg) and await _ask_pollinations(seg):
+        # Layer 2: Race ALL AI models in parallel
+        if _should_ask_ai(seg) and await _race_all_models(seg):
             await _trigger(message)
             return
 
@@ -312,4 +400,5 @@ def setup(bot: discord.Client):
     async def on_message_edit_hi(before: discord.Message, after: discord.Message):
         await _handle(after)
 
-    print(f"✅ hi_trigger loaded — regex + Pollinations AI — watching users {TARGET_USER_IDS}")
+    total = len(POLLINATIONS_MODELS) + (len(OPENROUTER_MODELS) if OPENROUTER_API_KEY else 0)
+    print(f"✅ hi_trigger loaded — regex + {total} AI models in parallel — watching {TARGET_USER_IDS}")
