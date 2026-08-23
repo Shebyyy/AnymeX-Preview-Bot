@@ -4,9 +4,15 @@
 #
 # Architecture:
 #   Layer 1: Simple regex fast path (plain hi, Hi, HI, hii, etc.)
-#   Layer 2: Vision AI — render text as image → VLM literally sees visual tricks
+#   Layer 2: Vision AI — render text as MONOSPACE image → VLM literally sees tricks
 #
-# No manual Unicode maps. The VLM catches H|, H!, Ƕi, ASCII art, etc.
+# No manual Unicode maps. Covers:
+#   - Plain hi, Hi, 𝐇𝐢, Ｈｉ (NFKC normalization)
+#   - Visual tricks: H|, H!, H1, |-| |, |-|/
+#   - Unicode lookalikes: Ƕi, Ħ|, Ні (vision model sees the shape)
+#   - ASCII art, upside-down, reversed, Zalgo, invisible char combos
+#   - Tricks hidden in longer sentences: "check this |-| | out"
+#
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -39,8 +45,10 @@ VISION_MODELS = [
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Max message length to send to vision (short tricks only)
-VISION_MAX_LEN = 30
+# Max length to send full message to vision directly
+VISION_DIRECT_MAX = 50
+# Max length per segment when scanning longer messages
+VISION_SEGMENT_MAX = 20
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 1: Simple regex fast path (instant, no API call)
@@ -49,7 +57,7 @@ VISION_MAX_LEN = 30
 # Then strip junk and check for h + 1-5 i's.
 
 _JUNK = re.compile(
-    r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_/\\:;'\"\(\)\[\]\{\}\u0300-\u036f]+"
+    r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_//\\:;'\"\(\)\[\]\{\}\u0300-\u036f]+"
 )
 
 
@@ -65,58 +73,73 @@ def _is_simple_hi(text: str) -> bool:
 # Layer 2: Render text as image → Vision AI
 # ─────────────────────────────────────────────────────────────────────────────
 
-_VISION_PROMPT = """Does this image visually look like the word "hi" or a greeting?
+_VISION_PROMPT = """Look at this image. Does the text in it visually look like the word "hi" or any greeting?
 
-Look at the visual appearance of the characters — not their Unicode values.
-Examples of visual tricks that should be caught:
-- "H|" looks like "Hi" (pipe | resembles the letter i)
-- "H!" looks like "Hi" (exclamation mark resembles i)
-- "H1" looks like "Hi" (digit 1 resembles i)
-- Any Unicode characters that visually resemble the letters h and i
+You are a visual pattern detector. Ignore Unicode values — only look at SHAPES.
 
-Only say "yes" if the text visually resembles "hi" or a greeting word.
-If it's random characters/symbols that don't look like any word, say "no".
+Recognize these visual trick patterns:
+- Pipe as i: "H|" looks like "Hi"
+- Exclamation as i: "H!" looks like "Hi"
+- Digit as i: "H1" looks like "Hi"
+- ASCII art H: "|-|" looks like "H", so "|-| |" looks like "Hi"
+- Forward slash as i: "H/" or "|-|/" looks like "Hi"
+- Any combination of vertical lines, dashes, slashes that form letter shapes
+- Upside-down, mirrored, or Zalgo-decorated text that still reads as "hi"
+- Mixed scripts where characters visually resemble Latin h and i
+- Any creative arrangement of symbols that visually spells "hi" or a greeting
+
+Only say "yes" if it VISUALLY RESEMBLES "hi" or a greeting word.
+If it looks like random symbols/characters with no recognizable word shape, say "no".
 
 Reply only "yes" or "no"."""
 
 
-def _should_try_vision(text: str) -> bool:
-    """Pre-filter: only short, non-empty messages go to vision."""
-    stripped = text.strip()
-    if not stripped or len(stripped) > VISION_MAX_LEN:
-        return False
-    if stripped.startswith("```"):
-        return False
-    if re.match(r"^https?://\S+$", stripped):
-        return False
-    return True
+# ── Monospace font (critical for ASCII art like |-| |) ──
+_MONO_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Monaco.ttf",
+    "C:\\Windows\\Fonts\\consola.ttf",
+    "C:\\Windows\\Fonts\\cour.ttf",
+]
+
+_font_cache = None
 
 
-def _render_text_as_image(text: str) -> str | None:
-    """Render text to a PNG image, return base64."""
-    try:
-        img = Image.new("RGB", (600, 100), "white")
-        draw = ImageDraw.Draw(img)
-
-        # Try system fonts, fall back to default
-        font = None
-        for path in [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "C:\\Windows\\Fonts\\arial.ttf",
-        ]:
+def _get_mono_font(size: int = 48):
+    """Get cached monospace font."""
+    global _font_cache
+    if _font_cache is None:
+        for path in _MONO_FONT_PATHS:
             try:
-                font = ImageFont.truetype(path, 48)
+                _font_cache = ImageFont.truetype(path, size)
                 break
             except (IOError, OSError):
                 continue
+        if _font_cache is None:
+            _font_cache = ImageFont.load_default()
+    return _font_cache
 
-        if font is None:
-            font = ImageFont.load_default()
 
-        draw.text((20, 20), text, fill="black", font=font)
+def _render_text_as_image(text: str) -> str | None:
+    """Render text as a monospace PNG image, return base64."""
+    try:
+        font = _get_mono_font(48)
+
+        lines = text.split("\n")
+        max_line_len = max(len(line) for line in lines) if lines else 1
+
+        # Monospace: all chars same width, approximate
+        char_w, line_h, padding = 30, 60, 20
+        img_w = max(max_line_len * char_w + padding * 2, 200)
+        img_h = max(len(lines) * line_h + padding * 2, 100)
+
+        img = Image.new("RGB", (img_w, img_h), "white")
+        draw = ImageDraw.Draw(img)
+        draw.text((padding, padding), text, fill="black", font=font)
 
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -124,6 +147,62 @@ def _render_text_as_image(text: str) -> str | None:
     except Exception as e:
         print(f"[hi_trigger] Render failed: {e}")
         return None
+
+
+# ── Segment extraction for longer messages ──
+# Characters commonly used in visual tricks (non-letter, non-digit)
+_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"")
+
+
+def _is_suspicious(text: str) -> bool:
+    """Check if text contains characters commonly used in visual tricks."""
+    return any(c in _TRICK_CHARS for c in text.strip())
+
+
+def _extract_segments(text: str) -> list[str]:
+    """Extract short suspicious segments from longer messages.
+
+    For "check this |-| | out" → ["|-|", "|", "|-| |"]
+    Only segments containing trick characters are returned to avoid
+    wasting vision API calls on normal words.
+    """
+    words = text.split()
+    segments = set()
+
+    for i, w in enumerate(words):
+        if not _is_suspicious(w):
+            continue
+
+        # Single word
+        if len(w) <= VISION_SEGMENT_MAX:
+            segments.add(w)
+
+        # Pair with next word
+        if i < len(words) - 1 and len(w) + 1 + len(words[i + 1]) <= VISION_SEGMENT_MAX:
+            segments.add(w + " " + words[i + 1])
+
+        # Pair with previous word
+        if i > 0 and len(words[i - 1]) + 1 + len(w) <= VISION_SEGMENT_MAX:
+            segments.add(words[i - 1] + " " + w)
+
+        # Triple: prev + this + next
+        if (i > 0 and i < len(words) - 1
+                and len(words[i - 1]) + 1 + len(w) + 1 + len(words[i + 1]) <= VISION_SEGMENT_MAX):
+            segments.add(words[i - 1] + " " + w + " " + words[i + 1])
+
+    return list(segments)
+
+
+def _should_try_vision(text: str) -> bool:
+    """Pre-filter: only short, non-empty, non-code, non-URL messages."""
+    stripped = text.strip()
+    if not stripped or len(stripped) > VISION_DIRECT_MAX:
+        return False
+    if stripped.startswith("```"):
+        return False
+    if re.match(r"^https?://\S+$", stripped):
+        return False
+    return True
 
 
 async def _ask_vision_hi(text: str) -> bool:
@@ -208,22 +287,8 @@ async def _ask_vision_hi(text: str) -> bool:
 _bot = None
 
 
-async def _handle(message: discord.Message):
-    if message.author.bot:
-        return
-    if message.author.id not in TARGET_USER_IDS:
-        return
-
-    text = message.content
-
-    # Layer 1: Instant regex check
-    if not _is_simple_hi(text):
-        # Layer 2: Vision AI for visual tricks
-        if not _should_try_vision(text):
-            return
-        if not await _ask_vision_hi(text):
-            return
-
+async def _trigger(message: discord.Message):
+    """Fire the reply — shared by both layers."""
     # Mark as caught so ai_trigger (Layer 3) skips this message
     try:
         import ai_trigger
@@ -238,7 +303,7 @@ async def _handle(message: discord.Message):
         if webhook:
             async with aiohttp.ClientSession() as session:
                 payload = {
-                    "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
+                    "content": f"<{message.author.id}> {REPLY_MESSAGE}",
                     "username": WEBHOOK_USERNAME,
                     "avatar_url": WEBHOOK_AVATAR_URL,
                     "allowed_mentions": {"parse": ["users"]},
@@ -251,19 +316,49 @@ async def _handle(message: discord.Message):
                 ) as resp:
                     if resp.status in (200, 204):
                         print(f"[hi_trigger] Sent via webhook with profile + mention ✅")
-                    else:
-                        body = await resp.text()
-                        print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
-                        await message.reply(REPLY_MESSAGE, mention_author=True)
-        else:
-            await message.reply(REPLY_MESSAGE, mention_author=True)
-            print(f"[hi_trigger] Replied via normal reply ✅")
+                        return
+                    body = await resp.text()
+                    print(f"[hi_trigger] Webhook HTTP {resp.status}: {body[:200]} — falling back")
+        await message.reply(REPLY_MESSAGE, mention_author=True)
+        print(f"[hi_trigger] Replied via normal reply ✅")
     except Exception as e:
         print(f"[hi_trigger] Error: {e}")
         try:
             await message.reply(REPLY_MESSAGE, mention_author=True)
         except Exception as e2:
             print(f"[hi_trigger] Fallback also failed: {e2}")
+
+
+async def _handle(message: discord.Message):
+    if message.author.bot:
+        return
+    if message.author.id not in TARGET_USER_IDS:
+        return
+
+    text = message.content
+    stripped = text.strip()
+    if not stripped:
+        return
+
+    # ── Build segments to check ──
+    if len(stripped) <= VISION_DIRECT_MAX:
+        # Short message: check the whole thing
+        segments = [stripped]
+    else:
+        # Long message: extract suspicious short segments only
+        segments = _extract_segments(text)
+
+    # ── Check each segment ──
+    for seg in segments:
+        # Layer 1: Instant regex
+        if _is_simple_hi(seg):
+            await _trigger(message)
+            return
+
+        # Layer 2: Vision AI
+        if _should_try_vision(seg) and await _ask_vision_hi(seg):
+            await _trigger(message)
+            return
 
 
 async def _get_or_create_webhook(channel: discord.TextChannel):
