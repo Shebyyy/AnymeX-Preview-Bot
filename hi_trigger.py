@@ -1,28 +1,20 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# hi_trigger.py  —  Auto-reply when someone says "Hi" (Vision AI, no manual maps)
+# hi_trigger.py  —  Auto-reply when someone says "Hi" (AI-only, no manual maps)
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # Architecture:
-#   Layer 1: Simple regex fast path (plain hi, Hi, HI, hii, etc.)
-#   Layer 2: Vision AI — render text as MONOSPACE image → VLM literally sees tricks
+#   Layer 1: Simple regex fast path (plain hi, Hi, HI, hii, 𝐇𝐢, Ｈｉ)
+#   Layer 2: Pollinations TEXT AI — understands visual tricks through reasoning
 #
-# No manual Unicode maps. Covers:
-#   - Plain hi, Hi, 𝐇𝐢, Ｈｉ (NFKC normalization)
-#   - Visual tricks: H|, H!, H1, |-| |, |-|/
-#   - Unicode lookalikes: Ƕi, Ħ|, Ні (vision model sees the shape)
-#   - ASCII art, upside-down, reversed, Zalgo, invisible char combos
-#   - Tricks hidden in longer sentences: "check this |-| | out"
+# No manual Unicode/ASCII art maps. The AI reasons about visual patterns.
+# Covers: |-| |, H|, H!, H1, |-|/, Unicode tricks, Zalgo, l33tspeak, etc.
 #
 # ══════════════════════════════════════════════════════════════════════════════
 
-import os
-import io
 import re
-import base64
 import unicodedata
 import aiohttp
 import discord
-from PIL import Image, ImageDraw, ImageFont
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
@@ -33,27 +25,19 @@ REPLY_MESSAGE      = "Single yet? 🤔"
 WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
 WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
-# ── OpenRouter Vision (free models, same API key ai_trigger uses) ──
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-VISION_MODELS = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-4-31b-it:free",
-]
+# ── Pollinations API (FREE, no key needed) ──
+POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"
+POLLINATIONS_MODEL   = "openai"  # GPT-OSS — smart, free
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Max length to send full message to vision directly
-VISION_DIRECT_MAX = 50
-# Max length per segment when scanning longer messages
-VISION_SEGMENT_MAX = 20
+# Max message length to check (longer messages → ai_trigger handles)
+AI_MAX_LENGTH = 50
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 1: Simple regex fast path (instant, no API call)
 # ─────────────────────────────────────────────────────────────────────────────
-# NFKC normalization handles most Unicode equivalents (𝐇𝐢 → Hi, Ｈｉ → Hi, etc.)
+# NFKC normalization handles Unicode equivalents (𝐇𝐢 → Hi, Ｈｉ → Hi)
 # Then strip junk and check for h + 1-5 i's.
 
 _JUNK = re.compile(
@@ -70,222 +54,155 @@ def _is_simple_hi(text: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Layer 2: Render text as image → Vision AI
+# Layer 2: Pollinations TEXT AI — visual trick detection
 # ─────────────────────────────────────────────────────────────────────────────
+# Instead of manual maps, the AI reasons about visual patterns.
+# It knows |-| looks like H, | looks like i, 1 looks like i, etc.
+# This generalizes to ANY visual trick, not just hardcoded patterns.
 
-_VISION_PROMPT = """Look at this image. Does the text in it visually look like the word "hi" or any greeting?
+_AI_PROMPT = """You are a visual text pattern detector for a Discord bot.
 
-You are a visual pattern detector. Ignore Unicode values — only look at SHAPES.
+Your job: determine if the given text is a creative/trick way of writing "hi" or a greeting.
 
-Recognize these visual trick patterns:
-- Pipe as i: "H|" looks like "Hi", lone "|" can be i
-- Slash as i: "/" can resemble i, so "|-|/" looks like "Hi"
-- Exclamation as i: "H!" looks like "Hi"
-- ASCII art H: "|-|" looks like "H", so "|-| |" looks like "Hi"
-- Any combination of vertical lines, dashes, slashes that form letter shapes resembling h+i
-- L33tspeak: "H1" where 1 = i
-- Upside-down, mirrored, or Zalgo-decorated text that still reads as "hi"
-- Mixed scripts where characters visually resemble Latin h and i
+People try to bypass simple "hi" detection using visual tricks. The AI should REASON about what the text LOOKS LIKE visually:
 
-Only say "yes" if it VISUALLY RESEMBLES "hi" or a greeting word.
-If it looks like a normal English word (high, hiring, hint) or random symbols with no recognizable hi shape, say "no".
+Common visual trick patterns:
+- ASCII art letters: "|-|" looks like H (two vertical lines + horizontal dash), so "|-| |" = Hi
+- Pipe as i: "H|" looks like Hi, lone "|" can represent i
+- Slash as i: "/" can resemble the stem of i, so "|-|/" = Hi
+- Exclamation as i: "H!" looks like Hi (the ! dot is like the i dot)
+- L33tspeak substitutions: "1" looks like i, so "H1" = Hi
+- Unicode lookalikes from other scripts (Cyrillic Н, Greek Η, etc.)
+- Fullwidth: Ｈｉ
+- Decorated: 𝐇𝐢, 𝓗𝓲, ℍ𝕚, etc.
+- Zalgo/combining marks on top of h and i
+- Upside-down or mirrored text
+- Regional indicators: 🇭🇮
+- Braille: ⠓⠊
+- Morse/binary/encoded forms of "hi"
+
+IMPORTANT DISTINCTIONS:
+- "|-| |" → YES (H + | = Hi visually)
+- "H|" → YES (H + | = Hi visually)
+- "H!" → YES (H + ! = Hi visually)
+- "H1" → YES (H + 1 = Hi in l33tspeak)
+- "high" → NO (this is a normal English word meaning "tall", not a greeting)
+- "hiring" → NO (normal word)
+- "hint" → NO (normal word)
+- "this" → NO (contains "hi" but is a different word)
+- "child" → NO (contains "hi" but is a different word)
+- "hiiiiiiiiii" (6+ i's) → NO (that's just spam, not a greeting)
 
 Reply only "yes" or "no"."""
 
 
-# ── Monospace font (critical for ASCII art like |-| |) ──
-_MONO_FONT_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-    "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-    "/System/Library/Fonts/Menlo.ttc",
-    "/System/Library/Fonts/Monaco.ttf",
-    "C:\\Windows\\Fonts\\consola.ttf",
-    "C:\\Windows\\Fonts\\cour.ttf",
-]
-
-_font_cache = None
-
-
-def _get_mono_font(size: int = 48):
-    """Get cached monospace font."""
-    global _font_cache
-    if _font_cache is None:
-        for path in _MONO_FONT_PATHS:
-            try:
-                _font_cache = ImageFont.truetype(path, size)
-                break
-            except (IOError, OSError):
-                continue
-        if _font_cache is None:
-            _font_cache = ImageFont.load_default()
-    return _font_cache
-
-
-def _render_text_as_image(text: str) -> str | None:
-    """Render text as a monospace PNG image, return base64."""
-    try:
-        font = _get_mono_font(48)
-
-        lines = text.split("\n")
-        max_line_len = max(len(line) for line in lines) if lines else 1
-
-        # Monospace: all chars same width, approximate
-        char_w, line_h, padding = 30, 60, 20
-        img_w = max(max_line_len * char_w + padding * 2, 200)
-        img_h = max(len(lines) * line_h + padding * 2, 100)
-
-        img = Image.new("RGB", (img_w, img_h), "white")
-        draw = ImageDraw.Draw(img)
-        draw.text((padding, padding), text, fill="black", font=font)
-
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception as e:
-        print(f"[hi_trigger] Render failed: {e}")
-        return None
-
-
-# ── Segment extraction for longer messages ──
-# Characters commonly used in visual tricks (non-letter, non-digit)
-_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"" + "1")  # 1 = visual i
+# Characters that suggest the text might be a visual trick (non-standard for greetings)
+_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"" + "1")
 
 
 def _is_suspicious(text: str) -> bool:
-    """Check if text contains characters commonly used in visual tricks."""
+    """Quick check: does this text contain characters used in visual tricks?"""
     return any(c in _TRICK_CHARS for c in text.strip())
 
 
-def _extract_segments(text: str) -> list[str]:
-    """Extract short suspicious segments from longer messages.
+def _should_ask_ai(text: str) -> bool:
+    """Pre-filter: only send suspicious or non-ASCII text to AI.
 
-    For "check this |-| | out" → ["|-|", "|", "|-| |"]
-    Only segments containing trick characters are returned to avoid
-    wasting vision API calls on normal words.
-    """
-    words = text.split()
-    segments = set()
-
-    for i, w in enumerate(words):
-        if not _is_suspicious(w):
-            continue
-
-        # Single word
-        if len(w) <= VISION_SEGMENT_MAX:
-            segments.add(w)
-
-        # Pair with next word
-        if i < len(words) - 1 and len(w) + 1 + len(words[i + 1]) <= VISION_SEGMENT_MAX:
-            segments.add(w + " " + words[i + 1])
-
-        # Pair with previous word
-        if i > 0 and len(words[i - 1]) + 1 + len(w) <= VISION_SEGMENT_MAX:
-            segments.add(words[i - 1] + " " + w)
-
-        # Triple: prev + this + next
-        if (i > 0 and i < len(words) - 1
-                and len(words[i - 1]) + 1 + len(w) + 1 + len(words[i + 1]) <= VISION_SEGMENT_MAX):
-            segments.add(words[i - 1] + " " + w + " " + words[i + 1])
-
-    return list(segments)
-
-
-def _should_try_vision(text: str) -> bool:
-    """Pre-filter: only send messages that could be visual tricks to vision.
-
-    Skips: URLs, code blocks, empty, too-long, and pure ASCII text without
-    trick characters (normal words like 'high', 'hello' are handled by ai_trigger).
-    Allows: text with special chars (H|, |-| |), non-ASCII (Ƕi, Ħi), etc.
+    Skips:
+    - URLs, code blocks, empty, too long
+    - Pure ASCII text without trick characters (normal words go to ai_trigger)
+    Allows:
+    - Text with special chars (H|, |-| |)
+    - Non-ASCII Unicode (Ƕi, Ħi, 𝐇𝐢)
     """
     stripped = text.strip()
-    if not stripped or len(stripped) > VISION_DIRECT_MAX:
+    if not stripped or len(stripped) > AI_MAX_LENGTH:
         return False
     if stripped.startswith("```"):
         return False
     if re.match(r"^https?://\S+$", stripped):
         return False
-    # Skip pure ASCII text with no trick characters
-    # Normal greetings (hello, hey) and false positives (high, hiring) go to ai_trigger
+    # Pure ASCII without trick chars → let ai_trigger handle it
     if stripped.isascii() and not _is_suspicious(stripped):
         return False
     return True
 
 
-async def _ask_vision_hi(text: str) -> bool:
-    """Send rendered text image to Vision AI. Returns True if it looks like 'hi'."""
-    if not OPENROUTER_API_KEY:
-        print("[hi_trigger] No OPENROUTER_API_KEY — skipping vision check")
-        return False
+def _extract_suspicious_words(text: str) -> list[str]:
+    """From a longer message, extract words that look like visual tricks.
 
-    b64_image = _render_text_as_image(text)
-    if not b64_image:
-        return False
+    For "check this |-| | out" → ["|-| |"]
+    Only words with trick characters are returned.
+    """
+    words = text.split()
+    results = []
+    for i, w in enumerate(words):
+        if not _is_suspicious(w):
+            continue
+        # Single word
+        if len(w) <= AI_MAX_LENGTH:
+            results.append(w)
+        # Pair with adjacent word if short enough
+        if i < len(words) - 1:
+            pair = w + " " + words[i + 1]
+            if len(pair) <= AI_MAX_LENGTH:
+                results.append(pair)
+        if i > 0:
+            pair = words[i - 1] + " " + w
+            if len(pair) <= AI_MAX_LENGTH:
+                results.append(pair)
+    return results
 
-    for model in VISION_MODELS:
-        try:
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "model": model,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": _VISION_PROMPT},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{b64_image}"
-                                },
-                            },
-                        ],
-                    }],
-                    "max_tokens": 5,
-                    "temperature": 0.1,
-                }
-                headers = {
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "User-Agent": BROWSER_UA,
-                }
-                async with session.post(
-                    OPENROUTER_API_URL,
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 429:
-                        print(f"[hi_trigger] Vision {model}: rate limited, trying next...")
-                        continue
-                    if resp.status != 200:
-                        body = await resp.text()
-                        print(f"[hi_trigger] Vision {model} HTTP {resp.status}: {body[:200]}")
-                        continue
 
-                    data = await resp.json()
-                    reply = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                        .strip()
-                        .lower()
-                    )
-
-                    if reply.startswith("yes"):
-                        print(f"[hi_trigger] Vision {model}: detected hi in \"{text[:50]}\"")
-                        return True
-                    print(f"[hi_trigger] Vision {model}: not hi → {reply}")
+async def _ask_pollinations(text: str) -> bool:
+    """Send text to Pollinations AI. Returns True if it's a visual "hi" trick."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "model": POLLINATIONS_MODEL,
+                "messages": [
+                    {"role": "system", "content": _AI_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                "max_tokens": 5,
+                "temperature": 0.1,
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": BROWSER_UA,
+            }
+            async with session.post(
+                POLLINATIONS_API_URL,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    print(f"[hi_trigger] Pollinations HTTP {resp.status}: {body[:200]}")
                     return False
 
-        except aiohttp.ClientTimeout:
-            print(f"[hi_trigger] Vision {model}: timeout, trying next...")
-            continue
-        except Exception as e:
-            print(f"[hi_trigger] Vision {model}: error {e}")
-            continue
+                data = await resp.json()
+                reply = (
+                    data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                    .strip()
+                    .lower()
+                )
 
-    print("[hi_trigger] All vision models failed")
-    return False
+                if reply.startswith("yes"):
+                    print(f"[hi_trigger] AI detected hi in \"{text[:50]}\" → {reply}")
+                    return True
+                print(f"[hi_trigger] AI: not hi \"{text[:50]}\" → {reply}")
+                return False
+
+    except aiohttp.ClientTimeout:
+        print(f"[hi_trigger] Pollinations timeout: \"{text[:50]}\"")
+        return False
+    except Exception as e:
+        print(f"[hi_trigger] Pollinations error: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,7 +214,7 @@ _bot = None
 
 async def _trigger(message: discord.Message):
     """Fire the reply — shared by both layers."""
-    # Mark as caught so ai_trigger (Layer 3) skips this message
+    # Mark as caught so ai_trigger skips this message
     try:
         import ai_trigger
         ai_trigger.mark_caught_by_hi(message.id)
@@ -311,7 +228,7 @@ async def _trigger(message: discord.Message):
         if webhook:
             async with aiohttp.ClientSession() as session:
                 payload = {
-                    "content": f"<{message.author.id}> {REPLY_MESSAGE}",
+                    "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
                     "username": WEBHOOK_USERNAME,
                     "avatar_url": WEBHOOK_AVATAR_URL,
                     "allowed_mentions": {"parse": ["users"]},
@@ -349,12 +266,10 @@ async def _handle(message: discord.Message):
         return
 
     # ── Build segments to check ──
-    if len(stripped) <= VISION_DIRECT_MAX:
-        # Short message: check the whole thing
+    if len(stripped) <= AI_MAX_LENGTH:
         segments = [stripped]
     else:
-        # Long message: extract suspicious short segments only
-        segments = _extract_segments(text)
+        segments = _extract_suspicious_words(text)
 
     # ── Check each segment ──
     for seg in segments:
@@ -363,8 +278,8 @@ async def _handle(message: discord.Message):
             await _trigger(message)
             return
 
-        # Layer 2: Vision AI
-        if _should_try_vision(seg) and await _ask_vision_hi(seg):
+        # Layer 2: Pollinations TEXT AI
+        if _should_ask_ai(seg) and await _ask_pollinations(seg):
             await _trigger(message)
             return
 
@@ -397,5 +312,4 @@ def setup(bot: discord.Client):
     async def on_message_edit_hi(before: discord.Message, after: discord.Message):
         await _handle(after)
 
-    vision_status = "Vision AI ✅" if OPENROUTER_API_KEY else "Vision AI ❌ (no OPENROUTER_API_KEY)"
-    print(f"✅ hi_trigger loaded — regex + {vision_status} — watching users {TARGET_USER_IDS}")
+    print(f"✅ hi_trigger loaded — regex + Pollinations AI — watching users {TARGET_USER_IDS}")
