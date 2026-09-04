@@ -228,26 +228,49 @@ def setup(bot: commands.Bot | discord.Client):
 
         asyncio.create_task(_send_event(payload))
 
-    # ── 3. MESSAGE DELETE (Comment delete from Discord) ───────────────────────
-    @bot.listen("on_message_delete")
-    async def on_message_delete_desk(message: discord.Message):
+    # ── 3. MESSAGE DELETE (Raw event catches cached and uncached deletions) ──
+    @bot.listen("on_raw_message_delete")
+    async def on_raw_message_delete_desk(payload: discord.RawMessageDeleteEvent):
         # Must be in the configured server (Guild)
-        if not message.guild or message.guild.id != DESK_GUILD_ID:
+        if payload.guild_id != DESK_GUILD_ID:
             return
 
-        if not isinstance(message.channel, discord.Thread):
+        channel = bot.get_channel(payload.channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(payload.channel_id)
+            except Exception:
+                channel = None
+
+        if not isinstance(channel, discord.Thread):
             return
 
-        if message.channel.parent_id not in DESK_FORUM_CHANNEL_IDS:
+        if channel.parent_id not in DESK_FORUM_CHANNEL_IDS:
             return
 
-        payload = {
+        event_payload = {
             "event": "MESSAGE_DELETE",
-            "threadId": str(message.channel.id),
-            "messageId": str(message.id),
+            "threadId": str(payload.channel_id),
+            "messageId": str(payload.message_id),
         }
 
-        asyncio.create_task(_send_event(payload))
+        asyncio.create_task(_send_event(event_payload))
+
+    # ── 3b. THREAD DELETE (When an entire forum thread is deleted in Discord) ──
+    @bot.listen("on_thread_delete")
+    async def on_thread_delete_desk(thread: discord.Thread):
+        if not thread.guild or thread.guild.id != DESK_GUILD_ID:
+            return
+
+        if thread.parent_id not in DESK_FORUM_CHANNEL_IDS:
+            return
+
+        event_payload = {
+            "event": "THREAD_DELETE",
+            "threadId": str(thread.id),
+        }
+
+        asyncio.create_task(_send_event(event_payload))
 
     # ── 4. THREAD UPDATE (Tag changes / Status updates from Discord) ───────────
     @bot.listen("on_thread_update")
