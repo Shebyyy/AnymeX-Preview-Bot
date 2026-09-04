@@ -174,6 +174,7 @@ def setup(bot: commands.Bot | discord.Client):
                 "url": att.url,
                 "filename": att.filename,
                 "content_type": att.content_type or "application/octet-stream",
+                "size": getattr(att, "size", 0),
             })
 
         reply_to_id = None
