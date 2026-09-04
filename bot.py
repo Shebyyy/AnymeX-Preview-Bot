@@ -11053,6 +11053,9 @@ async def main():
     import rules_trigger
     rules_trigger.setup(bot, get_rules_fn=lambda: RULES_MAP)
 
+    import desk_sync
+    desk_sync.setup(bot)
+
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
     asyncio.create_task(_load_log_queue())

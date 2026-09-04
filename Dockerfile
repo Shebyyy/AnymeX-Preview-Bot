@@ -13,6 +13,7 @@ COPY source_trigger.py .
 COPY trap_trigger.py .
 COPY faq_trigger.py .
 COPY rules_trigger.py .
+COPY desk_sync.py .
 
 EXPOSE 8080
 

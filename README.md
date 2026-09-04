@@ -262,6 +262,10 @@ All data is stored as JSON files across two GitHub repositories:
 | `PROXY_PORT` | ❌ | Proxy port (optional) |
 | `PROXY_USER` | ❌ | Proxy username (optional) |
 | `PROXY_PASS` | ❌ | Proxy password (optional) |
+| `DESK_SYNC_URL` | ❌ | AnymeX Desk URL (default: `https://anymex-desk.asheby.workers.dev`) |
+| `DESK_SYNC_SECRET` | ❌ | Shared auth token for Desk sync endpoint (optional) |
+| `DESK_GUILD_ID` | ❌ | Contributor Discord Server ID (default: `1545003117018357850`) |
+| `DESK_FORUM_CHANNEL_IDS` | ❌ | Comma-separated forum channel IDs (default: Bugs, Suggestions, and Extensions forum channels) |
 
 ---
 
