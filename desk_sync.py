@@ -12,11 +12,15 @@
 #   DESK_FORUM_CHANNEL_IDS  — Comma-separated Forum Channel IDs to monitor
 # ══════════════════════════════════════════════════════════════════════════════
 
+from __future__ import annotations
+
 import os
 import asyncio
 import aiohttp
 import discord
 from discord import app_commands
+from discord.ext import commands
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hardcoded Defaults (with Environment Variable Overrides)

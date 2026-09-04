@@ -11053,8 +11053,11 @@ async def main():
     import rules_trigger
     rules_trigger.setup(bot, get_rules_fn=lambda: RULES_MAP)
 
-    import desk_sync
-    desk_sync.setup(bot)
+    try:
+        import desk_sync
+        desk_sync.setup(bot)
+    except Exception as e:
+        print(f"⚠️ Failed to load desk_sync: {e}")
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
