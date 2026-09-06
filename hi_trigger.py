@@ -31,8 +31,8 @@ WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Max message length to check (longer messages → ai_trigger handles)
-AI_MAX_LENGTH = 50
+# Max message length to check
+AI_MAX_LENGTH = 2000
 
 # ── OpenRouter ──
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
@@ -47,79 +47,177 @@ POLLINATIONS_API_URL = "https://text.pollinations.ai/openai/chat/completions"
 
 # Pollinations free models (no API key)
 POLLINATIONS_MODELS = [
-    "openai",  # GPT-OSS 20B reasoning
+    "openai-fast",
+    "openai",
 ]
 
 # OpenRouter free models (needs OPENROUTER_API_KEY)
 OPENROUTER_MODELS = [
-    # Big smart text models
+    "openrouter/free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
     "nvidia/nemotron-3-ultra-550b-a55b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "nvidia/nemotron-3.5-lightning:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    # Google
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    # Vision models (also handle text fine)
-    "nvidia/nemotron-nano-12b-v2-vl:free",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    # Thinking/reasoning models
+    "z-ai/glm-5.2:free",
+    "minimax/minimax-m3:free",
+    "liquid/lfm-2.5-2.6b:free",
     "thinkingmachines/inkling:free",
     "thinkingmachines/inkling-small:free",
-    # GLM
-    "z-ai/glm-5.2:free",
-    # Dots
-    "dots-studio/dots-3-note-preview:free",
-    # Small / niche
-    "liquid/lfm-2.5-2.6b:free",
-    # Code models (still smart enough for this)
-    "cohere/north-mini-code:free",
     "poolside/laguna-s-2.1:free",
     "poolside/laguna-xs-2.1:free",
+    "cohere/north-mini-code:free",
 ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Layer 1: Simple regex fast path (instant, no API call)
+# Layer 1: Universal Visual Geometry & Multi-Line ASCII Engine (<0.1ms)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_JUNK = re.compile(
-    r"[\*_~`|>#\u200b\u200c\u200d\u200e\u200f\u00a0\s.,\-_//\\:;'\"\(\)\[\]\{\}\u0300-\u036f]+"
-)
+def _clean_text(text: str) -> str:
+    """Normalize text and unwrap markdown codeblocks, spoilers, and formatting."""
+    s = text.strip()
+    changed = True
+    while changed:
+        old = s
+        if s.startswith("```") and s.endswith("```") and len(s) >= 6:
+            s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
+            s = re.sub(r"\n?```$", "", s).strip()
+        if s.startswith("`") and s.endswith("`") and len(s) >= 2:
+            s = s[1:-1].strip()
+        if s.startswith("||") and s.endswith("||") and len(s) >= 4:
+            s = s[2:-2].strip()
+        if "\n" not in s:
+            if s.startswith("**") and s.endswith("**") and len(s) >= 4:
+                s = s[2:-2].strip()
+            if s.startswith("*") and s.endswith("*") and len(s) >= 2:
+                s = s[1:-1].strip()
+            if s.startswith("~~") and s.endswith("~~") and len(s) >= 4:
+                s = s[2:-2].strip()
+        changed = (s != old)
+
+    # Unicode NFKC normalization
+    return unicodedata.normalize("NFKC", s)
 
 
-def _is_simple_hi(text: str) -> bool:
-    """Fast path: catches plain hi, Hi, HI, hii, hiii, 𝐇𝐢, Ｈｉ, etc."""
-    s = unicodedata.normalize("NFKC", text.strip())
-    s = re.sub(r"^[^\w]+|[^\w]+$", "", s, flags=re.UNICODE)
-    s = _JUNK.sub("", s).lower()
-    return bool(re.fullmatch(r"hi{1,5}", s))
+def _is_multiline_ascii_hi(text: str) -> bool:
+    """Detects multi-line ASCII art drawings of H / Hi across multiple lines."""
+    cleaned = _clean_text(text)
+    lines = [line.rstrip() for line in cleaned.splitlines() if line.strip()]
+    if len(lines) < 3:
+        return False
+
+    # Check if there are English words (3+ letters) that are NOT greeting words
+    words = re.findall(r"[a-zA-Z]{3,}", cleaned)
+    greeting_words = {"hey", "hello", "hola", "sup", "whatsup", "wassup", "greetings"}
+    non_greeting_words = [w for w in words if w.lower() not in greeting_words and not all(c in "hHiI" for c in w)]
+    if non_greeting_words:
+        return False
+
+    # Upright column character: |, I, l, 1, !, #, [, ], (, ), \, /, *, +, H, X, x, :, ;, o, O
+    col_char = r"[\|Il1!#\[\]\(\)\\/XxHh\*\+\:\;oO]"
+    bridge_char = r"[\-_–—=+*~.]"
+
+    uprights_line = re.compile(rf"{col_char}+\s{{2,}}{col_char}+")
+    bridge_line = re.compile(rf"{bridge_char}{{2,}}")
+
+    has_bridge = any(bridge_line.search(l) for l in lines)
+    has_uprights = sum(1 for l in lines if uprights_line.search(l)) >= 2
+
+    return has_bridge and has_uprights
+
+
+def _is_single_line_hi(text: str) -> bool:
+    """Detects single-line visual tricks: I-Ii, }-{i, 1-1i, |-|, closures, lookalikes."""
+    s = _clean_text(text)
+    if "\n" in s:
+        return False
+
+    # Upright stroke / bracket character for building visual H
+    upright = r"[\|Il1!\{\}\[\]\(\)\<\>\\\/]"
+
+    # H element: standard H, Cyrillic/Greek, closures (}{, ][, )(, ><),
+    # and any pair of uprights with a horizontal bridge (I-I, }-{, 1-1, |-|, [-], (-), <->, etc.)
+    h_element = (
+        r"(?:"
+        r"[hH]"
+        r"|[НнΗηɥ#卄♓𐌷⠓]"
+        r"|(?:\}{"
+        r"|\]\["
+        r"|\)\("
+        r"|\(\)"
+        r"|><"
+        rf"|{upright}[\s\-_–—=\~\*\+\.:\^v/]+{upright}"
+        r"))"
+    )
+
+    sep = r"[\s\-_–—=\~\*\+\.:\^v,\'\"`\\/]*"
+
+    # I element: i, I, 1, !, |, /, \, ;, lookalikes, emojis
+    i_element = (
+        r"(?:"
+        r"[iI1!\|¡¦│┃\/\\;ℹⓘⒾ🄸🅘🇮𐌹⠊іІЇїιΙ]"
+        r"|l(?![a-zA-Z])"
+        r")"
+    )
+
+    trailing = r"(?:[\s!?.,~:;\-_+*^/\'\"`\(\)\[\]\{\}👋🤝😊✨\u200b-\u200f])*"
+
+    hi_pattern = rf"^{h_element}{sep}{i_element}+(?:{sep}{i_element})*{trailing}$"
+    if re.fullmatch(hi_pattern, s):
+        return True
+
+    greeting_pattern = (
+        r"^(?:"
+        r"h[e3][y]+"
+        r"|h[e3]ll?[o0]+"
+        r"|h[o0]la"
+        r"|s[u|]p"
+        r"|y[o0]+"
+        r"|namaste"
+        r"|wass?up"
+        r"|whatsup"
+        r"|wsp"
+        r"|greetings"
+        r")$"
+    )
+    clean_greeting = re.sub(r"[\s\-_–—=\~\*\+\.:\^v,\'\"`\\/]+", "", s).lower()
+    if re.fullmatch(greeting_pattern, clean_greeting):
+        return True
+
+    return False
+
+
+def _is_visual_greeting(text: str) -> bool:
+    """Master Layer 1 check: handles single-line tricks and multi-line ASCII art."""
+    return _is_single_line_hi(text) or _is_multiline_ascii_hi(text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 2: Race ALL free AI models in parallel
 # ─────────────────────────────────────────────────────────────────────────────
 
-_AI_PROMPT = """You are a visual text pattern detector for a Discord bot.
+_AI_PROMPT = """You are an expert visual text pattern and ASCII art detector for a Discord bot.
 
-Your job: determine if the given text is a creative/trick way of writing "hi" or a greeting.
+Your job: determine if the given text is a creative, trick, or visual way of writing "hi" or a greeting.
 
-People bypass "hi" detection using visual tricks. REASON about what the text LOOKS LIKE visually:
-- ASCII art: "|-|" looks like H, so "|-| |" = Hi
-- Pipe as i: "H|" = Hi, lone "|" = i
-- Slash as i: "/" resembles i, "|-|/" = Hi
-- Exclamation as i: "H!" = Hi
-- L33tspeak: "1" = i, "H1" = Hi
-- Unicode lookalikes, fullwidth, decorated, Zalgo, Braille, Morse, binary
+IMPORTANT RULES for visual reasoning:
+- People bypass filters using visual ASCII art and leetspeak.
+- Two upright strokes with a crossbar represent "H": e.g., "1-1", "I-I", "}-{\", \"|-|\", \"]-[\", \"(-)\".
+  DO NOT interpret \"1-1\" as math or subtraction! In this context, it is visual art for the letter H.
+- A single upright, digit, or punctuation represents "i": e.g., "i", "1", "!", "|".
+- Combinations like \"1-1i\", \"I-Ii\", \"}-{i\", \"|-|i\", \"1-11\", \"1-1!\" are visual art for \"Hi\".
+- Multi-line ASCII art: Drawing "H" and "I" across multiple lines with spaces and pipes/dashes is "Hi".
+- Greetings: hi, hey, hello, sup, yo, hola, namaste in any spelling, casing, leetspeak, or decoration.
 
-YES examples: "|-| |", "H|", "H!", "H1", "|-|/", "🐀🇮"
-NO examples: "high", "hiring", "hint", "this", "child", "hiiiiiiiiii" (6+ i's)
+YES examples: \"|-| |\", \"H|\", \"H!\", \"H1\", \"|-|/\", \"I-Ii\", \"}-{i\", \"1-1i\", \"🐀🇮\"
+NO examples: \"high\", \"hiring\", \"hint\", \"this\", \"child\", \"1+1=2\", \"hiiiiiiiiii\" (6+ i's)
 
-Reply only "yes" or "no"."""
+Reply only \"yes\" or \"no\"."""
 
 
-_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"" + "1")
+_TRICK_CHARS = set("|!/-\\[]{}<>~`@#$%^&*()_+=:;'\"" + "1\n")
 
 
 def _is_suspicious(text: str) -> bool:
@@ -129,8 +227,6 @@ def _is_suspicious(text: str) -> bool:
 def _should_ask_ai(text: str) -> bool:
     stripped = text.strip()
     if not stripped or len(stripped) > AI_MAX_LENGTH:
-        return False
-    if stripped.startswith("```"):
         return False
     if re.match(r"^https?://\S+$", stripped):
         return False
@@ -353,6 +449,20 @@ async def _handle(message: discord.Message):
     if not stripped:
         return
 
+    # ── Layer 1: Universal Visual Geometry & Multi-Line ASCII Engine (<0.1ms) ──
+    # 1. Check whole message (handles multi-line ASCII art and single-line trick phrases)
+    if _is_visual_greeting(stripped):
+        await _trigger(message)
+        return
+
+    # 2. If multi-line, check individual lines (e.g. greeting on a single line of text)
+    if "\n" in stripped:
+        for line in stripped.splitlines():
+            s_line = line.strip()
+            if s_line and _is_visual_greeting(s_line):
+                await _trigger(message)
+                return
+
     # ── Build segments to check ──
     if len(stripped) <= AI_MAX_LENGTH:
         segments = [stripped]
@@ -361,8 +471,8 @@ async def _handle(message: discord.Message):
 
     # ── Check each segment ──
     for seg in segments:
-        # Layer 1: Instant regex
-        if _is_simple_hi(seg):
+        # Layer 1 check on segment
+        if _is_visual_greeting(seg):
             await _trigger(message)
             return
 

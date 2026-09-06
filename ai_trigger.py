@@ -158,8 +158,6 @@ def _should_check_ai(text: str, message: discord.Message = None) -> bool:
         return False
     if len(stripped.split()) > MAX_WORDS:
         return False
-    if stripped.startswith('```') and stripped.endswith('```'):
-        return False
     if re.match(r'^https?://\S+$', stripped):
         return False
 
