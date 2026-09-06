@@ -297,6 +297,8 @@ def setup(bot: commands.Bot | discord.Client):
                 "event": "THREAD_UPDATE",
                 "threadId": str(after.id),
                 "tagNames": tag_names,
+                "locked": bool(after.locked),
+                "archived": bool(after.archived),
             }
             asyncio.create_task(_send_event(payload))
 
