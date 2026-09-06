@@ -286,12 +286,12 @@ def setup(bot: commands.Bot | discord.Client):
         before_tags = set(before.applied_tags) if hasattr(before, "applied_tags") else set()
         after_tags = set(after.applied_tags) if hasattr(after, "applied_tags") else set()
 
+        tags_changed = before_tags != after_tags
+        archived_changed = before.archived != after.archived
+        locked_changed = before.locked != after.locked
+
         # Only trigger if tags or archived/locked status changed
-        if (
-            before_tags != after_tags
-            or before.archived != after.archived
-            or before.locked != after.locked
-        ):
+        if tags_changed or archived_changed or locked_changed:
             tag_names = [t.name for t in after_tags]
             payload = {
                 "event": "THREAD_UPDATE",
@@ -299,6 +299,9 @@ def setup(bot: commands.Bot | discord.Client):
                 "tagNames": tag_names,
                 "locked": bool(after.locked),
                 "archived": bool(after.archived),
+                "tagsChanged": tags_changed,
+                "lockedChanged": locked_changed,
+                "archivedChanged": archived_changed,
             }
             asyncio.create_task(_send_event(payload))
 
