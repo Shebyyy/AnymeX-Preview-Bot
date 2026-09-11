@@ -485,7 +485,7 @@ async def _handle_manual_command(message: discord.Message) -> bool:
 
     try:
         ref_message = await message.channel.fetch_message(message.reference.message_id)
-        if not ref_message.author.bot:
+        if not ref_message.author.bot and ref_message.author.id in TARGET_USER_IDS:
             await _trigger(ref_message)
     except Exception as e:
         print(f"[hi_trigger] Failed to fetch referenced message for manual command: {e}")
