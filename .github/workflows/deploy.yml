@@ -18,6 +18,7 @@ jobs:
           command_timeout: 120m
           script: |
             set -e
+            mkdir -p /root/bot_data
             if [ -d "/root/AnymeX-Preview-Bot" ]; then
               cd /root/AnymeX-Preview-Bot
               git fetch origin

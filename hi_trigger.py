@@ -32,24 +32,53 @@ WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# ── Auto-learned phrases (persisted to file) ──
-LEARNED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "learned_hi.json")
+# ── Auto-learned phrases (persisted outside repo on VPS to survive git reset --hard) ──
+_default_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "learned_hi.json")
+
+# On VPS, store in /root/bot_data to be completely safe from git reset/clean in /root/AnymeX-Preview-Bot
+_data_dir = os.environ.get("BOT_DATA_DIR", "")
+if not _data_dir:
+    if os.name != "nt" and os.path.isdir("/root"):
+        _data_dir = "/root/bot_data"
+    else:
+        _data_dir = os.path.dirname(os.path.abspath(__file__))
+
+try:
+    os.makedirs(_data_dir, exist_ok=True)
+except Exception:
+    _data_dir = os.path.dirname(os.path.abspath(__file__))
+
+LEARNED_FILE = os.path.join(_data_dir, "learned_hi.json")
 _LEARNED_PHRASES: set[str] = set()
 
 
 def _load_learned_phrases():
     global _LEARNED_PHRASES
+    # 1. Load from persistent storage (/root/bot_data/learned_hi.json)
     if os.path.exists(LEARNED_FILE):
         try:
             with open(LEARNED_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    _LEARNED_PHRASES = set(data)
+                    _LEARNED_PHRASES.update(data)
                 elif isinstance(data, dict) and "phrases" in data:
-                    _LEARNED_PHRASES = set(data["phrases"])
-            print(f"[hi_trigger] 🧠 Loaded {len(_LEARNED_PHRASES)} learned phrases from {os.path.basename(LEARNED_FILE)}")
+                    _LEARNED_PHRASES.update(data["phrases"])
         except Exception as e:
-            print(f"[hi_trigger] Failed to load learned phrases: {e}")
+            print(f"[hi_trigger] Failed to load from {LEARNED_FILE}: {e}")
+
+    # 2. Also seed from bundled repo file if available
+    if os.path.exists(_default_file) and os.path.abspath(_default_file) != os.path.abspath(LEARNED_FILE):
+        try:
+            with open(_default_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    _LEARNED_PHRASES.update(data)
+                elif isinstance(data, dict) and "phrases" in data:
+                    _LEARNED_PHRASES.update(data["phrases"])
+        except Exception as e:
+            print(f"[hi_trigger] Failed to seed from {_default_file}: {e}")
+
+    print(f"[hi_trigger] 🧠 Loaded {len(_LEARNED_PHRASES)} learned phrases (storage at {LEARNED_FILE})")
 
 
 def _learn_phrase(text: str):
@@ -68,12 +97,12 @@ def _learn_phrase(text: str):
         added = True
 
     if added:
-        print(f"[hi_trigger] 🧠 Learned new greeting phrase: {repr(stripped)}")
+        print(f"[hi_trigger] 🧠 Learned new greeting phrase: {repr(stripped)} -> saving to {LEARNED_FILE}")
         try:
             with open(LEARNED_FILE, "w", encoding="utf-8") as f:
                 json.dump(sorted(list(_LEARNED_PHRASES)), f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[hi_trigger] Failed to save learned phrase to file: {e}")
+            print(f"[hi_trigger] Failed to save learned phrase to {LEARNED_FILE}: {e}")
 
 
 _load_learned_phrases()
