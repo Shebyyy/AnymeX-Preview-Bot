@@ -15,6 +15,7 @@
 
 import os
 import re
+import json
 import asyncio
 import unicodedata
 import aiohttp
@@ -30,6 +31,52 @@ WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
 WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# ── Auto-learned phrases (persisted to file) ──
+LEARNED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "learned_hi.json")
+_LEARNED_PHRASES: set[str] = set()
+
+
+def _load_learned_phrases():
+    global _LEARNED_PHRASES
+    if os.path.exists(LEARNED_FILE):
+        try:
+            with open(LEARNED_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    _LEARNED_PHRASES = set(data)
+                elif isinstance(data, dict) and "phrases" in data:
+                    _LEARNED_PHRASES = set(data["phrases"])
+            print(f"[hi_trigger] 🧠 Loaded {len(_LEARNED_PHRASES)} learned phrases from {os.path.basename(LEARNED_FILE)}")
+        except Exception as e:
+            print(f"[hi_trigger] Failed to load learned phrases: {e}")
+
+
+def _learn_phrase(text: str):
+    global _LEARNED_PHRASES
+    stripped = text.strip()
+    if not stripped:
+        return
+    cleaned = _clean_text(stripped)
+
+    added = False
+    if stripped not in _LEARNED_PHRASES:
+        _LEARNED_PHRASES.add(stripped)
+        added = True
+    if cleaned not in _LEARNED_PHRASES:
+        _LEARNED_PHRASES.add(cleaned)
+        added = True
+
+    if added:
+        print(f"[hi_trigger] 🧠 Learned new greeting phrase: {repr(stripped)}")
+        try:
+            with open(LEARNED_FILE, "w", encoding="utf-8") as f:
+                json.dump(sorted(list(_LEARNED_PHRASES)), f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[hi_trigger] Failed to save learned phrase to file: {e}")
+
+
+_load_learned_phrases()
 
 # Max message length to check
 AI_MAX_LENGTH = 2000
@@ -204,7 +251,10 @@ def _is_single_line_hi(text: str) -> bool:
 
 
 def _is_visual_greeting(text: str) -> bool:
-    """Master Layer 1 check: handles single-line tricks and multi-line ASCII art."""
+    """Master Layer 1 check: handles learned phrases, single-line tricks, and multi-line ASCII art."""
+    stripped = text.strip()
+    if stripped in _LEARNED_PHRASES or _clean_text(stripped) in _LEARNED_PHRASES:
+        return True
     return _is_single_line_hi(text) or _is_multiline_ascii_hi(text)
 
 
@@ -486,6 +536,7 @@ async def _handle_manual_command(message: discord.Message) -> bool:
     try:
         ref_message = await message.channel.fetch_message(message.reference.message_id)
         if not ref_message.author.bot and ref_message.author.id in TARGET_USER_IDS:
+            _learn_phrase(ref_message.content)
             await _trigger(ref_message)
     except Exception as e:
         print(f"[hi_trigger] Failed to fetch referenced message for manual command: {e}")
@@ -542,6 +593,7 @@ async def _handle(message: discord.Message):
 
         # Layer 2: Race ALL AI models in parallel
         if _should_ask_ai(seg) and await _race_all_models(seg):
+            _learn_phrase(seg)
             await _trigger(message)
             return
 
