@@ -129,20 +129,33 @@ def _is_multiline_ascii_hi(text: str) -> bool:
 
 
 def _is_single_line_hi(text: str) -> bool:
-    """Detects single-line visual tricks: I-Ii, }-{i, 1-1i, |-|, closures, lookalikes."""
+    """Detects single-line visual tricks: I-Ii, }-{i, 1-1i, |-|, closures, emoji hands, lookalikes."""
     s = _clean_text(text)
     if "\n" in s:
         return False
+
+    # Hand emoji components for visual H and I
+    skin = r"[\U0001F3FB-\U0001F3FF]?"
+    var_sel = r"[\ufe0e\ufe0f]?"
+    hand_h = (
+        r"(?:[🫸🤜👉]" + skin + var_sel +
+        r"[\s\-_–—=\~\*\+\.:\^v/]*" +
+        r"[🫳🫴🤝]?" + skin + var_sel +
+        r"[\s\-_–—=\~\*\+\.:\^v/]*" +
+        r"[🫷🤛👈]" + skin + var_sel + r")"
+    )
+    hand_i = r"[🖕👆☝]" + skin + var_sel
 
     # Upright stroke / bracket character for building visual H
     upright = r"[\|Il1!\{\}\[\]\(\)\<\>\\\/]"
 
     # H element: standard H, Cyrillic/Greek, closures (}{, ][, )(, ><),
-    # and any pair of uprights with a horizontal bridge (I-I, }-{, 1-1, |-|, [-], (-), <->, etc.)
+    # emoji hands (🫸 🫳 🫷), and any pair of uprights with a horizontal bridge
     h_element = (
         r"(?:"
         r"[hH]"
         r"|[НнΗηɥ#卄♓𐌷⠓]"
+        rf"|{hand_h}"
         r"|(?:\}{"
         r"|\]\["
         r"|\)\("
@@ -154,10 +167,11 @@ def _is_single_line_hi(text: str) -> bool:
 
     sep = r"[\s\-_–—=\~\*\+\.:\^v,\'\"`\\/]*"
 
-    # I element: i, I, 1, !, |, /, \, ;, lookalikes, emojis
+    # I element: i, I, 1, !, |, /, \, ;, lookalikes, emojis (including upward pointing fingers)
     i_element = (
         r"(?:"
         r"[iI1!\|¡¦│┃\/\\;ℹⓘⒾ🄸🅘🇮𐌹⠊іІЇїιΙ]"
+        rf"|{hand_i}"
         r"|l(?![a-zA-Z])"
         r")"
     )
@@ -209,9 +223,10 @@ IMPORTANT RULES for visual reasoning:
 - A single upright, digit, or punctuation represents "i": e.g., "i", "1", "!", "|".
 - Combinations like \"1-1i\", \"I-Ii\", \"}-{i\", \"|-|i\", \"1-11\", \"1-1!\" are visual art for \"Hi\".
 - Multi-line ASCII art: Drawing "H" and "I" across multiple lines with spaces and pipes/dashes is "Hi".
+- Emoji hand art: \"🫸 🫳 🫷\" = visual H (pushing hands + palm down bridge), \"🖕\" or \"👆\" = visual i (upright finger). So \"🫸 🫳 🫷 🖕\" = Hi.
 - Greetings: hi, hey, hello, sup, yo, hola, namaste in any spelling, casing, leetspeak, or decoration.
 
-YES examples: \"|-| |\", \"H|\", \"H!\", \"H1\", \"|-|/\", \"I-Ii\", \"}-{i\", \"1-1i\", \"🐀🇮\"
+YES examples: \"|-| |\", \"H|\", \"H!\", \"H1\", \"|-|/\", \"I-Ii\", \"}-{i\", \"1-1i\", \"🫸 🫳 🫷 🖕\", \"🐀🇮\"
 NO examples: \"high\", \"hiring\", \"hint\", \"this\", \"child\", \"1+1=2\", \"hiiiiiiiiii\" (6+ i's)
 
 Reply only \"yes\" or \"no\"."""
@@ -438,9 +453,58 @@ async def _trigger(message: discord.Message):
             print(f"[hi_trigger] Fallback also failed: {e2}")
 
 
+async def _handle_manual_command(message: discord.Message) -> bool:
+    """Manual !hi command — anyone can reply to a user message with !hi to trigger the reply."""
+    content = message.content.strip()
+    if not content.startswith("!"):
+        return False
+
+    parts = content[1:].strip().split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    if cmd not in ("hi", "single"):
+        return False
+
+    print(f"[hi_trigger] Manual !{cmd} used by {message.author} in #{message.channel}")
+
+    if message.reference is None or message.reference.message_id is None:
+        try:
+            await message.reply(
+                "ℹ️ Reply to a user's message with `!hi` to trigger the reply.",
+                mention_author=False,
+                delete_after=5,
+            )
+        except Exception:
+            pass
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return True
+
+    try:
+        ref_message = await message.channel.fetch_message(message.reference.message_id)
+        if not ref_message.author.bot:
+            await _trigger(ref_message)
+    except Exception as e:
+        print(f"[hi_trigger] Failed to fetch referenced message for manual command: {e}")
+    finally:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+    return True
+
+
 async def _handle(message: discord.Message):
     if message.author.bot:
         return
+
+    # Check manual !hi command (usable by ANY user replying to a message)
+    if await _handle_manual_command(message):
+        return
+
     if message.author.id not in TARGET_USER_IDS:
         return
 

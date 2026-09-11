@@ -117,7 +117,7 @@ TEXT_PROMPT = """Is this message a greeting?
 
 A greeting is any message whose MAIN PURPOSE is to say hello, acknowledge someone, or start a conversation. Examples: hi, hey, hello, yo, sup, what's up, howdy, hola, namaste, ciao, konnichiwa, salaam, annyeong, bonjour, aloha, greetings, wassup, etc.
 
-Also count as greeting: emoji-only greetings (👋), Unicode tricks (♓ℹ ⠓⠊ 𐌷𐌹), l33tspeak (h1 y0), encoded text (Morse, binary, Base64, ROT13), ASCII art, reversed text, any creative/trick way to say hello.
+Also count as greeting: emoji-only greetings (👋), emoji hand art (🫸 🫳 🫷 🖕 = visual Hi), Unicode tricks (♓ℹ ⠓⠊ 𐌷𐌹), l33tspeak (h1 y0), encoded text (Morse, binary, Base64, ROT13), ASCII art, reversed text, any creative/trick way to say hello.
 
 If the message has an attachment: only say yes if the filename clearly indicates a greeting (like wave.gif, hello.png, hi_sticker). Generic filenames like image.png do NOT count as a greeting just because they exist.
 
