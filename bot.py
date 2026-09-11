@@ -895,7 +895,7 @@ async def anilist_monitor():
             async with session.post(
                 "https://graphql.anilist.co/",
                 json={"query": "{ Media(id:1) { id } }"},
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                headers={"Content-Type": "application/json", "Accept": "application/json", "Origin": "https://anilist.co", "Referer": "https://anilist.co/"},
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 status_code = resp.status
@@ -1153,6 +1153,12 @@ STABLE_BRANCH = "main"
 
 GITHUB_API = "https://api.github.com"
 ANILIST_API = "https://graphql.anilist.co"
+ANILIST_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Origin": "https://anilist.co",
+    "Referer": "https://anilist.co/",
+}
 MAL_API = "https://api.myanimelist.net/v2"
 SIMKL_API = "https://api.simkl.com"
 SIMKL_CLIENT_ID = os.environ.get("SIMKL_CLIENT_ID")
@@ -2562,7 +2568,7 @@ async def anilist_callback(request):
             async with session.post(
                 ANILIST_API,
                 json={"query": query},
-                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {access_token}", **ANILIST_HEADERS},
             ) as r:
                 if r.status != 200:
                     return web.Response(
@@ -4678,7 +4684,7 @@ async def fetch_anilist(session: aiohttp.ClientSession, media_id: int, media_typ
     async with session.post(
         ANILIST_API,
         json={"query": query, "variables": {"id": media_id, "type": media_type}},
-        headers={"Content-Type": "application/json"},
+        headers=ANILIST_HEADERS,
     ) as r:
         if r.status != 200:
             return None
@@ -4719,7 +4725,7 @@ async def fetch_anilist_by_mal(session: aiohttp.ClientSession, mal_id: int, medi
         async with session.post(
             ANILIST_API,
             json={"query": query, "variables": {"malId": mal_id, "type": media_type}},
-            headers={"Content-Type": "application/json"},
+            headers=ANILIST_HEADERS,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as r:
             if r.status != 200:
@@ -4790,7 +4796,7 @@ async def fetch_anilist_batch(session: aiohttp.ClientSession, ids: list[int], me
         async with session.post(
             ANILIST_API,
             json={"query": query, "variables": {"ids": ids, "type": media_type}},
-            headers={"Content-Type": "application/json"},
+            headers=ANILIST_HEADERS,
         ) as r:
             if r.status != 200:
                 return {}
@@ -5087,7 +5093,7 @@ async def _anilist_search(query_str: str, media_type: str) -> list:
             async with session.post(
                 ANILIST_API,
                 json={"query": query, "variables": {"search": query_str, "type": media_type}},
-                headers={"Content-Type": "application/json"},
+                headers=ANILIST_HEADERS,
             ) as r:
                 if r.status != 200:
                     return []
@@ -5126,7 +5132,7 @@ async def _anilist_user_search(query_str: str) -> list:
             async with session.post(
                 ANILIST_API,
                 json={"query": query, "variables": {"search": query_str}},
-                headers={"Content-Type": "application/json"},
+                headers=ANILIST_HEADERS,
             ) as r:
                 if r.status != 200:
                     return []
@@ -5158,7 +5164,7 @@ async def _anilist_fetch_user_by_id(user_id: int) -> dict | None:
             async with session.post(
                 ANILIST_API,
                 json={"query": query, "variables": {"id": user_id}},
-                headers={"Content-Type": "application/json"},
+                headers=ANILIST_HEADERS,
             ) as r:
                 if r.status != 200:
                     return None
@@ -5190,7 +5196,7 @@ async def _anilist_fetch_user_by_name(username: str) -> dict | None:
             async with session.post(
                 ANILIST_API,
                 json={"query": query, "variables": {"name": username}},
-                headers={"Content-Type": "application/json"},
+                headers=ANILIST_HEADERS,
             ) as r:
                 if r.status != 200:
                     return None
@@ -8233,7 +8239,7 @@ async def _anilist_query(
     async with session.post(
         ANILIST_API,
         json={"query": query, "variables": variables},
-        headers={"Content-Type": "application/json"},
+        headers=ANILIST_HEADERS,
     ) as r:
         if r.status != 200:
             return {}
