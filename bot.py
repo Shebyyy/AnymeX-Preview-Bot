@@ -11057,7 +11057,7 @@ async def main():
     faq_trigger.setup(bot, get_faq_fn=lambda: FAQ_MAP)
 
     import rules_trigger
-    rules_trigger.setup(bot, get_rules_fn=lambda: RULES_MAP)
+    rules_trigger.setup(bot, get_rules_fn=lambda: RULES_MAP, send_log_fn=_send_log)
 
     try:
         import desk_sync
