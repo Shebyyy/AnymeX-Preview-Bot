@@ -1,0 +1,68 @@
+name: VPS/Render Failover
+
+# Watches the VPS-hosted bot. If it's unreachable, resumes the suspended
+# Render copy so the bot stays online. When the VPS comes back, it suspends
+# Render again so only one instance is ever talking to Discord at once.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 minutes (GitHub may delay this under load)
+  workflow_dispatch: {}      # lets you trigger it manually from the Actions tab
+
+jobs:
+  failover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check VPS and sync Render suspend state
+        env:
+          VPS_HEALTH_URL: ${{ secrets.VPS_HEALTH_URL }}       # e.g. https://yourdomain.com/health
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }} # e.g. srv-xxxxxxxxxxxx
+        run: |
+          set -e
+
+          check_vps() {
+            curl -fsS --max-time 10 "$VPS_HEALTH_URL" > /dev/null 2>&1
+          }
+
+          # Two attempts, 30s apart, so a single network blip doesn't
+          # trigger an unnecessary failover.
+          vps_up=false
+          if check_vps; then
+            vps_up=true
+          else
+            echo "First health check failed, retrying in 30s..."
+            sleep 30
+            if check_vps; then
+              vps_up=true
+            fi
+          fi
+
+          # Ask Render what state the backup is actually in right now,
+          # so we only call suspend/resume when it's actually needed.
+          status=$(curl -fsS \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('suspended','unknown'))")
+
+          echo "VPS reachable: $vps_up | Render backup currently: $status"
+
+          if [ "$vps_up" = "true" ]; then
+            if [ "$status" != "suspended" ]; then
+              echo "VPS is healthy -> suspending Render backup"
+              curl -fsS -X POST \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                "https://api.render.com/v1/services/$RENDER_SERVICE_ID/suspend"
+            else
+              echo "Render backup already suspended, nothing to do"
+            fi
+          else
+            if [ "$status" = "suspended" ]; then
+              echo "VPS is unreachable -> resuming Render backup"
+              curl -fsS -X POST \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                "https://api.render.com/v1/services/$RENDER_SERVICE_ID/resume"
+            else
+              echo "Render backup already running, nothing to do"
+            fi
+          fi
