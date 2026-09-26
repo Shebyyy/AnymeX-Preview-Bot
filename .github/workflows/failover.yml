@@ -18,6 +18,9 @@ jobs:
           VPS_HEALTH_URL: ${{ secrets.VPS_HEALTH_URL }}       # e.g. https://yourdomain.com/health
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }} # e.g. srv-xxxxxxxxxxxx
+          RENDER_HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }} # https://anymex-preview-bot.onrender.com/health
+          UPTIMEROBOT_API_KEY: ${{ secrets.UPTIMEROBOT_API_KEY }}
+          UPTIMEROBOT_MONITOR_ID: ${{ secrets.UPTIMEROBOT_MONITOR_ID }} # 802568730
         run: |
           set -e
 
@@ -53,6 +56,14 @@ jobs:
               curl -fsS -X POST \
                 -H "Authorization: Bearer $RENDER_API_KEY" \
                 "https://api.render.com/v1/services/$RENDER_SERVICE_ID/suspend"
+
+              # Stop UptimeRobot from pinging (and alerting on) a service
+              # we just suspended on purpose.
+              curl -fsS -X POST \
+                -H "Authorization: Bearer $UPTIMEROBOT_API_KEY" \
+                -H "Content-Type: application/json" \
+                "https://api.uptimerobot.com/v3/monitors/$UPTIMEROBOT_MONITOR_ID/pause" \
+                -d '{}' > /dev/null
             else
               echo "Render backup already suspended, nothing to do"
             fi
@@ -62,6 +73,26 @@ jobs:
               curl -fsS -X POST \
                 -H "Authorization: Bearer $RENDER_API_KEY" \
                 "https://api.render.com/v1/services/$RENDER_SERVICE_ID/resume"
+
+              # Resume pinging so UptimeRobot keeps this instance from
+              # idling back to sleep while it's the active bot.
+              curl -fsS -X POST \
+                -H "Authorization: Bearer $UPTIMEROBOT_API_KEY" \
+                -H "Content-Type: application/json" \
+                "https://api.uptimerobot.com/v3/monitors/$UPTIMEROBOT_MONITOR_ID/start" \
+                -d '{}' > /dev/null
+
+              # 202 just means Render accepted the request, not that the
+              # bot is online yet. Poll until it actually responds.
+              echo "Waiting for Render backup to finish booting..."
+              for i in $(seq 1 12); do
+                sleep 10
+                if curl -fsS --max-time 10 "$RENDER_HEALTH_URL" > /dev/null 2>&1; then
+                  echo "Render backup is up after ~$((i * 10))s"
+                  break
+                fi
+                echo "Still booting... ($((i * 10))s elapsed)"
+              done
             else
               echo "Render backup already running, nothing to do"
             fi
