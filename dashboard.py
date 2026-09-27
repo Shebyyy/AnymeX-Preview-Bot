@@ -153,13 +153,43 @@ async def api_me(request: web.Request):
     return web.json_response({"authenticated": True, "user": sess})
 
 
+def _get_oauth_base_url(request: web.Request) -> str:
+    """Return the public base URL for OAuth callbacks, strictly enforcing HTTPS for non-localhost."""
+    raw_base = (OAUTH_BASE_URL or "").strip().rstrip("/")
+    if raw_base:
+        base = raw_base
+    else:
+        host = request.headers.get("X-Forwarded-Host") or request.host
+        proto = request.headers.get("X-Forwarded-Proto")
+        if not proto:
+            proto = "http" if ("localhost" in host or "127.0.0.1" in host) else "https"
+        base = f"{proto}://{host}"
+
+    # Enforce https for all public domains
+    if not ("localhost" in base or "127.0.0.1" in base):
+        if base.startswith("http://"):
+            base = "https://" + base[7:]
+        elif not base.startswith("https://"):
+            base = "https://" + base
+
+    return base
+
+
 async def auth_discord_redirect(request: web.Request):
-    """GET /dashboard/auth/discord — Initiate Discord OAuth2 flow."""
+    """GET /dashboard/auth/discord or /auth/discord — Initiate Discord OAuth2 flow."""
     if not DISCORD_CLIENT_ID:
         return web.HTTPBadRequest(text="DISCORD_CLIENT_ID not configured in environment.")
 
-    base = OAUTH_BASE_URL or f"{request.scheme}://{request.host}"
-    redirect_uri = f"{base}/dashboard/auth/discord/callback"
+    base = _get_oauth_base_url(request)
+    # Check if a custom callback path was requested or if hit via /auth/discord
+    callback_path = request.query.get("callback_path")
+    if not callback_path:
+        if request.path.startswith("/auth"):
+            callback_path = "/auth/callback"
+        else:
+            callback_path = "/dashboard/auth/discord/callback"
+
+    redirect_uri = f"{base}{callback_path}"
     state = secrets.token_hex(16)
 
     params = {
@@ -172,11 +202,12 @@ async def auth_discord_redirect(request: web.Request):
     url = f"https://discord.com/api/oauth2/authorize?{urllib.parse.urlencode(params)}"
     response = web.HTTPFound(url)
     response.set_cookie("oauth_state", state, max_age=300, httponly=True)
+    response.set_cookie("oauth_redirect_uri", redirect_uri, max_age=600, httponly=True)
     return response
 
 
 async def auth_discord_callback(request: web.Request):
-    """GET /dashboard/auth/discord/callback — Discord OAuth2 return handler."""
+    """Discord OAuth2 return handler (supports /dashboard/auth/discord/callback and /auth/callback)."""
     code = request.query.get("code")
     state = request.query.get("state")
     cookie_state = request.cookies.get("oauth_state")
@@ -184,8 +215,11 @@ async def auth_discord_callback(request: web.Request):
     if not code or not state or state != cookie_state:
         return web.HTTPBadRequest(text="Invalid OAuth state or missing code.")
 
-    base = OAUTH_BASE_URL or f"{request.scheme}://{request.host}"
-    redirect_uri = f"{base}/dashboard/auth/discord/callback"
+    # Match redirect_uri precisely: first from cookie, fallback to base + incoming request.path
+    redirect_uri = request.cookies.get("oauth_redirect_uri")
+    if not redirect_uri:
+        base = _get_oauth_base_url(request)
+        redirect_uri = f"{base}{request.path}"
 
     # Exchange code for token
     token_url = "https://discord.com/api/oauth2/token"
@@ -2085,7 +2119,10 @@ def setup(app: web.Application, bot: discord.Client, *,
 
     # Auth
     app.router.add_get("/dashboard/auth/discord", auth_discord_redirect)
+    app.router.add_get("/auth/discord", auth_discord_redirect)
     app.router.add_get("/dashboard/auth/discord/callback", auth_discord_callback)
+    app.router.add_get("/auth/callback", auth_discord_callback)
+    app.router.add_get("/dashboard/auth/callback", auth_discord_callback)
     app.router.add_post("/dashboard/api/login", api_login_passkey)
     app.router.add_post("/dashboard/api/logout", api_logout)
     app.router.add_get("/dashboard/api/me", api_me)

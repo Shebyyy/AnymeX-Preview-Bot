@@ -4578,9 +4578,31 @@ async def start_health_server():
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+
+    # ── Enable Native SSL / HTTPS if certificates are available ────────────────
+    ssl_context = None
+    cert_path = os.environ.get("SSL_CERT_PATH", "/etc/letsencrypt/live/anymex.duckdns.org/fullchain.pem")
+    key_path = os.environ.get("SSL_KEY_PATH", "/etc/letsencrypt/live/anymex.duckdns.org/privkey.pem")
+
+    local_cert = os.path.join(os.path.dirname(__file__), "data", "cert.pem")
+    local_key = os.path.join(os.path.dirname(__file__), "data", "key.pem")
+
+    active_cert = cert_path if os.path.exists(cert_path) else (local_cert if os.path.exists(local_cert) else None)
+    active_key = key_path if os.path.exists(key_path) else (local_key if os.path.exists(local_key) else None)
+
+    if active_cert and active_key:
+        try:
+            import ssl
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(active_cert, active_key)
+            print(f"🔒 Native HTTPS active on port {PORT} ({active_cert})")
+        except Exception as e:
+            print(f"⚠️ Failed to load SSL certificate: {e}")
+
+    site = web.TCPSite(runner, "0.0.0.0", PORT, ssl_context=ssl_context)
     await site.start()
-    print(f"✅ Health server running on port {PORT}")
+    scheme = "https" if ssl_context else "http"
+    print(f"✅ Web server running on {scheme}://0.0.0.0:{PORT}")
 
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
