@@ -1401,6 +1401,7 @@ FILE_MOVIES = "community_movies.json"
 FILE_USERS = "users.json"
 FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
+FILE_CUSTOM_COMMANDS = "custom_commands.json"
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
 FILE_FAQ = "faq.json"
@@ -1467,6 +1468,11 @@ _prefix_cache = ["?"]
 
 async def get_prefix(bot, message):
     return _prefix_cache
+
+
+def _set_prefix_cache(new_prefixes):
+    global _prefix_cache
+    _prefix_cache[:] = list(new_prefixes)
 
 
 bot = commands.Bot(command_prefix=get_prefix, intents=intents, help_command=None)
@@ -4554,6 +4560,22 @@ async def start_health_server():
     app.router.add_post("/api/admins/add",     api_admin_add)
     app.router.add_delete("/api/admins/remove", api_admin_remove)
     app.router.add_post("/api/is_admin",       api_is_admin)
+
+    # ── web dashboard ──────────────────────────────────────────────────────────
+    try:
+        import dashboard
+        dashboard.setup(
+            app,
+            bot,
+            get_prefix_cache_fn=lambda: _prefix_cache,
+            set_prefix_cache_fn=_set_prefix_cache,
+            github_read_fn=github_read_json,
+            github_write_fn=github_write_json,
+            read_admins_fn=read_admins,
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to mount dashboard: {e}")
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -4588,7 +4610,7 @@ async def github_read_json(session: aiohttp.ClientSession, filepath: str, *, rep
                 FILE_SERVER_CFG,
                 FILE_VOTES,
             )
-            list_files = (FILE_ANIME, FILE_MANGA, FILE_SHOWS, FILE_MOVIES)
+            list_files = (FILE_ANIME, FILE_MANGA, FILE_SHOWS, FILE_MOVIES, FILE_CUSTOM_COMMANDS)
             if filepath in dict_files:
                 default = {}
             elif filepath == FILE_PREFIXES:
@@ -6048,6 +6070,7 @@ async def ensure_json_files():
         FILE_SHOWS: [],
         FILE_MOVIES: [],
         FILE_PREFIXES: DEFAULT_PREFIXES[:],
+        FILE_CUSTOM_COMMANDS: [],
         FILE_SERVER_CFG: {},
         FILE_VOTES: {},
     }
@@ -10608,6 +10631,8 @@ async def on_message(message: discord.Message):
     # NOTE: source_trigger.setup() also registers its own on_message listener,
     # so no direct call needed here either.
 
+    await bot.process_commands(message)
+
 
 
 # /sheby_build  — trigger sheby_alpha_manual.yml (clones Shebyyy/AnymeX)
@@ -11064,6 +11089,18 @@ async def main():
         desk_sync.setup(bot)
     except Exception as e:
         print(f"⚠️ Failed to load desk_sync: {e}")
+
+    try:
+        import custom_triggers
+        custom_triggers.setup(
+            bot,
+            get_prefixes_fn=lambda: _prefix_cache,
+            github_read_fn=github_read_json,
+            github_write_fn=github_write_json,
+            is_admin_fn=is_admin,
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to load custom_triggers: {e}")
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call

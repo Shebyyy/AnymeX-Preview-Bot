@@ -14,6 +14,8 @@ COPY trap_trigger.py .
 COPY faq_trigger.py .
 COPY rules_trigger.py .
 COPY desk_sync.py .
+COPY custom_triggers.py .
+COPY dashboard.py .
 
 EXPOSE 8080
 
