@@ -5,8 +5,8 @@
 # Uses AI (Pollinations, free, no key) to READ each message and decide which
 # AnymeX guide link to send:
 #
-#   setup    → https://anymex-extensions.vercel.app/guide
-#   download → https://anymex-extensions.vercel.app/download-guide
+#   setup    → https://anymex-guide.vercel.app/guides
+#   download → https://anymex-guide.vercel.app/download-guide
 #   both     → send both links
 #   none     → stay silent
 #
@@ -31,8 +31,8 @@ import discord
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
-GUIDE_URL        = "https://anymex-extensions.vercel.app/guide"
-DOWNLOAD_URL     = "https://anymex-extensions.vercel.app/download-guide"
+GUIDE_URL        = "https://anymex-guide.vercel.app/guides"
+DOWNLOAD_URL     = "https://anymex-guide.vercel.app/download-guide"
 
 # Only reply in this channel (set to None to reply everywhere)
 ALLOWED_CHANNEL_ID = 1497202485469773947  # #support/help (new server)
@@ -90,7 +90,7 @@ AI_PROMPT = """You are a helpful assistant for the AnymeX anime/manga app commun
 AnymeX has exactly TWO guides. Your job is to read a user's message and decide which guide link to send them.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📖 SETUP GUIDE  →  https://anymex-extensions.vercel.app/guide
+📖 SETUP GUIDE  →  https://anymex-guide.vercel.app/guides
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Covers:
 - How to install the AnymeX app (Android, iOS, Windows, macOS, Linux)
@@ -108,7 +108,7 @@ Reply "setup" when someone is:
 - Asking how to watch or read anime/manga in AnymeX (general use)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📥 DOWNLOAD GUIDE  →  https://anymex-extensions.vercel.app/download-guide
+📥 DOWNLOAD GUIDE  →  https://anymex-guide.vercel.app/download-guide
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Covers:
 - How to DOWNLOAD anime & manga for offline use
