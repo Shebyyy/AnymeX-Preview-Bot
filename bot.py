@@ -4578,9 +4578,25 @@ async def start_health_server():
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+
+    # ── Enable Native SSL / HTTPS if certificates are available ────────────────
+    ssl_context = None
+    cert_path = os.path.join(os.path.dirname(__file__), "data", "cert.pem")
+    key_path = os.path.join(os.path.dirname(__file__), "data", "key.pem")
+
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        try:
+            import ssl
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(cert_path, key_path)
+            print(f"🔒 Native HTTPS active on port {PORT} using Let's Encrypt cert")
+        except Exception as e:
+            print(f"⚠️ Failed to load SSL certificate: {e}")
+
+    site = web.TCPSite(runner, "0.0.0.0", PORT, ssl_context=ssl_context)
     await site.start()
-    print(f"✅ Web server running on http://0.0.0.0:{PORT}")
+    scheme = "https" if ssl_context else "http"
+    print(f"✅ Web server running on {scheme}://0.0.0.0:{PORT}")
 
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
