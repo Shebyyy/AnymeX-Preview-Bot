@@ -154,25 +154,12 @@ async def api_me(request: web.Request):
 
 
 def _get_oauth_base_url(request: web.Request) -> str:
-    """Return the public base URL for OAuth callbacks, strictly enforcing HTTPS for non-localhost."""
-    raw_base = (OAUTH_BASE_URL or "").strip().rstrip("/")
-    if raw_base:
-        base = raw_base
-    else:
-        host = request.headers.get("X-Forwarded-Host") or request.host
-        proto = request.headers.get("X-Forwarded-Proto")
-        if not proto:
-            proto = "http" if ("localhost" in host or "127.0.0.1" in host) else "https"
-        base = f"{proto}://{host}"
-
-    # Enforce https for all public domains
-    if not ("localhost" in base or "127.0.0.1" in base):
-        if base.startswith("http://"):
-            base = "https://" + base[7:]
-        elif not base.startswith("https://"):
-            base = "https://" + base
-
-    return base
+    """Return the public base URL for OAuth callbacks."""
+    if OAUTH_BASE_URL:
+        return OAUTH_BASE_URL.strip().rstrip("/")
+    host = request.headers.get("X-Forwarded-Host") or request.host
+    proto = request.headers.get("X-Forwarded-Proto") or request.scheme
+    return f"{proto}://{host}"
 
 
 async def auth_discord_redirect(request: web.Request):

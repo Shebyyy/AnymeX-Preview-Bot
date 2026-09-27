@@ -4578,95 +4578,9 @@ async def start_health_server():
 
     runner = web.AppRunner(app)
     await runner.setup()
-
-    # ── Enable Native SSL / HTTPS (auto-generates cert if none found) ───────────
-    def _auto_generate_ssl():
-        cert_dir = os.path.join(os.path.dirname(__file__), "data")
-        os.makedirs(cert_dir, exist_ok=True)
-        c_path = os.path.join(cert_dir, "cert.pem")
-        k_path = os.path.join(cert_dir, "key.pem")
-        if os.path.exists(c_path) and os.path.exists(k_path):
-            return c_path, k_path
-        try:
-            from cryptography import x509
-            from cryptography.x509.oid import NameOID
-            from cryptography.hazmat.primitives import hashes
-            from cryptography.hazmat.primitives.asymmetric import rsa
-            from cryptography.hazmat.primitives import serialization
-            import datetime
-
-            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "anymex.duckdns.org"),
-            ])
-            now = datetime.datetime.now(datetime.timezone.utc)
-            cert = (
-                x509.CertificateBuilder()
-                .subject_name(subject)
-                .issuer_name(issuer)
-                .public_key(key.public_key())
-                .serial_number(x509.random_serial_number())
-                .not_valid_before(now - datetime.timedelta(days=1))
-                .not_valid_after(now + datetime.timedelta(days=3650))
-                .add_extension(
-                    x509.SubjectAlternativeName([
-                        x509.DNSName("anymex.duckdns.org"),
-                        x509.DNSName("localhost"),
-                    ]),
-                    critical=False,
-                )
-                .sign(key, hashes.SHA256())
-            )
-            with open(k_path, "wb") as f:
-                f.write(key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.TraditionalOpenSSL,
-                    encryption_algorithm=serialization.NoEncryption(),
-                ))
-            with open(c_path, "wb") as f:
-                f.write(cert.public_bytes(serialization.Encoding.PEM))
-            print("🔒 Auto-generated SSL certificate for HTTPS")
-            return c_path, k_path
-        except Exception:
-            import subprocess
-            try:
-                subprocess.run([
-                    "openssl", "req", "-x509", "-newkey", "rsa:2048",
-                    "-keyout", k_path, "-out", c_path,
-                    "-days", "3650", "-nodes",
-                    "-subj", "/CN=anymex.duckdns.org"
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print("🔒 Auto-generated SSL certificate via openssl")
-                return c_path, k_path
-            except Exception:
-                return None, None
-
-    ssl_context = None
-    cert_path = os.environ.get("SSL_CERT_PATH", "/etc/letsencrypt/live/anymex.duckdns.org/fullchain.pem")
-    key_path = os.environ.get("SSL_KEY_PATH", "/etc/letsencrypt/live/anymex.duckdns.org/privkey.pem")
-
-    local_cert = os.path.join(os.path.dirname(__file__), "data", "cert.pem")
-    local_key = os.path.join(os.path.dirname(__file__), "data", "key.pem")
-
-    active_cert = cert_path if os.path.exists(cert_path) else (local_cert if os.path.exists(local_cert) else None)
-    active_key = key_path if os.path.exists(key_path) else (local_key if os.path.exists(local_key) else None)
-
-    if not (active_cert and active_key):
-        active_cert, active_key = _auto_generate_ssl()
-
-    if active_cert and active_key:
-        try:
-            import ssl
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(active_cert, active_key)
-            print(f"🔒 Native HTTPS active on port {PORT} ({active_cert})")
-        except Exception as e:
-            print(f"⚠️ Failed to load SSL certificate: {e}")
-
-    site = web.TCPSite(runner, "0.0.0.0", PORT, ssl_context=ssl_context)
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    scheme = "https" if ssl_context else "http"
-    print(f"✅ Web server running on {scheme}://0.0.0.0:{PORT}")
+    print(f"✅ Web server running on http://0.0.0.0:{PORT}")
 
 
 # ── GitHub helpers ─────────────────────────────────────────────────────────────
