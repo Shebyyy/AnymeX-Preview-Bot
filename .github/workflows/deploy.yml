@@ -98,9 +98,8 @@ jobs:
             cert_src="/var/lib/docker/volumes/supabase_caddy_data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/anymex.duckdns.org/anymex.duckdns.org.crt"
             key_src="/var/lib/docker/volumes/supabase_caddy_data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/anymex.duckdns.org/anymex.duckdns.org.key"
             if [ -f "$cert_src" ] && [ -f "$key_src" ]; then
-              mkdir -p /root/AnymeX-Preview-Bot/data
-              cp "$cert_src" /root/AnymeX-Preview-Bot/data/cert.pem
-              cp "$key_src" /root/AnymeX-Preview-Bot/data/key.pem
+              cp "$cert_src" /root/bot_data/cert.pem
+              cp "$key_src" /root/bot_data/key.pem
             fi
             systemctl daemon-reload
             systemctl enable anymex-bot

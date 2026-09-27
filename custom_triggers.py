@@ -21,7 +21,14 @@ import discord
 from typing import Optional, Callable, Dict, Any, List
 
 FILE_CUSTOM_COMMANDS = "custom_commands.json"
-LOCAL_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+_bot_data_env = os.environ.get("BOT_DATA_DIR", "")
+if _bot_data_env and os.path.isdir(_bot_data_env):
+    LOCAL_DATA_DIR = _bot_data_env
+elif os.path.isdir("/root/bot_data"):
+    LOCAL_DATA_DIR = "/root/bot_data"
+else:
+    LOCAL_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
 LOCAL_BACKUPS_DIR = os.path.join(LOCAL_DATA_DIR, "backups")
 LOCAL_COMMANDS_PATH = os.path.join(LOCAL_DATA_DIR, FILE_CUSTOM_COMMANDS)
 

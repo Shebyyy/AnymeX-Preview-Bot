@@ -4581,15 +4581,27 @@ async def start_health_server():
 
     # ── Enable Native SSL / HTTPS if certificates are available ────────────────
     ssl_context = None
-    cert_path = os.path.join(os.path.dirname(__file__), "data", "cert.pem")
-    key_path = os.path.join(os.path.dirname(__file__), "data", "key.pem")
+    caddy_crt = "/var/lib/docker/volumes/supabase_caddy_data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/anymex.duckdns.org/anymex.duckdns.org.crt"
+    caddy_key = "/var/lib/docker/volumes/supabase_caddy_data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/anymex.duckdns.org/anymex.duckdns.org.key"
+    bot_data_crt = "/root/bot_data/cert.pem"
+    bot_data_key = "/root/bot_data/key.pem"
+    local_crt = os.path.join(os.path.dirname(__file__), "data", "cert.pem")
+    local_key = os.path.join(os.path.dirname(__file__), "data", "key.pem")
 
-    if os.path.exists(cert_path) and os.path.exists(key_path):
+    cert_path, key_path = None, None
+    if os.path.exists(caddy_crt) and os.path.exists(caddy_key):
+        cert_path, key_path = caddy_crt, caddy_key
+    elif os.path.exists(bot_data_crt) and os.path.exists(bot_data_key):
+        cert_path, key_path = bot_data_crt, bot_data_key
+    elif os.path.exists(local_crt) and os.path.exists(local_key):
+        cert_path, key_path = local_crt, local_key
+
+    if cert_path and key_path:
         try:
             import ssl
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(cert_path, key_path)
-            print(f"🔒 Native HTTPS active on port {PORT} using Let's Encrypt cert")
+            print(f"🔒 Native HTTPS active on port {PORT} using cert ({cert_path})")
         except Exception as e:
             print(f"⚠️ Failed to load SSL certificate: {e}")
 
