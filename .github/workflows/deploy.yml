@@ -100,3 +100,48 @@ jobs:
             systemctl restart anymex-bot
             sleep 3
             systemctl status anymex-bot --no-pager -l
+
+            # ── Auto-configure Caddy HTTPS proxy for Dashboard & Auth ─────────
+            echo "Checking Caddy configuration for HTTPS reverse proxy..."
+            CADDY_CONFIG=""
+            for p in /etc/caddy/Caddyfile /root/Caddyfile /root/supabase/docker/Caddyfile /etc/caddy/caddy.conf; do
+              if [ -f "$p" ]; then
+                CADDY_CONFIG="$p"
+                break
+              fi
+            done
+
+            if [ -n "$CADDY_CONFIG" ]; then
+              if ! grep -q "localhost:8081" "$CADDY_CONFIG"; then
+                echo "Adding /dashboard and /auth reverse proxy to $CADDY_CONFIG..."
+                python3 -c "
+path = '$CADDY_CONFIG'
+with open(path, 'r') as f:
+    lines = f.readlines()
+proxy_block = '''
+    # AnymeX Preview Bot Dashboard & Discord Auth Proxy
+    handle /dashboard* {
+        reverse_proxy localhost:8081
+    }
+    handle /auth* {
+        reverse_proxy localhost:8081
+    }
+'''
+for i, line in enumerate(lines):
+    if 'anymex.duckdns.org' in line:
+        lines.insert(i + 1, proxy_block)
+        break
+else:
+    lines.append(proxy_block)
+with open(path, 'w') as f:
+    f.writelines(lines)
+"
+                systemctl reload caddy 2>/dev/null || caddy reload --config "$CADDY_CONFIG" 2>/dev/null || docker compose -f /root/supabase/docker/docker-compose.yml restart caddy 2>/dev/null || true
+                echo "✅ Caddy successfully configured with HTTPS proxy for Dashboard!"
+              else
+                echo "✅ Caddy already configured for localhost:8081"
+              fi
+            else
+              echo "ℹ️ Caddyfile not found at standard paths"
+            fi
+
