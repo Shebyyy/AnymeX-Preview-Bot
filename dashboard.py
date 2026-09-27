@@ -155,10 +155,15 @@ async def api_me(request: web.Request):
 
 def _get_oauth_base_url(request: web.Request) -> str:
     """Return the public base URL for OAuth callbacks."""
+    proto = request.headers.get("X-Forwarded-Proto") or request.scheme
+    host = request.headers.get("X-Forwarded-Host") or request.host
+
+    # If accessed through HTTPS proxy (port 443) or no custom port in host, use that directly
+    if proto == "https" or (host and ":8081" not in host):
+        return f"{proto}://{host}"
+
     if OAUTH_BASE_URL:
         return OAUTH_BASE_URL.strip().rstrip("/")
-    host = request.headers.get("X-Forwarded-Host") or request.host
-    proto = request.headers.get("X-Forwarded-Proto") or request.scheme
     return f"{proto}://{host}"
 
 
