@@ -8177,6 +8177,109 @@ async def prefix_help(ctx, command_name: str = None):
     await ctx.send(embed=embed)
 
 
+# ── ?commands / ?cmds / ?cmd ──────────────────────────────────────────────────
+
+
+@bot.command(name="commands", aliases=["cmds", "cmd"])
+async def prefix_commands(ctx, command_name: str = None):
+    prefixes = _prefix_cache
+    p = prefixes[0] if prefixes else "?"
+
+    if command_name:
+        cmd_query = command_name.lower().strip()
+        help_map = {
+            "commands": f"`{p}commands` (aliases: `{p}cmds`, `{p}cmd`)\nList all available prefix commands, triggers, and active prefixes.",
+            "cmds": f"`{p}commands`\nList all available prefix commands.",
+            "cmd": f"`{p}commands`\nList all available prefix commands.",
+            "setprefix": f"`{p}setprefix add <prefix>` - Add a prefix\n`{p}setprefix remove <prefix>` - Remove a prefix\n`{p}setprefix list` - Show active prefixes\n*(Admin only)*",
+            "faq": f"`{p}<number>` or `!faq<number>`\nDisplay FAQ item by number (e.g. `{p}1`). Supports reply tagging.",
+            "rule": f"`!rule<number>` or `!r<number>`\nDisplay server rule item by number (e.g. `!rule1`). Supports reply tagging.",
+            "rules": f"`!rule<number>` or `!r<number>`\nDisplay server rule item by number.",
+            "hi": f"`!hi` or `!single`\nPlayful greeting trigger response when replying to a user message."
+        }
+
+        # Check if in custom commands from dashboard
+        try:
+            import custom_triggers
+            for c in custom_triggers.get_commands():
+                c_name = c.get("name", "").lower()
+                c_aliases = [str(a).lower() for a in c.get("aliases", [])]
+                if cmd_query == c_name or cmd_query in c_aliases:
+                    c_desc = ""
+                    embed_cfg = c.get("embed", {})
+                    if isinstance(embed_cfg, dict):
+                        c_desc = embed_cfg.get("description") or embed_cfg.get("title", "")
+                    if not c_desc:
+                        c_desc = c.get("description", "Custom command response embed")
+                    alias_str = f" (aliases: {', '.join([f'`{p}{a}`' for a in c_aliases])})" if c_aliases else ""
+                    help_map[cmd_query] = f"`{p}{c_name}`{alias_str}\n{c_desc}"
+                    break
+        except Exception:
+            pass
+
+        info = help_map.get(cmd_query)
+        if info:
+            embed = discord.Embed(
+                title=f"Command Details: {command_name}",
+                description=info,
+                color=0x0066FF
+            )
+        else:
+            embed = discord.Embed(
+                title="Unknown Command",
+                description=f"No information found for `{command_name}`. Type `{p}commands` to view all available prefix commands.",
+                color=0xDA3633
+            )
+        await ctx.send(embed=embed)
+        return
+
+    embed = discord.Embed(
+        title="AnymeX Preview Bot - Prefix Commands",
+        description=f"Active Prefixes: `{'`, `'.join(prefixes)}`\nType `{p}commands <name>` for details on any command.",
+        color=0x0066FF
+    )
+
+    core_info = (
+        f"`{p}commands` / `{p}cmds` / `{p}cmd` - List all prefix commands\n"
+        f"`{p}setprefix [add|remove|list]` - Manage bot prefixes (Admin)"
+    )
+    embed.add_field(name="Core Commands", value=core_info, inline=False)
+
+    triggers_info = (
+        f"`{p}<1-12>` or `!faq<1-12>` - Show FAQ entry\n"
+        f"`!rule<1-10>` - Show server rule entry\n"
+        f"`!hi` / `!single` - Trigger response"
+    )
+    embed.add_field(name="Built-in Triggers", value=triggers_info, inline=False)
+
+    # Dynamic custom commands from dashboard
+    try:
+        import custom_triggers
+        custom_cmds = custom_triggers.get_commands()
+        active_custom = [c for c in custom_cmds if c.get("enabled", True)]
+        if active_custom:
+            lines = []
+            for c in active_custom[:20]:
+                c_name = c.get("name", "").strip()
+                c_aliases = [f"`{p}{a}`" for a in c.get("aliases", []) if a]
+                alias_str = f" ({', '.join(c_aliases)})" if c_aliases else ""
+                c_desc = ""
+                embed_cfg = c.get("embed", {})
+                if isinstance(embed_cfg, dict):
+                    c_desc = embed_cfg.get("title") or embed_cfg.get("description", "")
+                if not c_desc:
+                    c_desc = c.get("description", "Custom command")
+                if len(c_desc) > 60:
+                    c_desc = c_desc[:57] + "..."
+                lines.append(f"`{p}{c_name}`{alias_str} - {c_desc}")
+            embed.add_field(name="Custom Dashboard Commands", value="\n".join(lines), inline=False)
+    except Exception:
+        pass
+
+    embed.set_footer(text="For general slash commands, type / or use ?help")
+    await ctx.send(embed=embed)
+
+
 # ── ?setprefix ────────────────────────────────────────────────────────────────
 
 

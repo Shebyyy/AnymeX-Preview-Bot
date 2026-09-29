@@ -278,12 +278,80 @@ async def auth_discord_callback(request: web.Request):
 # ══════════════════════════════════════════════════════════════════════════════
 # Custom Commands & Prefixes API
 # ══════════════════════════════════════════════════════════════════════════════
+# Custom Commands & Triggers Management API
+# ══════════════════════════════════════════════════════════════════════════════
+
+BUILTIN_COMMANDS = [
+    {
+        "name": "commands",
+        "aliases": ["cmds", "cmd"],
+        "description": "Show all available prefix commands, custom triggers, and active prefixes.",
+        "category": "Core",
+        "trigger_display": "{p}commands"
+    },
+    {
+        "name": "help",
+        "aliases": [],
+        "description": "Show general bot overview and slash command directory.",
+        "category": "Core",
+        "trigger_display": "{p}help"
+    },
+    {
+        "name": "setprefix",
+        "aliases": [],
+        "description": "Manage bot command prefixes (add, remove, list). Administrator only.",
+        "category": "Admin",
+        "trigger_display": "{p}setprefix [add|remove|list]"
+    },
+    {
+        "name": "1-12",
+        "aliases": ["faq1-12", "log1-12"],
+        "description": "Display FAQ item by number. Can be used in reply to a user.",
+        "category": "Info",
+        "trigger_display": "{p}<num> or !faq<num>"
+    },
+    {
+        "name": "rule1-10",
+        "aliases": ["r1-10"],
+        "description": "Display server rule item by number. Can be used in reply to a user.",
+        "category": "Info",
+        "trigger_display": "!rule<num>"
+    },
+    {
+        "name": "hi",
+        "aliases": ["single"],
+        "description": "Playful greeting trigger response.",
+        "category": "Fun",
+        "trigger_display": "!hi or !single"
+    }
+]
+
+RESERVED_COMMAND_NAMES = {
+    "commands", "cmds", "cmd", "help", "prefix", "prefixes",
+    "setprefix", "hi", "single", "faq", "log", "rule", "r"
+}
+
+
+def is_reserved_name(name: str) -> bool:
+    clean = name.strip().lower()
+    if clean in RESERVED_COMMAND_NAMES:
+        return True
+    if clean.isdigit():
+        return True
+    if re.match(r"^(?:faq|log|rule|r)\d+$", clean):
+        return True
+    return False
+
 
 async def api_get_commands(request: web.Request):
-    """GET /dashboard/api/commands — Return all custom commands."""
+    """GET /dashboard/api/commands — Return all custom commands and builtin commands."""
     _require_auth(request)
     cmds = custom_triggers.get_commands()
-    return web.json_response({"success": True, "commands": cmds})
+    return web.json_response({
+        "success": True,
+        "commands": cmds,
+        "builtin_commands": BUILTIN_COMMANDS
+    })
 
 
 async def api_save_command(request: web.Request):
@@ -303,16 +371,46 @@ async def api_save_command(request: web.Request):
     cmd_id = str(body.get("id", "")).strip() or f"cmd_{name}_{int(time.time())}"
     current_cmds = custom_triggers.get_commands()
 
-    # Check for name collision with other commands
+    # Clean and deduplicate aliases
+    aliases = []
+    for a in body.get("aliases", []):
+        a_clean = str(a).strip().lower()
+        if not a_clean:
+            continue
+        if " " in a_clean:
+            return web.json_response({"error": f"Alias '{a_clean}' cannot contain spaces"}, status=400)
+        if a_clean != name and a_clean not in aliases:
+            aliases.append(a_clean)
+
+    # 1. Check against reserved built-in command names and patterns
+    if is_reserved_name(name):
+        return web.json_response({"error": f"Trigger '{name}' is reserved by a built-in bot command"}, status=409)
+
+    for a in aliases:
+        if is_reserved_name(a):
+            return web.json_response({"error": f"Alias '{a}' is reserved by a built-in bot command"}, status=409)
+
+    # 2. Check for collision with other custom commands and aliases
+    all_new_triggers = [name] + aliases
     for c in current_cmds:
-        if c.get("id") != cmd_id and c.get("name", "").lower() == name:
-            return web.json_response({"error": f"A command with trigger '{name}' already exists"}, status=409)
+        if c.get("id") == cmd_id:
+            continue
+        c_name = str(c.get("name", "")).strip().lower()
+        c_aliases = [str(x).strip().lower() for x in c.get("aliases", []) if str(x).strip()]
+        c_all = [c_name] + c_aliases
+
+        overlap = set(all_new_triggers) & set(c_all)
+        if overlap:
+            collided = sorted(list(overlap))[0]
+            return web.json_response({
+                "error": f"Trigger or alias '{collided}' is already used by custom command '{c_name}'"
+            }, status=409)
 
     embed_data = body.get("embed") or {}
     updated_cmd = {
         "id": cmd_id,
         "name": name,
-        "aliases": [str(a).strip().lower() for a in body.get("aliases", []) if str(a).strip()],
+        "aliases": aliases,
         "description": str(body.get("description", "")).strip(),
         "enabled": bool(body.get("enabled", True)),
         "prefix_required": bool(body.get("prefix_required", True)),
@@ -520,6 +618,8 @@ def _dashboard_page_html() -> str:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AnymeX Bot — Command & Embed Dashboard</title>
+  <link rel="icon" type="image/gif" href="/favicon.gif">
+  <link rel="shortcut icon" type="image/gif" href="/favicon.gif">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -555,6 +655,7 @@ def _dashboard_page_html() -> str:
       color: var(--text-main);
       font-family: var(--font-ui);
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       line-height: 1.5;
@@ -1256,7 +1357,9 @@ def _dashboard_page_html() -> str:
   <!-- Top Navigation -->
   <header>
     <div class="brand-wrap">
-      <div class="brand-logo">A</div>
+      <div class="brand-logo" style="overflow: hidden; padding: 0; display: flex; align-items: center; justify-content: center;">
+        <img src="/favicon.gif" alt="AnymeX" style="width: 100%; height: 100%; object-fit: cover; border-radius: 8px;">
+      </div>
       <div>
         <span class="brand-title">AnymeX Preview</span>
         <span class="brand-badge">Bot Dashboard</span>
@@ -1300,13 +1403,37 @@ def _dashboard_page_html() -> str:
     <section id="view-commands" class="view-content active">
       <div class="section-header">
         <div>
-          <h2 class="section-title">Trigger Commands</h2>
-          <p class="section-subtitle">Commands triggered by prefix (e.g. ?nob) or keyword, with auto-delete and reply targeting.</p>
+          <h2 class="section-title">Commands & Triggers</h2>
+          <p class="section-subtitle">Manage dynamic custom commands and view built-in bot triggers.</p>
         </div>
       </div>
 
-      <div class="commands-grid" id="commands-container">
-        <!-- Rendered via JS -->
+      <!-- Built-in Commands Section (Read-only) -->
+      <div style="margin-bottom: 32px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 700; color: var(--text-main); margin: 0 0 2px 0;">Built-in Bot Commands</h3>
+            <p style="font-size: 12px; color: var(--text-subtle); margin: 0;">Hardcoded triggers built into the bot (Read-only, cannot be overwritten)</p>
+          </div>
+          <span style="font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3);">Protected</span>
+        </div>
+        <div class="commands-grid" id="builtin-commands-container">
+          <!-- Rendered via JS -->
+        </div>
+      </div>
+
+      <!-- Custom Commands Section -->
+      <div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 700; color: var(--text-main); margin: 0 0 2px 0;">Custom Dashboard Commands</h3>
+            <p style="font-size: 12px; color: var(--text-subtle); margin: 0;">Dynamic custom embeds and keyword triggers</p>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openCommandModal()">+ New Command</button>
+        </div>
+        <div class="commands-grid" id="commands-container">
+          <!-- Rendered via JS -->
+        </div>
       </div>
     </section>
 
@@ -1490,7 +1617,7 @@ def _dashboard_page_html() -> str:
 
           <div class="discord-message">
             <div class="discord-avatar">
-              <img src="https://raw.githubusercontent.com/Shebyyy/AnymeX-Preview/beta/assets/logo.png" onerror="this.src=''">
+              <img src="https://raw.githubusercontent.com/Shebyyy/AnymeX-Preview/beta/assets/logo.png" onerror="this.onerror=null; this.style.display='none';">
             </div>
             <div class="discord-content">
               <div class="discord-meta">
@@ -1502,13 +1629,13 @@ def _dashboard_page_html() -> str:
               <!-- Embed Card -->
               <div class="discord-embed" id="preview-embed">
                 <div class="d-author" id="p-author" style="display:none;">
-                  <img id="p-author-icon" src="" style="display:none;">
+                  <img id="p-author-icon" style="display:none;">
                   <span id="p-author-name"></span>
                 </div>
                 <a class="d-title" id="p-title" href="#" target="_blank" style="display:none;"></a>
                 <div class="d-desc" id="p-desc"></div>
                 <div class="d-fields" id="p-fields" style="display:none;"></div>
-                <img class="d-image" id="p-image" src="">
+                <img class="d-image" id="p-image" style="display:none;">
                 <div class="d-footer" id="p-footer" style="display:none;">
                   <span id="p-footer-text"></span>
                 </div>
@@ -1525,6 +1652,7 @@ def _dashboard_page_html() -> str:
 
   <script>
     let activeCommands = [];
+    let builtinCommands = [];
     let activePrefixes = [];
     let currentColor = '#5865F2';
 
@@ -1549,11 +1677,45 @@ def _dashboard_page_html() -> str:
         const data = await res.json();
         if (data.success) {
           activeCommands = data.commands;
+          builtinCommands = data.builtin_commands || [];
+          renderBuiltinCommands();
           renderCommands();
         }
       } catch(e) {
         showToast('Failed to load commands', true);
       }
+    }
+
+    function renderBuiltinCommands() {
+      const c = document.getElementById('builtin-commands-container');
+      if (!c) return;
+      const p = activePrefixes[0] || '?';
+      c.innerHTML = builtinCommands.map(cmd => {
+        const triggerDisplay = (cmd.trigger_display || cmd.name).replace(/{p}/g, p);
+        const aliasesHtml = (cmd.aliases || []).map(a => `<span class="alias-pill">${a}</span>`).join('');
+        return `
+          <div class="command-card" style="border-left: 3px solid #6366f1;">
+            <div class="card-top">
+              <div>
+                <span class="trigger-badge" style="background: rgba(99, 102, 241, 0.15); color: #818cf8;">${escapeHtml(triggerDisplay)}</span>
+                <div class="aliases-list">${aliasesHtml}</div>
+              </div>
+              <div>
+                <span class="feature-badge" style="background: rgba(99, 102, 241, 0.1); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3);">Built-in</span>
+              </div>
+            </div>
+
+            <div style="font-size: 13px; color: var(--text-muted); margin: 10px 0; line-height: 1.5;">
+              ${escapeHtml(cmd.description || '')}
+            </div>
+
+            <div class="card-footer">
+              <span style="font-size: 11px; color: var(--text-subtle);">Category: ${escapeHtml(cmd.category || 'Core')}</span>
+              <span style="font-size: 11px; color: #a5b4fc;">Protected</span>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
     async function fetchPrefixes() {
@@ -1563,6 +1725,8 @@ def _dashboard_page_html() -> str:
         if (data.success) {
           activePrefixes = data.prefixes;
           renderPrefixes();
+          renderBuiltinCommands();
+          renderCommands();
         }
       } catch(e) {}
     }
@@ -1909,6 +2073,8 @@ def _login_page_html() -> str:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Login — AnymeX Preview Bot Dashboard</title>
+  <link rel="icon" type="image/gif" href="/favicon.gif">
+  <link rel="shortcut icon" type="image/gif" href="/favicon.gif">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
@@ -1919,6 +2085,7 @@ def _login_page_html() -> str:
       color: #f8fafc;
       font-family: 'Inter', sans-serif;
       min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -2025,7 +2192,9 @@ def _login_page_html() -> str:
 </head>
 <body>
   <div class="login-card">
-    <div class="logo-badge">A</div>
+    <div class="logo-badge" style="overflow: hidden; padding: 0; display: inline-flex; align-items: center; justify-content: center;">
+      <img src="/favicon.gif" alt="AnymeX" style="width: 100%; height: 100%; object-fit: cover; border-radius: 12px;">
+    </div>
     <h1>AnymeX Bot Dashboard</h1>
     <p>Sign in to manage custom commands, responses, and bot prefixes.</p>
 
@@ -2108,6 +2277,15 @@ def setup(app: web.Application, bot: discord.Client, *,
     app.router.add_get("/dashboard", _handle_dashboard)
     app.router.add_get("/dashboard/", _handle_dashboard)
     app.router.add_get("/dashboard/login", _handle_login)
+
+    # Favicon routes (animated favicon.gif)
+    favicon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "favicon.gif")
+    async def _handle_favicon(request: web.Request):
+        if os.path.exists(favicon_path):
+            return web.FileResponse(favicon_path, headers={"Content-Type": "image/gif", "Cache-Control": "public, max-age=86400"})
+        return web.Response(status=204)
+    app.router.add_get("/favicon.gif", _handle_favicon)
+    app.router.add_get("/favicon.ico", _handle_favicon)
 
     # Auth
     app.router.add_get("/dashboard/auth/discord", auth_discord_redirect)
