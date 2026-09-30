@@ -10,6 +10,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
+import re
 import json
 import time
 import hmac
@@ -22,6 +23,8 @@ import discord
 from typing import Optional, Dict, Any, List
 
 import custom_triggers
+
+_START_TIME = time.time()
 
 # Environment & Auth Config
 API_SECRET = os.environ.get("API_SECRET", "")
@@ -341,6 +344,60 @@ def is_reserved_name(name: str) -> bool:
     if re.match(r"^(?:faq|log|rule|r)\d+$", clean):
         return True
     return False
+ 
+
+async def api_get_stats(request: web.Request):
+    """GET /dashboard/api/stats — Return real-time bot metrics & sync health."""
+    _require_auth(request)
+    latency = 0.0
+    if _bot and hasattr(_bot, "latency") and _bot.latency is not None:
+        try:
+            latency = round(_bot.latency * 1000, 1)
+        except Exception:
+            latency = 0.0
+
+    guilds_count = len(_bot.guilds) if _bot else 0
+    users_count = 0
+    if _bot:
+        try:
+            users_count = sum((g.member_count or 0) for g in _bot.guilds)
+        except Exception:
+            pass
+
+    uptime_sec = int(time.time() - _START_TIME)
+    cmds = custom_triggers.get_commands()
+    backups = custom_triggers.get_backups()
+    prefixes = ["?"]
+    if _get_prefix_cache_fn:
+        try:
+            prefixes = list(_get_prefix_cache_fn())
+        except Exception:
+            pass
+
+    bot_avatar = None
+    bot_name = "AnymeX Preview"
+    if _bot and _bot.user:
+        bot_name = _bot.user.name
+        try:
+            bot_avatar = str(_bot.user.display_avatar.url)
+        except Exception:
+            bot_avatar = None
+
+    return web.json_response({
+        "success": True,
+        "bot_online": _bot.is_ready() if _bot else False,
+        "bot_name": bot_name,
+        "bot_avatar": bot_avatar,
+        "latency_ms": latency,
+        "guilds": guilds_count,
+        "users": users_count,
+        "uptime_seconds": uptime_sec,
+        "custom_commands_count": len(cmds),
+        "builtin_commands_count": len(BUILTIN_COMMANDS),
+        "prefixes": prefixes,
+        "backups_count": len(backups),
+        "github_configured": bool(os.environ.get("GITHUB_TOKEN"))
+    })
 
 
 async def api_get_commands(request: web.Request):
@@ -616,56 +673,59 @@ def _dashboard_page_html() -> str:
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>AnymeX Bot — Command & Embed Dashboard</title>
   <link rel="icon" type="image/gif" href="/favicon.gif">
   <link rel="shortcut icon" type="image/gif" href="/favicon.gif">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-base: #080b11;
-      --bg-surface: #0e1422;
-      --bg-elevated: #141c30;
-      --bg-hover: #1c2742;
+      --bg-base: #07090e;
+      --bg-surface: #0e131f;
+      --bg-elevated: #151d30;
+      --bg-hover: #1e2842;
       --border-subtle: #1e293b;
       --border-strong: #334155;
+      --border-accent: rgba(99, 102, 241, 0.35);
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
       --text-subtle: #64748b;
       --brand: #6366f1;
       --brand-hover: #4f46e5;
-      --brand-glow: rgba(99, 102, 241, 0.25);
+      --brand-glow: rgba(99, 102, 241, 0.28);
       --discord: #5865F2;
+      --discord-dark: #313338;
+      --discord-embed: #2b2d31;
       --success: #10b981;
       --warning: #f59e0b;
       --danger: #ef4444;
+      --cyan: #38bdf8;
       --radius-sm: 6px;
       --radius-md: 10px;
       --radius-lg: 16px;
-      --font-ui: 'Inter', -apple-system, sans-serif;
+      --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-display: 'Outfit', sans-serif;
       --font-code: 'JetBrains Mono', monospace;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
+    html, body {
       background-color: var(--bg-base);
       color: var(--text-main);
       font-family: var(--font-ui);
       min-height: 100vh;
       min-height: 100dvh;
-      display: flex;
-      flex-direction: column;
       line-height: 1.5;
       overflow-x: hidden;
+      width: 100%;
     }
 
     /* SVG Icon styles */
     .icon {
-      width: 18px;
-      height: 18px;
+      width: 17px;
+      height: 17px;
       stroke-width: 2;
       stroke: currentColor;
       fill: none;
@@ -673,79 +733,88 @@ def _dashboard_page_html() -> str:
       stroke-linejoin: round;
       display: inline-block;
       vertical-align: middle;
+      flex-shrink: 0;
     }
 
     /* Top Navigation Header */
     header {
-      background: rgba(14, 20, 34, 0.85);
+      background: rgba(14, 19, 31, 0.88);
       backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border-subtle);
-      padding: 0 28px;
+      padding: 0 24px;
       height: 64px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       position: sticky;
       top: 0;
-      z-index: 50;
+      z-index: 60;
     }
 
     .brand-wrap {
       display: flex;
       align-items: center;
       gap: 12px;
+      text-decoration: none;
     }
 
     .brand-logo {
-      width: 34px;
-      height: 34px;
+      width: 36px;
+      height: 36px;
       background: linear-gradient(135deg, #6366f1, #38bdf8);
       border-radius: var(--radius-md);
       display: flex;
       align-items: center;
       justify-content: center;
-      color: white;
-      font-weight: 800;
-      font-family: var(--font-display);
-      font-size: 18px;
       box-shadow: 0 0 16px var(--brand-glow);
+      overflow: hidden;
+    }
+    .brand-logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
 
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+    }
     .brand-title {
       font-family: var(--font-display);
-      font-size: 18px;
+      font-size: 17px;
       font-weight: 700;
       letter-spacing: -0.02em;
       color: var(--text-main);
+      line-height: 1.2;
     }
-
     .brand-badge {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      color: var(--brand);
       font-size: 11px;
+      color: var(--cyan);
       font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 20px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
     }
 
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 10px;
     }
 
     .status-badge {
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       background: rgba(16, 185, 129, 0.1);
       border: 1px solid rgba(16, 185, 129, 0.25);
       color: #34d399;
       font-size: 12px;
-      padding: 4px 10px;
+      padding: 5px 12px;
       border-radius: 20px;
       font-weight: 500;
+      white-space: nowrap;
     }
 
     .status-dot {
@@ -754,6 +823,11 @@ def _dashboard_page_html() -> str:
       background: #10b981;
       border-radius: 50%;
       box-shadow: 0 0 8px #10b981;
+      animation: pulseDot 2s infinite;
+    }
+    @keyframes pulseDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.85); }
     }
 
     /* Buttons */
@@ -761,7 +835,7 @@ def _dashboard_page_html() -> str:
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
+      gap: 7px;
       padding: 8px 16px;
       border-radius: var(--radius-md);
       font-size: 13px;
@@ -771,12 +845,14 @@ def _dashboard_page_html() -> str:
       border: 1px solid transparent;
       outline: none;
       font-family: var(--font-ui);
+      white-space: nowrap;
+      user-select: none;
     }
 
     .btn-primary {
       background: var(--brand);
       color: white;
-      box-shadow: 0 4px 12px var(--brand-glow);
+      box-shadow: 0 4px 14px var(--brand-glow);
     }
     .btn-primary:hover {
       background: var(--brand-hover);
@@ -794,9 +870,9 @@ def _dashboard_page_html() -> str:
     }
 
     .btn-danger {
-      background: rgba(239, 68, 68, 0.15);
+      background: rgba(239, 68, 68, 0.12);
       color: #fca5a5;
-      border-color: rgba(239, 68, 68, 0.3);
+      border-color: rgba(239, 68, 68, 0.25);
     }
     .btn-danger:hover {
       background: var(--danger);
@@ -804,44 +880,55 @@ def _dashboard_page_html() -> str:
     }
 
     .btn-sm {
-      padding: 5px 10px;
+      padding: 6px 11px;
       font-size: 12px;
       border-radius: var(--radius-sm);
     }
 
-    /* Main Container & Tabs */
-    main {
-      flex: 1;
-      max-width: 1440px;
-      width: 100%;
-      margin: 0 auto;
-      padding: 28px;
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
+    .btn-icon-only {
+      padding: 7px;
+      border-radius: var(--radius-sm);
     }
 
-    .nav-tabs {
+    /* Navigation Bar / Tabs Bar */
+    .nav-bar {
+      background: rgba(11, 15, 25, 0.95);
+      border-bottom: 1px solid var(--border-subtle);
+      position: sticky;
+      top: 64px;
+      z-index: 50;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .nav-bar::-webkit-scrollbar { display: none; }
+
+    .nav-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 24px;
       display: flex;
       align-items: center;
-      gap: 8px;
-      border-bottom: 1px solid var(--border-subtle);
-      padding-bottom: 12px;
+      gap: 6px;
+      min-width: max-content;
+      height: 52px;
     }
 
     .tab-btn {
       background: transparent;
       border: none;
       color: var(--text-muted);
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
-      padding: 8px 16px;
+      padding: 8px 14px;
       border-radius: var(--radius-md);
       cursor: pointer;
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 8px;
-      transition: all 0.15s;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      position: relative;
     }
     .tab-btn:hover {
       color: var(--text-main);
@@ -849,44 +936,257 @@ def _dashboard_page_html() -> str:
     }
     .tab-btn.active {
       color: white;
+      background: rgba(99, 102, 241, 0.18);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      box-shadow: 0 0 14px rgba(99, 102, 241, 0.15);
+    }
+    .tab-badge {
+      background: var(--bg-elevated);
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 12px;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+    .tab-btn.active .tab-badge {
       background: var(--brand);
-      box-shadow: 0 4px 12px var(--brand-glow);
+      color: white;
+      border-color: transparent;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
     }
 
     /* Views */
     .view-content { display: none; }
-    .view-content.active { display: block; }
+    .view-content.active { display: block; animation: fadeIn 0.2s ease-out; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
-    /* Commands Grid */
+    /* Section Headers */
     .section-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16px;
       margin-bottom: 20px;
+      flex-wrap: wrap;
     }
     .section-title {
       font-family: var(--font-display);
-      font-size: 20px;
+      font-size: 22px;
       font-weight: 700;
       color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
     .section-subtitle {
       font-size: 13px;
       color: var(--text-subtle);
-      margin-top: 2px;
+      margin-top: 3px;
     }
 
+    /* Hero / Status Banner on Overview */
+    .hero-banner {
+      background: linear-gradient(135deg, rgba(20, 29, 48, 0.95), rgba(14, 19, 31, 0.95));
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-banner::after {
+      content: "";
+      position: absolute;
+      top: -60px;
+      right: -60px;
+      width: 200px;
+      height: 200px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .hero-avatar {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: var(--discord);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid var(--brand);
+      box-shadow: 0 0 20px var(--brand-glow);
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .hero-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .hero-name {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 800;
+      color: white;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .hero-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .hero-chip {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      font-size: 11px;
+      padding: 3px 9px;
+      border-radius: 20px;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    /* Metric Cards Grid */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .stat-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+    }
+    .stat-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-subtle);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .stat-val {
+      font-family: var(--font-display);
+      font-size: 26px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+    .stat-foot {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Search & Filter Toolbar */
+    .toolbar-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+    }
+    .search-box {
+      position: relative;
+      flex: 1;
+      max-width: 420px;
+      min-width: 240px;
+    }
+    .search-box input {
+      width: 100%;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      padding: 9px 14px 9px 36px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-box input:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px var(--brand-glow);
+    }
+    .search-box .search-icon {
+      position: absolute;
+      left: 11px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-subtle);
+      pointer-events: none;
+    }
+    .filter-pills {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .filter-pill {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .filter-pill:hover {
+      color: var(--text-main);
+      background: var(--bg-elevated);
+    }
+    .filter-pill.active {
+      background: var(--bg-elevated);
+      color: var(--cyan);
+      border-color: var(--cyan);
+    }
+
+    /* Commands Grid */
     .commands-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-      gap: 18px;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
     }
 
     .command-card {
       background: var(--bg-surface);
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-lg);
-      padding: 20px;
+      padding: 18px;
       transition: all 0.2s ease;
       display: flex;
       flex-direction: column;
@@ -896,14 +1196,14 @@ def _dashboard_page_html() -> str:
     .command-card:hover {
       border-color: var(--border-strong);
       transform: translateY(-2px);
-      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
     }
 
     .card-top {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 12px;
+      gap: 10px;
     }
 
     .trigger-badge {
@@ -923,7 +1223,7 @@ def _dashboard_page_html() -> str:
     .aliases-list {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 5px;
       margin-top: 6px;
     }
     .alias-pill {
@@ -956,12 +1256,6 @@ def _dashboard_page_html() -> str:
       border: 1px solid rgba(56, 189, 248, 0.25);
     }
 
-    .card-desc {
-      color: var(--text-muted);
-      font-size: 13px;
-      flex: 1;
-    }
-
     .card-embed-preview {
       background: #2b2d31;
       border-radius: 6px;
@@ -988,16 +1282,117 @@ def _dashboard_page_html() -> str:
       align-items: center;
       justify-content: space-between;
       border-top: 1px solid var(--border-subtle);
-      padding-top: 14px;
+      padding-top: 12px;
       margin-top: auto;
-    }
-
-    .usage-count {
       font-size: 12px;
       color: var(--text-subtle);
+    }
+
+    /* Accordion for Built-in Commands */
+    .accordion-section {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      margin-bottom: 14px;
+      overflow: hidden;
+      transition: border-color 0.15s;
+    }
+    .accordion-section:hover {
+      border-color: var(--border-strong);
+    }
+    .accordion-header {
+      padding: 16px 20px;
       display: flex;
       align-items: center;
-      gap: 4px;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      background: var(--bg-surface);
+      transition: background 0.15s;
+    }
+    .accordion-header:hover {
+      background: var(--bg-elevated);
+    }
+    .accordion-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .accordion-title {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .accordion-desc {
+      font-size: 12px;
+      color: var(--text-subtle);
+      margin-top: 2px;
+    }
+    .accordion-chevron {
+      color: var(--text-muted);
+      transition: transform 0.2s ease;
+    }
+    .accordion-section.open .accordion-chevron {
+      transform: rotate(180deg);
+    }
+    .accordion-body {
+      display: none;
+      padding: 0 20px 20px 20px;
+      border-top: 1px solid var(--border-subtle);
+      background: rgba(14, 19, 31, 0.4);
+    }
+    .accordion-section.open .accordion-body {
+      display: block;
+      animation: accordionOpen 0.2s ease-out;
+    }
+    @keyframes accordionOpen {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Quick Action Grid (Overview) */
+    .actions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .action-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      transition: all 0.15s ease;
+    }
+    .action-card:hover {
+      border-color: var(--brand);
+      background: var(--bg-elevated);
+      transform: translateY(-2px);
+    }
+    .action-icon-wrap {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius-md);
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .action-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .action-sub {
+      font-size: 12px;
+      color: var(--text-subtle);
+      margin-top: 2px;
     }
 
     /* Modal / Drawer for Embed Builder */
@@ -1005,12 +1400,13 @@ def _dashboard_page_html() -> str:
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.75);
+      background: rgba(0, 0, 0, 0.78);
       backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       z-index: 100;
       align-items: center;
       justify-content: center;
-      padding: 24px;
+      padding: 20px;
     }
     .modal-backdrop.open { display: flex; }
 
@@ -1019,21 +1415,29 @@ def _dashboard_page_html() -> str:
       border: 1px solid var(--border-strong);
       border-radius: var(--radius-lg);
       width: 100%;
-      max-width: 1260px;
-      height: 90vh;
+      max-width: 1280px;
+      height: 92vh;
+      max-height: 940px;
       display: flex;
       flex-direction: column;
-      box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+      box-shadow: 0 24px 70px rgba(0,0,0,0.65);
       overflow: hidden;
     }
 
     .modal-header {
-      padding: 18px 24px;
+      padding: 16px 22px;
       border-bottom: 1px solid var(--border-subtle);
       display: flex;
       align-items: center;
       justify-content: space-between;
       background: var(--bg-elevated);
+      flex-shrink: 0;
+      gap: 12px;
+    }
+    .modal-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
     .modal-title {
       font-family: var(--font-display);
@@ -1041,20 +1445,48 @@ def _dashboard_page_html() -> str:
       font-weight: 700;
     }
 
+    /* Mobile Segmented Switch in Modal Header */
+    .modal-view-switch {
+      display: none;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 4px;
+    }
+    .switch-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .switch-btn.active {
+      background: var(--brand);
+      color: white;
+    }
+
     .modal-body {
       flex: 1;
       display: grid;
       grid-template-columns: 1.15fr 0.85fr;
       overflow: hidden;
+      min-height: 0;
     }
 
     /* Form Column */
     .form-column {
-      padding: 24px;
+      padding: 22px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 18px;
       border-right: 1px solid var(--border-subtle);
     }
 
@@ -1064,28 +1496,32 @@ def _dashboard_page_html() -> str:
       gap: 6px;
     }
     .form-label {
-      font-size: 12px;
-      font-weight: 600;
+      font-size: 11px;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.05em;
       color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
     .form-input, .form-textarea, .form-select {
       background: var(--bg-elevated);
       border: 1px solid var(--border-subtle);
       color: var(--text-main);
-      padding: 10px 14px;
+      padding: 10px 13px;
       border-radius: var(--radius-md);
       font-size: 13px;
       font-family: var(--font-ui);
       transition: border-color 0.15s;
+      width: 100%;
     }
     .form-input:focus, .form-textarea:focus, .form-select:focus {
       outline: none;
       border-color: var(--brand);
       box-shadow: 0 0 0 3px var(--brand-glow);
     }
-    .form-textarea { resize: vertical; min-height: 80px; }
+    .form-textarea { resize: vertical; min-height: 84px; line-height: 1.45; }
 
     .toggle-row {
       display: flex;
@@ -1110,6 +1546,7 @@ def _dashboard_page_html() -> str:
       display: inline-block;
       width: 42px;
       height: 24px;
+      flex-shrink: 0;
     }
     .switch input { opacity: 0; width: 0; height: 0; }
     .slider {
@@ -1138,23 +1575,24 @@ def _dashboard_page_html() -> str:
     .color-picker-wrap {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      flex-wrap: wrap;
     }
     .color-swatch {
-      width: 24px;
-      height: 24px;
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
       cursor: pointer;
       border: 2px solid transparent;
       transition: transform 0.15s;
     }
     .color-swatch:hover { transform: scale(1.15); }
-    .color-swatch.active { border-color: white; }
+    .color-swatch.active { border-color: white; box-shadow: 0 0 8px rgba(255,255,255,0.4); }
 
     /* Discord Preview Column */
     .preview-column {
       background: #1e1f22;
-      padding: 28px;
+      padding: 24px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -1175,7 +1613,7 @@ def _dashboard_page_html() -> str:
     /* 1:1 Discord Message Mockup */
     .discord-message {
       display: flex;
-      gap: 16px;
+      gap: 14px;
       font-family: 'Inter', 'gg sans', sans-serif;
     }
     .discord-avatar {
@@ -1197,6 +1635,7 @@ def _dashboard_page_html() -> str:
       display: flex;
       flex-direction: column;
       gap: 6px;
+      min-width: 0;
     }
     .discord-meta {
       display: flex;
@@ -1234,6 +1673,7 @@ def _dashboard_page_html() -> str:
       gap: 10px;
       font-size: 13px;
       color: #dbdee1;
+      word-break: break-word;
     }
 
     .d-author {
@@ -1248,6 +1688,7 @@ def _dashboard_page_html() -> str:
       width: 22px;
       height: 22px;
       border-radius: 50%;
+      object-fit: cover;
     }
 
     .d-title {
@@ -1301,28 +1742,18 @@ def _dashboard_page_html() -> str:
       color: #949ba4;
       margin-top: 4px;
     }
-    .d-footer img { width: 18px; height: 18px; border-radius: 50%; }
 
-    .d-buttons-row {
+    /* Send Test Embed Widget */
+    .test-send-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 14px;
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 8px;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 14px;
     }
-    .d-btn {
-      background: #4e5058;
-      color: white;
-      font-size: 13px;
-      font-weight: 500;
-      padding: 6px 14px;
-      border-radius: 3px;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      cursor: pointer;
-    }
-    .d-btn:hover { background: #6d6f78; }
 
     /* Toast Notification */
     #toast {
@@ -1339,7 +1770,7 @@ def _dashboard_page_html() -> str:
       gap: 10px;
       font-size: 13px;
       font-weight: 500;
-      z-index: 200;
+      z-index: 250;
       transform: translateY(100px);
       opacity: 0;
       transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1350,140 +1781,534 @@ def _dashboard_page_html() -> str:
     }
     #toast.success { border-color: #10b981; color: #34d399; }
     #toast.error { border-color: #ef4444; color: #f87171; }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       RESPONSIVE BREAKPOINTS (Mobile & Tablet)
+       ══════════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 992px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 900px) {
+      /* Modal switches to Tabbed View on Mobile */
+      .modal-container {
+        height: 100vh;
+        height: 100dvh;
+        max-height: 100dvh;
+        border-radius: 0;
+        border: none;
+      }
+      .modal-backdrop {
+        padding: 0;
+      }
+      .modal-view-switch {
+        display: inline-flex;
+      }
+      .modal-body {
+        grid-template-columns: 1fr;
+      }
+      .form-column {
+        border-right: none;
+      }
+      .preview-column {
+        display: none;
+      }
+      /* When Preview Mode Active on Mobile */
+      .modal-container.mobile-preview .form-column {
+        display: none;
+      }
+      .modal-container.mobile-preview .preview-column {
+        display: flex;
+      }
+    }
+
+    @media (max-width: 768px) {
+      header {
+        padding: 0 16px;
+        height: 58px;
+      }
+      .brand-title {
+        font-size: 15px;
+      }
+      .brand-badge {
+        display: none;
+      }
+      .status-badge {
+        padding: 4px 8px;
+        font-size: 11px;
+      }
+      .status-text-full {
+        display: none;
+      }
+
+      .nav-inner {
+        padding: 0 14px;
+        height: 48px;
+      }
+      .tab-btn {
+        font-size: 12px;
+        padding: 6px 11px;
+      }
+
+      main {
+        padding: 14px;
+        gap: 16px;
+      }
+
+      .hero-banner {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 18px;
+      }
+      .hero-left {
+        width: 100%;
+      }
+
+      .commands-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .section-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+      }
+
+      .toolbar-bar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .search-box {
+        max-width: 100%;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+      .stat-val {
+        font-size: 22px;
+      }
+      .form-grid-2 {
+        grid-template-columns: 1fr !important;
+      }
+      .toggles-grid-2 {
+        grid-template-columns: 1fr !important;
+      }
+      .field-row-grid {
+        grid-template-columns: 1fr !important;
+      }
+    }
   </style>
 </head>
 <body>
 
   <!-- Top Navigation -->
   <header>
-    <div class="brand-wrap">
-      <div class="brand-logo" style="overflow: hidden; padding: 0; display: flex; align-items: center; justify-content: center;">
-        <img src="/favicon.gif" alt="AnymeX" style="width: 100%; height: 100%; object-fit: cover; border-radius: 8px;">
+    <a href="#" class="brand-wrap" onclick="switchTab('overview'); return false;">
+      <div class="brand-logo">
+        <img src="/favicon.gif" alt="AnymeX" onerror="this.onerror=null; this.src='https://raw.githubusercontent.com/Shebyyy/AnymeX-Preview/beta/assets/logo.png';">
       </div>
-      <div>
+      <div class="brand-text">
         <span class="brand-title">AnymeX Preview</span>
-        <span class="brand-badge">Bot Dashboard</span>
+        <span class="brand-badge">⚡ Bot Dashboard</span>
       </div>
-    </div>
+    </a>
 
     <div class="header-actions">
-      <div class="status-badge">
+      <div class="status-badge" id="top-status-badge">
         <span class="status-dot"></span>
-        <span>Bot Online & Dual Sync Active</span>
+        <span id="top-status-text">Online</span>
+        <span class="status-text-full" id="top-ping-text">• Dual Sync</span>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="showBackupsModal()">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Backups
-      </button>
       <button class="btn btn-primary btn-sm" onclick="openCommandModal()">
         <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New Command
+        <span>New Command</span>
       </button>
-      <button class="btn btn-secondary btn-sm" onclick="logout()" title="Logout">
+      <button class="btn btn-secondary btn-sm btn-icon-only" onclick="logout()" title="Sign Out">
         <svg class="icon" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
     </div>
   </header>
 
-  <!-- Main Content -->
-  <main>
-    <!-- Navigation Tabs -->
-    <div class="nav-tabs">
-      <button class="tab-btn active" onclick="switchTab('commands')">
-        <svg class="icon" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-        Custom Commands & Triggers
+  <!-- Sticky Horizontal Navigation Tabs Bar -->
+  <nav class="nav-bar">
+    <div class="nav-inner">
+      <button class="tab-btn active" id="tab-btn-overview" onclick="switchTab('overview')">
+        <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        <span>Overview</span>
       </button>
-      <button class="tab-btn" onclick="switchTab('prefixes')">
+      <button class="tab-btn" id="tab-btn-commands" onclick="switchTab('commands')">
+        <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span>Custom Commands</span>
+        <span class="tab-badge" id="badge-custom-count">0</span>
+      </button>
+      <button class="tab-btn" id="tab-btn-builtin" onclick="switchTab('builtin')">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span>Built-in Triggers</span>
+        <span class="tab-badge" id="badge-builtin-count">6</span>
+      </button>
+      <button class="tab-btn" id="tab-btn-prefixes" onclick="switchTab('prefixes')">
         <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
-        Bot Prefixes
+        <span>Bot Prefixes</span>
+        <span class="tab-badge" id="badge-prefixes-count">1</span>
+      </button>
+      <button class="tab-btn" id="tab-btn-backups" onclick="switchTab('backups')">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Backups & Sync</span>
+        <span class="tab-badge" id="badge-backups-count">0</span>
       </button>
     </div>
+  </nav>
 
-    <!-- Commands Tab -->
-    <section id="view-commands" class="view-content active">
-      <div class="section-header">
+  <!-- Main Container -->
+  <main>
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         TAB 1: OVERVIEW & BOT METRICS
+         ══════════════════════════════════════════════════════════════════════ -->
+    <section id="view-overview" class="view-content active">
+      <!-- Hero Banner -->
+      <div class="hero-banner">
+        <div class="hero-left">
+          <div class="hero-avatar">
+            <img id="hero-bot-avatar" src="/favicon.gif" alt="Bot Avatar" onerror="this.onerror=null; this.src='https://raw.githubusercontent.com/Shebyyy/AnymeX-Preview/beta/assets/logo.png';">
+          </div>
+          <div>
+            <div class="hero-name">
+              <span id="hero-bot-name">AnymeX Preview</span>
+              <span style="background: var(--discord); font-size: 11px; padding: 2px 6px; border-radius: 4px; font-family: var(--font-ui); font-weight: 700;">BOT</span>
+            </div>
+            <div class="hero-chips">
+              <span class="hero-chip">
+                <span class="status-dot"></span>
+                <span id="hero-status-text">Online</span>
+              </span>
+              <span class="hero-chip" id="hero-latency-chip">
+                <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                <span id="hero-ping-val">-- ms</span>
+              </span>
+              <span class="hero-chip">
+                <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span id="hero-uptime-val">Uptime: Active</span>
+              </span>
+              <span class="hero-chip" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">
+                <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                Dual Persistence Active
+              </span>
+            </div>
+          </div>
+        </div>
         <div>
-          <h2 class="section-title">Commands & Triggers</h2>
-          <p class="section-subtitle">Manage dynamic custom commands and view built-in bot triggers.</p>
+          <button class="btn btn-primary" onclick="openCommandModal()">
+            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Create Trigger
+          </button>
         </div>
       </div>
 
-      <!-- Built-in Commands Section (Read-only) -->
-      <div style="margin-bottom: 32px;">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
-          <div>
-            <h3 style="font-size: 15px; font-weight: 700; color: var(--text-main); margin: 0 0 2px 0;">Built-in Bot Commands</h3>
-            <p style="font-size: 12px; color: var(--text-subtle); margin: 0;">Hardcoded triggers built into the bot (Read-only, cannot be overwritten)</p>
+      <!-- Stats Grid -->
+      <div class="stats-grid" style="margin-top: 18px;">
+        <div class="stat-card">
+          <div class="stat-top">
+            <span>Custom Commands</span>
+            <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           </div>
-          <span style="font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3);">Protected</span>
+          <div class="stat-val" id="stat-custom-val">0</div>
+          <div class="stat-foot">Dynamic embeds & keyword triggers</div>
         </div>
-        <div class="commands-grid" id="builtin-commands-container">
-          <!-- Rendered via JS -->
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span>Built-in Triggers</span>
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <div class="stat-val" id="stat-builtin-val">6</div>
+          <div class="stat-foot">Protected native bot commands</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span>Active Prefixes</span>
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
+          </div>
+          <div class="stat-val" id="stat-prefixes-val">?</div>
+          <div class="stat-foot">Configured message prefixes</div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-top">
+            <span>Server Backups</span>
+            <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/></svg>
+          </div>
+          <div class="stat-val" id="stat-backups-val">0</div>
+          <div class="stat-foot">Disk snapshots ready to restore</div>
         </div>
       </div>
 
-      <!-- Custom Commands Section -->
-      <div>
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
-          <div>
-            <h3 style="font-size: 15px; font-weight: 700; color: var(--text-main); margin: 0 0 2px 0;">Custom Dashboard Commands</h3>
-            <p style="font-size: 12px; color: var(--text-subtle); margin: 0;">Dynamic custom embeds and keyword triggers</p>
+      <!-- Quick Action Shortcuts -->
+      <div style="margin-top: 24px;">
+        <h3 style="font-size: 16px; font-weight: 700; margin-bottom: 14px; color: var(--text-main);">Quick Management Actions</h3>
+        <div class="actions-grid">
+          <div class="action-card" onclick="openCommandModal()">
+            <div class="action-icon-wrap">
+              <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </div>
+            <div>
+              <div class="action-title">Create Custom Command</div>
+              <div class="action-sub">Build a new trigger with rich Discord embed</div>
+            </div>
           </div>
-          <button class="btn btn-primary btn-sm" onclick="openCommandModal()">+ New Command</button>
+
+          <div class="action-card" onclick="switchTab('builtin')">
+            <div class="action-icon-wrap" style="color: #a78bfa; background: rgba(167, 139, 250, 0.15);">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </div>
+            <div>
+              <div class="action-title">Browse Built-in Commands</div>
+              <div class="action-sub">View collapsible categories & native triggers</div>
+            </div>
+          </div>
+
+          <div class="action-card" onclick="switchTab('prefixes')">
+            <div class="action-icon-wrap" style="color: #34d399; background: rgba(52, 211, 153, 0.15);">
+              <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
+            </div>
+            <div>
+              <div class="action-title">Manage Bot Prefixes</div>
+              <div class="action-sub">Add or remove symbols like '?' or '!'</div>
+            </div>
+          </div>
+
+          <div class="action-card" onclick="switchTab('backups')">
+            <div class="action-icon-wrap" style="color: #f59e0b; background: rgba(245, 158, 11, 0.15);">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </div>
+            <div>
+              <div class="action-title">Restore / View Backups</div>
+              <div class="action-sub">Inspect snapshots and sync status</div>
+            </div>
+          </div>
         </div>
-        <div class="commands-grid" id="commands-container">
-          <!-- Rendered via JS -->
+      </div>
+
+      <!-- Dual Sync Architecture Info -->
+      <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 20px; margin-top: 24px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px;">
+            <svg class="icon" style="color: #38bdf8;" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>Dual-Persistence Engine Active</span>
+          </div>
+          <span style="font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(16, 185, 129, 0.15); color: #34d399; font-weight: 600;">Zero Data Loss</span>
         </div>
+        <p style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+          Every custom trigger created, edited, or removed through this dashboard is automatically backed up in two locations simultaneously:
+          <strong style="color: white;">Local Server Disk</strong> (rolling timestamped snapshots) and <strong style="color: white;">GitHub Repository</strong> (synced to <code>custom_commands.json</code>).
+        </p>
       </div>
     </section>
 
-    <!-- Prefixes Tab -->
+    <!-- ══════════════════════════════════════════════════════════════════════
+         TAB 2: CUSTOM COMMANDS & TRIGGERS
+         ══════════════════════════════════════════════════════════════════════ -->
+    <section id="view-commands" class="view-content">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">
+            <svg class="icon" style="color: var(--cyan);" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>Custom Commands & Triggers</span>
+          </h2>
+          <p class="section-subtitle">Manage dynamic prefix commands (like ?nob) and keyword auto-responses.</p>
+        </div>
+        <button class="btn btn-primary" onclick="openCommandModal()">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>New Command</span>
+        </button>
+      </div>
+
+      <!-- Search & Filters Toolbar -->
+      <div class="toolbar-bar">
+        <div class="search-box">
+          <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="custom-search-input" placeholder="Search trigger, alias, or title..." oninput="filterCustomCommands()">
+        </div>
+        <div class="filter-pills">
+          <button class="filter-pill active" onclick="setFilter('all', this)">All</button>
+          <button class="filter-pill" onclick="setFilter('prefix', this)">Prefix Required</button>
+          <button class="filter-pill" onclick="setFilter('direct', this)">Direct Keyword</button>
+          <button class="filter-pill" onclick="setFilter('autodel', this)">Auto-Delete</button>
+        </div>
+      </div>
+
+      <!-- Commands Grid -->
+      <div class="commands-grid" id="commands-container">
+        <!-- Rendered via JS -->
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         TAB 3: BUILT-IN COMMANDS (COLLAPSIBLE & ORGANIZED)
+         ══════════════════════════════════════════════════════════════════════ -->
+    <section id="view-builtin" class="view-content">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">
+            <svg class="icon" style="color: #a78bfa;" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            <span>Built-in Native Bot Commands</span>
+          </h2>
+          <p class="section-subtitle">Hardcoded bot features categorized by domain. Click any category to expand or collapse.</p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary btn-sm" onclick="toggleAllAccordions(true)">Expand All</button>
+          <button class="btn btn-secondary btn-sm" onclick="toggleAllAccordions(false)">Collapse All</button>
+        </div>
+      </div>
+
+      <!-- Search in Builtin -->
+      <div class="toolbar-bar" style="margin-bottom: 16px;">
+        <div class="search-box">
+          <svg class="icon search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="builtin-search-input" placeholder="Search built-in command..." oninput="filterBuiltinCommands()">
+        </div>
+        <span style="font-size: 12px; color: var(--text-subtle);">Protected Native Python Handlers</span>
+      </div>
+
+      <!-- Accordion Container -->
+      <div id="builtin-accordion-container">
+        <!-- Rendered via JS by category -->
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         TAB 4: BOT PREFIXES
+         ══════════════════════════════════════════════════════════════════════ -->
     <section id="view-prefixes" class="view-content">
       <div class="section-header">
         <div>
-          <h2 class="section-title">Active Bot Prefixes</h2>
+          <h2 class="section-title">
+            <svg class="icon" style="color: #34d399;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>
+            <span>Active Bot Prefixes</span>
+          </h2>
           <p class="section-subtitle">Prefixes recognized by AnymeX Preview Bot across Discord (synced with prefixes.json).</p>
         </div>
       </div>
 
-      <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 24px; max-width: 600px;">
-        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-          <input type="text" id="new-prefix-input" class="form-input" placeholder="e.g. ! or . or >" maxlength="5" style="width: 160px; font-family: var(--font-code);">
-          <button class="btn btn-primary" onclick="addPrefix()">Add Prefix</button>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px;">
+        <!-- Add Prefix Card -->
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 22px;">
+          <h3 style="font-size: 15px; font-weight: 700; margin-bottom: 6px; color: var(--text-main);">Add New Prefix</h3>
+          <p style="font-size: 12px; color: var(--text-subtle); margin-bottom: 16px;">Enter a character symbol (e.g. ! or . or >) that users type before commands.</p>
+
+          <div style="display: flex; gap: 10px; margin-bottom: 14px;">
+            <input type="text" id="new-prefix-input" class="form-input" placeholder="e.g. !" maxlength="5" style="width: 140px; font-family: var(--font-code); font-weight: 700; font-size: 16px;">
+            <button class="btn btn-primary" onclick="addPrefix()">Add Prefix</button>
+          </div>
+
+          <div style="background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px; font-size: 12px; color: var(--text-muted);">
+            <div style="font-weight: 600; color: white; margin-bottom: 4px;">Live Invocation Preview</div>
+            <div>Typing <code style="color: #38bdf8; font-family: var(--font-code);" id="prefix-demo-text">?commands</code> or <code style="color: #38bdf8; font-family: var(--font-code);" id="prefix-demo-text-custom">?nob</code> will trigger the bot.</div>
+          </div>
         </div>
-        <div id="prefixes-list" style="display: flex; flex-wrap: wrap; gap: 10px;">
+
+        <!-- Active Prefixes List Card -->
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 22px;">
+          <h3 style="font-size: 15px; font-weight: 700; margin-bottom: 6px; color: var(--text-main);">Currently Active Prefixes</h3>
+          <p style="font-size: 12px; color: var(--text-subtle); margin-bottom: 16px;">All prefixes recognized in server chats:</p>
+          <div id="prefixes-list" style="display: flex; flex-wrap: wrap; gap: 10px;">
+            <!-- Rendered via JS -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         TAB 5: BACKUPS & DUAL PERSISTENCE
+         ══════════════════════════════════════════════════════════════════════ -->
+    <section id="view-backups" class="view-content">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">
+            <svg class="icon" style="color: #f59e0b;" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span>Backups & Dual Persistence</span>
+          </h2>
+          <p class="section-subtitle">Local server disk snapshots and GitHub dual synchronization status.</p>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="fetchBackups(true)">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Refresh Backups
+        </button>
+      </div>
+
+      <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 22px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 700; color: white;">Disk Snapshots (Rolling 20 Backups)</h3>
+            <p style="font-size: 12px; color: var(--text-subtle);">Click 'Restore' on any snapshot to revert custom commands.</p>
+          </div>
+          <span style="font-size: 11px; padding: 3px 8px; border-radius: 12px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-weight: 600;">Auto-Pruned</span>
+        </div>
+
+        <div id="backups-container" style="display: flex; flex-direction: column; gap: 10px;">
           <!-- Rendered via JS -->
         </div>
       </div>
     </section>
   </main>
 
-  <!-- Command Modal & Embed Builder -->
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       MODAL: COMMAND & EMBED BUILDER (Responsive & Mobile Segmented)
+       ══════════════════════════════════════════════════════════════════════════ -->
   <div class="modal-backdrop" id="command-modal">
-    <div class="modal-container">
+    <div class="modal-container" id="modal-container-card">
       <div class="modal-header">
-        <h3 class="modal-title" id="modal-heading">Create Custom Command</h3>
-        <button class="btn btn-secondary btn-sm" onclick="closeCommandModal()">Close</button>
+        <div class="modal-title-wrap">
+          <h3 class="modal-title" id="modal-heading">Create Custom Command</h3>
+        </div>
+
+        <!-- Segmented Switch for Mobile (<900px) -->
+        <div class="modal-view-switch">
+          <button class="switch-btn active" id="sw-btn-editor" onclick="switchModalView('editor')">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            <span>Editor</span>
+          </button>
+          <button class="switch-btn" id="sw-btn-preview" onclick="switchModalView('preview')">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Preview</span>
+          </button>
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary btn-sm" onclick="closeCommandModal()">Close</button>
+        </div>
       </div>
 
       <div class="modal-body">
-        <!-- Form Side -->
+        <!-- Form Column -->
         <div class="form-column">
           <input type="hidden" id="cmd-id">
 
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+          <!-- Trigger and Aliases -->
+          <div class="form-grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
             <div class="form-group">
-              <label class="form-label">Command Trigger Name</label>
-              <input type="text" id="cmd-name" class="form-input" placeholder="e.g. nob" oninput="updatePreview()">
+              <label class="form-label">
+                <span>Trigger Keyword</span>
+                <span style="color: var(--brand); font-size: 10px;">Required</span>
+              </label>
+              <input type="text" id="cmd-name" class="form-input" placeholder="e.g. nob" oninput="updatePreview()" style="font-family: var(--font-code); font-weight: 700;">
             </div>
             <div class="form-group">
-              <label class="form-label">Aliases (Comma separated)</label>
-              <input type="text" id="cmd-aliases" class="form-input" placeholder="e.g. noob, nub">
+              <label class="form-label">
+                <span>Aliases (Comma separated)</span>
+              </label>
+              <input type="text" id="cmd-aliases" class="form-input" placeholder="e.g. noob, nub" style="font-family: var(--font-code);">
             </div>
           </div>
 
-          <!-- Toggles -->
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <!-- Toggles Grid -->
+          <div class="toggles-grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <div class="toggle-row">
               <div class="toggle-info">
                 <span class="toggle-title">Prefix Required</span>
@@ -1498,7 +2323,7 @@ def _dashboard_page_html() -> str:
             <div class="toggle-row">
               <div class="toggle-info">
                 <span class="toggle-title">Auto-Delete Trigger</span>
-                <span class="toggle-desc">Cleans chat message</span>
+                <span class="toggle-desc">Deletes caller's chat text</span>
               </div>
               <label class="switch">
                 <input type="checkbox" id="cmd-delete-trigger" checked>
@@ -1508,7 +2333,7 @@ def _dashboard_page_html() -> str:
 
             <div class="toggle-row">
               <div class="toggle-info">
-                <span class="toggle-title">Reply to Reference</span>
+                <span class="toggle-title">Reply to Target</span>
                 <span class="toggle-desc">Replies if triggered on user</span>
               </div>
               <label class="switch">
@@ -1529,24 +2354,36 @@ def _dashboard_page_html() -> str:
             </div>
           </div>
 
+          <!-- Plain Content (Optional Text above embed) -->
+          <div class="form-group">
+            <label class="form-label">Optional Chat Message (Plain Text above Embed)</label>
+            <input type="text" id="cmd-content" class="form-input" placeholder="e.g. Hey {user}, check this out!" oninput="updatePreview()">
+          </div>
+
           <!-- Embed Builder Fields -->
           <div style="border-top: 1px solid var(--border-subtle); padding-top: 16px;">
-            <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-main);">Custom Response Embed</h4>
+            <h4 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-main); display: flex; align-items: center; gap: 6px;">
+              <svg class="icon" style="color: var(--discord);" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+              <span>Discord Response Embed</span>
+            </h4>
 
+            <!-- Color Palette -->
             <div class="form-group" style="margin-bottom: 12px;">
-              <label class="form-label">Embed Color</label>
+              <label class="form-label">Embed Accent Color</label>
               <div class="color-picker-wrap">
-                <div class="color-swatch active" style="background: #5865F2;" onclick="setColor('#5865F2')"></div>
-                <div class="color-swatch" style="background: #10B981;" onclick="setColor('#10B981')"></div>
-                <div class="color-swatch" style="background: #F59E0B;" onclick="setColor('#F59E0B')"></div>
-                <div class="color-swatch" style="background: #EF4444;" onclick="setColor('#EF4444')"></div>
-                <div class="color-swatch" style="background: #8B5CF6;" onclick="setColor('#8B5CF6')"></div>
-                <input type="color" id="cmd-color-picker" value="#5865F2" style="width: 32px; height: 32px; border: none; background: transparent; cursor: pointer;" onchange="setColor(this.value)">
-                <input type="text" id="cmd-color-hex" class="form-input" value="#5865F2" style="width: 100px; font-family: var(--font-code);" oninput="setColor(this.value)">
+                <div class="color-swatch active" style="background: #5865F2;" onclick="setColor('#5865F2')" title="Blurple"></div>
+                <div class="color-swatch" style="background: #38BDF8;" onclick="setColor('#38BDF8')" title="Cyan"></div>
+                <div class="color-swatch" style="background: #10B981;" onclick="setColor('#10B981')" title="Green"></div>
+                <div class="color-swatch" style="background: #F59E0B;" onclick="setColor('#F59E0B')" title="Amber"></div>
+                <div class="color-swatch" style="background: #EF4444;" onclick="setColor('#EF4444')" title="Red"></div>
+                <div class="color-swatch" style="background: #8B5CF6;" onclick="setColor('#8B5CF6')" title="Purple"></div>
+                <input type="color" id="cmd-color-picker" value="#5865F2" style="width: 28px; height: 28px; border: none; background: transparent; cursor: pointer;" onchange="setColor(this.value)">
+                <input type="text" id="cmd-color-hex" class="form-input" value="#5865F2" style="width: 95px; font-family: var(--font-code); padding: 5px 8px; font-size: 12px;" oninput="setColor(this.value)">
               </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 12px;">
+            <!-- Author -->
+            <div class="form-grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
               <div class="form-group">
                 <label class="form-label">Author Name</label>
                 <input type="text" id="cmd-author-name" class="form-input" placeholder="e.g. AnymeX Support" oninput="updatePreview()">
@@ -1557,34 +2394,43 @@ def _dashboard_page_html() -> str:
               </div>
             </div>
 
-            <div class="form-group" style="margin-bottom: 12px;">
-              <label class="form-label">Embed Title</label>
-              <input type="text" id="cmd-title" class="form-input" placeholder="e.g. Quick Help & Guide" oninput="updatePreview()">
+            <!-- Title & URL -->
+            <div class="form-grid-2" style="display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 12px; margin-bottom: 12px;">
+              <div class="form-group">
+                <label class="form-label">Embed Title</label>
+                <input type="text" id="cmd-title" class="form-input" placeholder="e.g. Quick Help & Guide" oninput="updatePreview()">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Title Link URL</label>
+                <input type="text" id="cmd-title-url" class="form-input" placeholder="https://..." oninput="updatePreview()">
+              </div>
             </div>
 
+            <!-- Description -->
             <div class="form-group" style="margin-bottom: 12px;">
-              <label class="form-label">Title Link URL (Optional)</label>
-              <input type="text" id="cmd-title-url" class="form-input" placeholder="https://..." oninput="updatePreview()">
-            </div>
-
-            <div class="form-group" style="margin-bottom: 12px;">
-              <label class="form-label">Description (Supports {user}, {server})</label>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                <label class="form-label" style="margin-bottom:0;">Description</label>
+                <div style="display: flex; gap: 6px;">
+                  <button type="button" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 10px;" onclick="insertTag('{user}')">+ {user}</button>
+                  <button type="button" class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 10px;" onclick="insertTag('{server}')">+ {server}</button>
+                </div>
+              </div>
               <textarea id="cmd-desc" class="form-textarea" placeholder="Hello {user}! Check this guide..." oninput="updatePreview()"></textarea>
             </div>
 
             <!-- Fields Dynamic Section -->
             <div style="margin-bottom: 14px;">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                <label class="form-label">Embed Fields</label>
+                <label class="form-label" style="margin-bottom:0;">Embed Fields</label>
                 <button type="button" class="btn btn-secondary btn-sm" onclick="addField()">+ Add Field</button>
               </div>
               <div id="fields-container" style="display: flex; flex-direction: column; gap: 8px;">
-                <!-- Fields added here -->
+                <!-- Dynamic Fields added here -->
               </div>
             </div>
 
             <!-- Thumbnail & Banner -->
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 12px;">
+            <div class="form-grid-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
               <div class="form-group">
                 <label class="form-label">Thumbnail URL</label>
                 <input type="text" id="cmd-thumb" class="form-input" placeholder="https://..." oninput="updatePreview()">
@@ -1596,15 +2442,33 @@ def _dashboard_page_html() -> str:
             </div>
 
             <!-- Footer -->
-            <div class="form-group" style="margin-bottom: 12px;">
+            <div class="form-group" style="margin-bottom: 14px;">
               <label class="form-label">Footer Text</label>
               <input type="text" id="cmd-footer" class="form-input" placeholder="AnymeX • Quick Commands" oninput="updatePreview()">
             </div>
+
+            <!-- Test Send Directly from Modal -->
+            <div class="test-send-card">
+              <div style="font-weight: 600; font-size: 12px; color: var(--text-main); display: flex; align-items: center; gap: 6px;">
+                <svg class="icon" style="color: var(--cyan);" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                <span>Live Discord Channel Test</span>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <input type="text" id="test-channel-id" class="form-input" placeholder="Discord Channel ID (e.g. 123456789...)" style="font-family: var(--font-code); font-size: 12px;">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="sendTestFromModal()">
+                  <span>Send Test</span>
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;">
+          <!-- Bottom Action Buttons -->
+          <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; position: sticky; bottom: 0; background: var(--bg-surface); padding-top: 10px; border-top: 1px solid var(--border-subtle);">
             <button class="btn btn-secondary" onclick="closeCommandModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveCommand()">Save & Sync to GitHub</button>
+            <button class="btn btn-primary" id="save-cmd-btn" onclick="saveCommand()">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              <span>Save & Sync Dual</span>
+            </button>
           </div>
         </div>
 
@@ -1612,30 +2476,33 @@ def _dashboard_page_html() -> str:
         <div class="preview-column">
           <div class="preview-header">
             <svg class="icon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            Live Discord Message Preview
+            <span>Live Discord Preview</span>
           </div>
 
           <div class="discord-message">
             <div class="discord-avatar">
-              <img src="https://raw.githubusercontent.com/Shebyyy/AnymeX-Preview/beta/assets/logo.png" onerror="this.onerror=null; this.style.display='none';">
+              <img id="p-bot-avatar" src="/favicon.gif" alt="Bot" onerror="this.onerror=null; this.src='https://raw.githubusercontent.com/Shebyyy/AnymeX-Preview/beta/assets/logo.png';">
             </div>
             <div class="discord-content">
               <div class="discord-meta">
-                <span class="discord-username">AnymeX Preview</span>
+                <span class="discord-username" id="p-bot-name">AnymeX Preview</span>
                 <span class="discord-bot-tag">BOT</span>
                 <span class="discord-timestamp">Today at 12:00 PM</span>
               </div>
 
+              <!-- Content above embed -->
+              <div id="p-content-text" style="font-size: 14px; color: #dbdee1; margin-bottom: 4px; display: none;"></div>
+
               <!-- Embed Card -->
               <div class="discord-embed" id="preview-embed">
                 <div class="d-author" id="p-author" style="display:none;">
-                  <img id="p-author-icon" style="display:none;">
+                  <img id="p-author-icon" style="display:none;" alt="">
                   <span id="p-author-name"></span>
                 </div>
                 <a class="d-title" id="p-title" href="#" target="_blank" style="display:none;"></a>
                 <div class="d-desc" id="p-desc"></div>
                 <div class="d-fields" id="p-fields" style="display:none;"></div>
-                <img class="d-image" id="p-image" style="display:none;">
+                <img class="d-image" id="p-image" style="display:none;" alt="">
                 <div class="d-footer" id="p-footer" style="display:none;">
                   <span id="p-footer-text"></span>
                 </div>
@@ -1650,16 +2517,23 @@ def _dashboard_page_html() -> str:
   <!-- Toast Element -->
   <div id="toast"></div>
 
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       FRONTEND JAVASCRIPT LOGIC
+       ══════════════════════════════════════════════════════════════════════════ -->
   <script>
     let activeCommands = [];
     let builtinCommands = [];
-    let activePrefixes = [];
+    let activePrefixes = ['?'];
+    let serverBackups = [];
     let currentColor = '#5865F2';
+    let currentFilter = 'all';
 
     async function init() {
       await fetchMe();
+      await fetchStats();
       await fetchCommands();
       await fetchPrefixes();
+      await fetchBackups();
     }
 
     async function fetchMe() {
@@ -1671,51 +2545,62 @@ def _dashboard_page_html() -> str:
       } catch(e) {}
     }
 
+    async function fetchStats() {
+      try {
+        const res = await fetch('/dashboard/api/stats');
+        const data = await res.json();
+        if (data.success) {
+          const pingStr = `${data.latency_ms}ms`;
+          document.getElementById('top-status-text').innerText = data.bot_online ? 'Online' : 'Offline';
+          document.getElementById('top-ping-text').innerText = `• ${pingStr}`;
+          document.getElementById('hero-ping-val').innerText = pingStr;
+          document.getElementById('hero-status-text').innerText = data.bot_online ? 'Online' : 'Standby';
+
+          if (data.bot_name) {
+            document.getElementById('hero-bot-name').innerText = data.bot_name;
+            document.getElementById('p-bot-name').innerText = data.bot_name;
+          }
+          if (data.bot_avatar) {
+            document.getElementById('hero-bot-avatar').src = data.bot_avatar;
+            document.getElementById('p-bot-avatar').src = data.bot_avatar;
+          }
+
+          // Format uptime
+          const sec = data.uptime_seconds || 0;
+          const d = Math.floor(sec / 86400);
+          const h = Math.floor((sec % 86400) / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          const uptimeStr = d > 0 ? `${d}d ${h}h ${m}m` : (h > 0 ? `${h}h ${m}m` : `${m}m active`);
+          document.getElementById('hero-uptime-val').innerText = `Uptime: ${uptimeStr}`;
+
+          // Stats badges
+          document.getElementById('stat-custom-val').innerText = data.custom_commands_count || 0;
+          document.getElementById('badge-custom-count').innerText = data.custom_commands_count || 0;
+          document.getElementById('stat-builtin-val').innerText = data.builtin_commands_count || 6;
+          document.getElementById('badge-builtin-count').innerText = data.builtin_commands_count || 6;
+          document.getElementById('stat-prefixes-val').innerText = (data.prefixes || ['?']).join('  ');
+          document.getElementById('badge-prefixes-count').innerText = (data.prefixes || ['?']).length;
+          document.getElementById('stat-backups-val').innerText = data.backups_count || 0;
+          document.getElementById('badge-backups-count').innerText = data.backups_count || 0;
+        }
+      } catch(e) {}
+    }
+
     async function fetchCommands() {
       try {
         const res = await fetch('/dashboard/api/commands');
         const data = await res.json();
         if (data.success) {
-          activeCommands = data.commands;
+          activeCommands = data.commands || [];
           builtinCommands = data.builtin_commands || [];
-          renderBuiltinCommands();
           renderCommands();
+          renderBuiltinAccordion();
+          document.getElementById('badge-custom-count').innerText = activeCommands.length;
+          document.getElementById('stat-custom-val').innerText = activeCommands.length;
         }
       } catch(e) {
         showToast('Failed to load commands', true);
       }
-    }
-
-    function renderBuiltinCommands() {
-      const c = document.getElementById('builtin-commands-container');
-      if (!c) return;
-      const p = activePrefixes[0] || '?';
-      c.innerHTML = builtinCommands.map(cmd => {
-        const triggerDisplay = (cmd.trigger_display || cmd.name).replace(/{p}/g, p);
-        const aliasesHtml = (cmd.aliases || []).map(a => `<span class="alias-pill">${a}</span>`).join('');
-        return `
-          <div class="command-card" style="border-left: 3px solid #6366f1;">
-            <div class="card-top">
-              <div>
-                <span class="trigger-badge" style="background: rgba(99, 102, 241, 0.15); color: #818cf8;">${escapeHtml(triggerDisplay)}</span>
-                <div class="aliases-list">${aliasesHtml}</div>
-              </div>
-              <div>
-                <span class="feature-badge" style="background: rgba(99, 102, 241, 0.1); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3);">Built-in</span>
-              </div>
-            </div>
-
-            <div style="font-size: 13px; color: var(--text-muted); margin: 10px 0; line-height: 1.5;">
-              ${escapeHtml(cmd.description || '')}
-            </div>
-
-            <div class="card-footer">
-              <span style="font-size: 11px; color: var(--text-subtle);">Category: ${escapeHtml(cmd.category || 'Core')}</span>
-              <span style="font-size: 11px; color: #a5b4fc;">Protected</span>
-            </div>
-          </div>
-        `;
-      }).join('');
     }
 
     async function fetchPrefixes() {
@@ -1723,118 +2608,315 @@ def _dashboard_page_html() -> str:
         const res = await fetch('/dashboard/api/prefixes');
         const data = await res.json();
         if (data.success) {
-          activePrefixes = data.prefixes;
+          activePrefixes = data.prefixes || ['?'];
           renderPrefixes();
-          renderBuiltinCommands();
           renderCommands();
+          renderBuiltinAccordion();
+          document.getElementById('badge-prefixes-count').innerText = activePrefixes.length;
+          document.getElementById('stat-prefixes-val').innerText = activePrefixes.join('  ');
+          const p = activePrefixes[0] || '?';
+          document.getElementById('prefix-demo-text').innerText = `${p}commands`;
+          document.getElementById('prefix-demo-text-custom').innerText = `${p}nob`;
         }
       } catch(e) {}
     }
 
+    async function fetchBackups(showNotice = false) {
+      try {
+        const res = await fetch('/dashboard/api/backups');
+        const data = await res.json();
+        if (data.success) {
+          serverBackups = data.backups || [];
+          renderBackups();
+          document.getElementById('badge-backups-count').innerText = serverBackups.length;
+          document.getElementById('stat-backups-val').innerText = serverBackups.length;
+          if (showNotice) showToast('Backups refreshed');
+        }
+      } catch(e) {}
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       RENDERERS
+       ══════════════════════════════════════════════════════════════════════════ */
+
     function renderCommands() {
       const c = document.getElementById('commands-container');
-      if (!activeCommands.length) {
-        c.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: var(--text-subtle); padding: 40px;">No custom commands yet. Click "New Command" to create one like "nob".</div>';
+      const search = (document.getElementById('custom-search-input')?.value || '').toLowerCase().trim();
+      const p = activePrefixes[0] || '?';
+
+      const filtered = activeCommands.filter(cmd => {
+        // Filter by pill
+        if (currentFilter === 'prefix' && !cmd.prefix_required) return false;
+        if (currentFilter === 'direct' && cmd.prefix_required) return false;
+        if (currentFilter === 'autodel' && !cmd.delete_trigger) return false;
+
+        // Search match
+        if (!search) return true;
+        const nameMatch = (cmd.name || '').toLowerCase().includes(search);
+        const aliasMatch = (cmd.aliases || []).some(a => a.toLowerCase().includes(search));
+        const titleMatch = (cmd.embed?.title || '').toLowerCase().includes(search);
+        const descMatch = (cmd.embed?.description || '').toLowerCase().includes(search);
+        return nameMatch || aliasMatch || titleMatch || descMatch;
+      });
+
+      if (!filtered.length) {
+        c.innerHTML = `
+          <div style="grid-column: 1/-1; text-align: center; color: var(--text-subtle); padding: 50px 20px; background: var(--bg-surface); border: 1px dashed var(--border-subtle); border-radius: var(--radius-lg);">
+            <svg class="icon" style="width: 36px; height: 36px; color: var(--text-subtle); margin-bottom: 12px;" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <div style="font-size: 15px; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">No Custom Commands Found</div>
+            <div style="font-size: 13px; max-width: 400px; margin: 0 auto 16px auto;">
+              ${search ? 'No commands match your search query.' : 'Create your first custom trigger (like "nob") with rich Discord response embeds.'}
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="openCommandModal()">+ Create New Command</button>
+          </div>
+        `;
         return;
       }
-      c.innerHTML = activeCommands.map(cmd => {
-        const p = activePrefixes[0] || '?';
+
+      c.innerHTML = filtered.map(cmd => {
         const triggerDisplay = cmd.prefix_required ? `${p}${cmd.name}` : cmd.name;
-        const aliasesHtml = (cmd.aliases || []).map(a => `<span class="alias-pill">${a}</span>`).join('');
+        const aliasesHtml = (cmd.aliases || []).map(a => `<span class="alias-pill">${escapeHtml(a)}</span>`).join('');
+        const embedColor = cmd.embed?.color || '#5865F2';
+
         return `
           <div class="command-card">
             <div class="card-top">
               <div>
-                <span class="trigger-badge">${triggerDisplay}</span>
+                <span class="trigger-badge">${escapeHtml(triggerDisplay)}</span>
                 <div class="aliases-list">${aliasesHtml}</div>
               </div>
               <div style="display: flex; gap: 6px;">
-                <button class="btn btn-secondary btn-sm" onclick="editCommand('${cmd.id}')" title="Edit">
+                <button class="btn btn-secondary btn-sm btn-icon-only" onclick="editCommand('${cmd.id}')" title="Edit Command">
                   <svg class="icon" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 </button>
-                <button class="btn btn-danger btn-sm" onclick="deleteCommand('${cmd.id}')" title="Delete">
+                <button class="btn btn-secondary btn-sm btn-icon-only" onclick="promptSendTest('${cmd.id}')" title="Test Send to Channel">
+                  <svg class="icon" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+                <button class="btn btn-danger btn-sm btn-icon-only" onclick="deleteCommand('${cmd.id}')" title="Delete">
                   <svg class="icon" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
               </div>
             </div>
 
             <div class="card-badges">
+              <span class="feature-badge ${cmd.prefix_required ? 'active' : ''}">Prefix Req</span>
               <span class="feature-badge ${cmd.delete_trigger ? 'active' : ''}">Auto-Delete</span>
-              <span class="feature-badge ${cmd.reply_mode ? 'active' : ''}">Reply Target</span>
+              <span class="feature-badge ${cmd.reply_mode ? 'active' : ''}">Reply</span>
               <span class="feature-badge ${cmd.mention_user ? 'active' : ''}">Mention</span>
             </div>
 
-            <div class="card-embed-preview" style="border-left-color: ${cmd.embed?.color || '#5865F2'}">
+            <div class="card-embed-preview" style="border-left-color: ${embedColor};">
               <div class="card-embed-title">${escapeHtml(cmd.embed?.title || cmd.name)}</div>
               <div class="card-embed-desc">${escapeHtml(cmd.embed?.description || 'Custom response embed')}</div>
             </div>
 
             <div class="card-footer">
-              <span class="usage-count">Used ${cmd.usage_count || 0} times</span>
-              <span style="font-size: 11px; color: var(--text-subtle);">Dual Persisted</span>
+              <span>Used ${cmd.usage_count || 0} times</span>
+              <span style="color: #38bdf8;">Dual Persisted</span>
             </div>
           </div>
         `;
       }).join('');
     }
 
+    function renderBuiltinAccordion() {
+      const container = document.getElementById('builtin-accordion-container');
+      if (!container) return;
+
+      const p = activePrefixes[0] || '?';
+      const search = (document.getElementById('builtin-search-input')?.value || '').toLowerCase().trim();
+
+      // Group commands by category
+      const categories = [
+        {
+          id: 'core',
+          name: 'Core Bot Commands',
+          desc: 'Primary navigation and directory triggers',
+          icon: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'
+        },
+        {
+          id: 'admin',
+          name: 'Admin & Configuration',
+          desc: 'Prefix and bot management triggers',
+          icon: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'
+        },
+        {
+          id: 'info',
+          name: 'Information & FAQ Triggers',
+          desc: 'Knowledge base items and server rules',
+          icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>'
+        },
+        {
+          id: 'fun',
+          name: 'Fun & Interactive Triggers',
+          desc: 'Chat greetings and playful responses',
+          icon: '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>'
+        }
+      ];
+
+      container.innerHTML = categories.map((cat, idx) => {
+        const catCmds = builtinCommands.filter(c => {
+          const matchCat = (c.category || 'Core').toLowerCase() === cat.id;
+          if (!matchCat) return false;
+          if (!search) return true;
+          return (c.name || '').toLowerCase().includes(search) ||
+                 (c.description || '').toLowerCase().includes(search) ||
+                 (c.aliases || []).some(a => a.toLowerCase().includes(search));
+        });
+
+        if (search && catCmds.length === 0) return '';
+
+        const cardsHtml = catCmds.map(cmd => {
+          const triggerDisplay = (cmd.trigger_display || cmd.name).replace(/{p}/g, p);
+          const aliasesHtml = (cmd.aliases || []).map(a => `<span class="alias-pill">${escapeHtml(a)}</span>`).join('');
+          return `
+            <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span class="trigger-badge" style="background: rgba(167, 139, 250, 0.15); color: #c4b5fd; border-color: rgba(167, 139, 250, 0.3);">
+                  ${escapeHtml(triggerDisplay)}
+                </span>
+                <span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: var(--bg-elevated); color: var(--text-subtle);">Protected</span>
+              </div>
+              <div class="aliases-list">${aliasesHtml}</div>
+              <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-top: 4px;">
+                ${escapeHtml(cmd.description || '')}
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        const isOpen = idx === 0 || !!search; // First open by default, or all open when searching
+
+        return `
+          <div class="accordion-section ${isOpen ? 'open' : ''}" id="acc-${cat.id}">
+            <div class="accordion-header" onclick="toggleAccordion('acc-${cat.id}')">
+              <div class="accordion-title-wrap">
+                <svg class="icon" style="color: #a78bfa;" viewBox="0 0 24 24">${cat.icon}</svg>
+                <div>
+                  <div class="accordion-title">${cat.name} (${catCmds.length})</div>
+                  <div class="accordion-desc">${cat.desc}</div>
+                </div>
+              </div>
+              <svg class="icon accordion-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+            <div class="accordion-body">
+              <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 14px;">
+                ${cardsHtml || '<div style="color: var(--text-subtle); font-size: 13px;">No commands in this category.</div>'}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function toggleAccordion(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('open');
+    }
+
+    function toggleAllAccordions(open) {
+      document.querySelectorAll('.accordion-section').forEach(sec => {
+        if (open) sec.classList.add('open');
+        else sec.classList.remove('open');
+      });
+    }
+
+    function filterBuiltinCommands() {
+      renderBuiltinAccordion();
+    }
+
+    function filterCustomCommands() {
+      renderCommands();
+    }
+
+    function setFilter(filter, btn) {
+      currentFilter = filter;
+      document.querySelectorAll('.filter-pill').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      renderCommands();
+    }
+
     function renderPrefixes() {
       const list = document.getElementById('prefixes-list');
+      if (!list) return;
       list.innerHTML = activePrefixes.map(p => `
         <div style="background: var(--bg-elevated); border: 1px solid var(--border-subtle); padding: 8px 14px; border-radius: var(--radius-md); display: flex; align-items: center; gap: 10px;">
-          <span style="font-family: var(--font-code); font-weight: 700; color: #a5b4fc; font-size: 16px;">${escapeHtml(p)}</span>
-          <button class="btn btn-danger btn-sm" style="padding: 2px 6px;" onclick="removePrefix('${p}')">✕</button>
+          <span style="font-family: var(--font-code); font-weight: 700; color: #38bdf8; font-size: 16px;">${escapeHtml(p)}</span>
+          <button class="btn btn-danger btn-sm" style="padding: 2px 6px;" onclick="removePrefix('${p}')" title="Delete prefix">✕</button>
         </div>
       `).join('');
     }
 
-    async function addPrefix() {
-      const input = document.getElementById('new-prefix-input');
-      const val = input.value.trim();
-      if (!val) return;
-      const res = await fetch('/dashboard/api/prefixes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prefix: val })
-      });
-      const data = await res.json();
-      if (data.success) {
-        input.value = '';
-        activePrefixes = data.prefixes;
-        renderPrefixes();
-        renderCommands();
-        showToast('Prefix added and saved!');
-      } else {
-        showToast(data.error || 'Failed to add prefix', true);
-      }
-    }
+    function renderBackups() {
+      const container = document.getElementById('backups-container');
+      if (!container) return;
 
-    async function removePrefix(p) {
-      if (activePrefixes.length <= 1) {
-        showToast('Cannot remove the only prefix', true);
+      if (!serverBackups.length) {
+        container.innerHTML = '<div style="color: var(--text-subtle); font-size: 13px; text-align: center; padding: 20px;">No backup files found yet on server disk.</div>';
         return;
       }
-      const res = await fetch(`/dashboard/api/prefixes/${encodeURIComponent(p)}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (data.success) {
-        activePrefixes = data.prefixes;
-        renderPrefixes();
-        renderCommands();
-        showToast('Prefix removed');
+
+      container.innerHTML = serverBackups.map(b => {
+        const sizeKb = (b.size_bytes / 1024).toFixed(1);
+        return `
+          <div style="background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+            <div>
+              <div style="font-family: var(--font-code); font-size: 13px; font-weight: 700; color: white;">${escapeHtml(b.filename)}</div>
+              <div style="font-size: 11px; color: var(--text-subtle); margin-top: 2px;">
+                <span>Saved: ${escapeHtml(b.formatted_time || 'Recent')}</span> • <span>${sizeKb} KB</span>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="restoreBackup('${b.filename}')">
+              <svg class="icon" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+              <span>Restore</span>
+            </button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       ACTIONS & MODAL LOGIC
+       ══════════════════════════════════════════════════════════════════════════ */
+
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.view-content').forEach(v => v.classList.remove('active'));
+
+      const btn = document.getElementById(`tab-btn-${tab}`);
+      const view = document.getElementById(`view-${tab}`);
+      if (btn) btn.classList.add('active');
+      if (view) view.classList.add('active');
+
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function switchModalView(mode) {
+      const container = document.getElementById('modal-container-card');
+      const swEditor = document.getElementById('sw-btn-editor');
+      const swPreview = document.getElementById('sw-btn-preview');
+
+      if (mode === 'preview') {
+        container.classList.add('mobile-preview');
+        swPreview.classList.add('active');
+        swEditor.classList.remove('active');
       } else {
-        showToast(data.error || 'Failed to remove', true);
+        container.classList.remove('mobile-preview');
+        swEditor.classList.add('active');
+        swPreview.classList.remove('active');
       }
     }
 
     function openCommandModal(cmd = null) {
       document.getElementById('cmd-id').value = cmd?.id || '';
-      document.getElementById('modal-heading').innerText = cmd ? 'Edit Command' : 'Create Custom Command';
+      document.getElementById('modal-heading').innerText = cmd ? `Edit Trigger: ${cmd.name}` : 'Create Custom Command';
       document.getElementById('cmd-name').value = cmd?.name || '';
       document.getElementById('cmd-aliases').value = (cmd?.aliases || []).join(', ');
       document.getElementById('cmd-prefix-req').checked = cmd ? cmd.prefix_required : true;
       document.getElementById('cmd-delete-trigger').checked = cmd ? cmd.delete_trigger : true;
       document.getElementById('cmd-reply-mode').checked = cmd ? cmd.reply_mode : true;
       document.getElementById('cmd-mention-user').checked = cmd ? cmd.mention_user : true;
+      document.getElementById('cmd-content').value = cmd?.content || '';
 
       const embed = cmd?.embed || {};
       setColor(embed.color || '#5865F2');
@@ -1851,8 +2933,13 @@ def _dashboard_page_html() -> str:
       fieldsCont.innerHTML = '';
       (embed.fields || []).forEach(f => addField(f.name, f.value, f.inline));
 
+      switchModalView('editor');
       updatePreview();
       document.getElementById('command-modal').classList.add('open');
+    }
+
+    function closeCommandModal() {
+      document.getElementById('command-modal').classList.remove('open');
     }
 
     function editCommand(id) {
@@ -1860,28 +2947,27 @@ def _dashboard_page_html() -> str:
       if (cmd) openCommandModal(cmd);
     }
 
-    async function deleteCommand(id) {
-      if (!confirm('Are you sure you want to delete this command?')) return;
-      const res = await fetch(`/dashboard/api/commands/${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (data.success) {
-        activeCommands = activeCommands.filter(c => c.id !== id);
-        renderCommands();
-        showToast('Command deleted and synced');
-      } else {
-        showToast(data.error || 'Failed to delete', true);
-      }
-    }
-
-    function closeCommandModal() {
-      document.getElementById('command-modal').classList.remove('open');
+    function insertTag(tag) {
+      const textarea = document.getElementById('cmd-desc');
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const text = textarea.value;
+      textarea.value = text.substring(0, start) + tag + text.substring(end);
+      textarea.focus();
+      textarea.selectionStart = textarea.selectionEnd = start + tag.length;
+      updatePreview();
     }
 
     function setColor(hex) {
+      if (!hex.startsWith('#')) hex = '#' + hex;
       currentColor = hex;
       document.getElementById('cmd-color-hex').value = hex;
       document.getElementById('cmd-color-picker').value = hex;
       document.getElementById('preview-embed').style.borderLeftColor = hex;
+
+      document.querySelectorAll('.color-swatch').forEach(sw => {
+        sw.classList.toggle('active', sw.getAttribute('onclick')?.includes(hex));
+      });
     }
 
     function addField(name = '', val = '', inline = true) {
@@ -1899,6 +2985,7 @@ def _dashboard_page_html() -> str:
     }
 
     function updatePreview() {
+      const content = document.getElementById('cmd-content').value;
       const author = document.getElementById('cmd-author-name').value;
       const authorIcon = document.getElementById('cmd-author-icon').value;
       const title = document.getElementById('cmd-title').value;
@@ -1906,6 +2993,15 @@ def _dashboard_page_html() -> str:
       const desc = document.getElementById('cmd-desc').value;
       const image = document.getElementById('cmd-image').value;
       const footer = document.getElementById('cmd-footer').value;
+
+      // Plain content above embed
+      const pContent = document.getElementById('p-content-text');
+      if (content) {
+        pContent.innerText = content;
+        pContent.style.display = 'block';
+      } else {
+        pContent.style.display = 'none';
+      }
 
       // Author
       const pAuthor = document.getElementById('p-author');
@@ -1935,7 +3031,7 @@ def _dashboard_page_html() -> str:
       }
 
       // Desc
-      document.getElementById('p-desc').innerText = desc || 'Embed description preview...';
+      document.getElementById('p-desc').innerText = desc || 'Embed response preview...';
 
       // Fields
       const pFields = document.getElementById('p-fields');
@@ -1951,7 +3047,7 @@ def _dashboard_page_html() -> str:
         pFields.style.display = 'none';
       }
 
-      // Image
+      // Banner Image
       const pImg = document.getElementById('p-image');
       if (image) {
         pImg.src = image;
@@ -1973,9 +3069,13 @@ def _dashboard_page_html() -> str:
     async function saveCommand() {
       const name = document.getElementById('cmd-name').value.trim();
       if (!name) {
-        showToast('Command trigger name is required', true);
+        showToast('Command trigger keyword is required', true);
         return;
       }
+
+      const saveBtn = document.getElementById('save-cmd-btn');
+      saveBtn.disabled = true;
+      saveBtn.innerText = 'Saving...';
 
       const aliases = document.getElementById('cmd-aliases').value
         .split(',')
@@ -1997,6 +3097,7 @@ def _dashboard_page_html() -> str:
         delete_trigger: document.getElementById('cmd-delete-trigger').checked,
         reply_mode: document.getElementById('cmd-reply-mode').checked,
         mention_user: document.getElementById('cmd-mention-user').checked,
+        content: document.getElementById('cmd-content').value.trim(),
         embed: {
           title: document.getElementById('cmd-title').value.trim(),
           url: document.getElementById('cmd-title-url').value.trim(),
@@ -2015,30 +3116,173 @@ def _dashboard_page_html() -> str:
         }
       };
 
-      const res = await fetch('/dashboard/api/commands', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (data.success) {
-        closeCommandModal();
-        await fetchCommands();
-        showToast(`Saved '${name}' to Server & Synced to GitHub!`);
-      } else {
-        showToast(data.error || 'Failed to save', true);
+      try {
+        const res = await fetch('/dashboard/api/commands', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          closeCommandModal();
+          await fetchCommands();
+          await fetchBackups();
+          showToast(`Saved '${name}' to Server Disk & Synced to GitHub!`);
+        } else {
+          showToast(data.error || 'Failed to save', true);
+        }
+      } catch(e) {
+        showToast('Network error while saving command', true);
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerText = 'Save & Sync Dual';
       }
     }
 
-    function switchTab(tab) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.view-content').forEach(v => v.classList.remove('active'));
-      if (tab === 'commands') {
-        document.querySelectorAll('.tab-btn')[0].classList.add('active');
-        document.getElementById('view-commands').classList.add('active');
+    async function deleteCommand(id) {
+      const cmd = activeCommands.find(c => c.id === id);
+      const name = cmd ? cmd.name : id;
+      if (!confirm(`Are you sure you want to delete custom trigger '${name}'?`)) return;
+
+      const res = await fetch(`/dashboard/api/commands/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        activeCommands = activeCommands.filter(c => c.id !== id);
+        renderCommands();
+        await fetchBackups();
+        showToast(`Command '${name}' deleted and dual synced`);
       } else {
-        document.querySelectorAll('.tab-btn')[1].classList.add('active');
-        document.getElementById('view-prefixes').classList.add('active');
+        showToast(data.error || 'Failed to delete', true);
+      }
+    }
+
+    async function addPrefix() {
+      const input = document.getElementById('new-prefix-input');
+      const val = input.value.trim();
+      if (!val) return;
+      const res = await fetch('/dashboard/api/prefixes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix: val })
+      });
+      const data = await res.json();
+      if (data.success) {
+        input.value = '';
+        activePrefixes = data.prefixes;
+        renderPrefixes();
+        renderCommands();
+        renderBuiltinAccordion();
+        showToast(`Prefix '${val}' added and synced to GitHub!`);
+      } else {
+        showToast(data.error || 'Failed to add prefix', true);
+      }
+    }
+
+    async function removePrefix(p) {
+      if (activePrefixes.length <= 1) {
+        showToast('Cannot remove the only active prefix', true);
+        return;
+      }
+      if (!confirm(`Remove prefix '${p}'?`)) return;
+
+      const res = await fetch(`/dashboard/api/prefixes/${encodeURIComponent(p)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        activePrefixes = data.prefixes;
+        renderPrefixes();
+        renderCommands();
+        renderBuiltinAccordion();
+        showToast(`Prefix '${p}' removed`);
+      } else {
+        showToast(data.error || 'Failed to remove', true);
+      }
+    }
+
+    async function restoreBackup(filename) {
+      if (!confirm(`Are you sure you want to restore custom commands from snapshot '${filename}'? This will replace current custom commands.`)) return;
+      const res = await fetch('/dashboard/api/backups/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await fetchCommands();
+        await fetchBackups();
+        showToast(`Successfully restored from ${filename}!`);
+        switchTab('commands');
+      } else {
+        showToast(data.error || 'Failed to restore', true);
+      }
+    }
+
+    async function sendTestFromModal() {
+      const channelId = document.getElementById('test-channel-id').value.trim();
+      if (!channelId) {
+        showToast('Enter a Discord Channel ID first', true);
+        return;
+      }
+
+      const payload = {
+        channel_id: channelId,
+        command: {
+          name: document.getElementById('cmd-name').value.trim() || 'preview',
+          content: document.getElementById('cmd-content').value.trim(),
+          embed: {
+            title: document.getElementById('cmd-title').value.trim(),
+            url: document.getElementById('cmd-title-url').value.trim(),
+            description: document.getElementById('cmd-desc').value.trim(),
+            color: currentColor,
+            author: {
+              name: document.getElementById('cmd-author-name').value.trim(),
+              icon_url: document.getElementById('cmd-author-icon').value.trim()
+            },
+            thumbnail_url: document.getElementById('cmd-thumb').value.trim(),
+            image_url: document.getElementById('cmd-image').value.trim(),
+            footer: {
+              text: document.getElementById('cmd-footer').value.trim()
+            }
+          }
+        }
+      };
+
+      try {
+        const res = await fetch('/dashboard/api/test_send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Test embed sent to #${data.channel}!`);
+        } else {
+          showToast(data.error || 'Failed to send test message', true);
+        }
+      } catch(e) {
+        showToast('Connection error sending test', true);
+      }
+    }
+
+    async function promptSendTest(cmdId) {
+      const cmd = activeCommands.find(c => c.id === cmdId);
+      if (!cmd) return;
+      const channelId = prompt(`Enter Discord Channel ID to test send '${cmd.name}':`);
+      if (!channelId) return;
+
+      try {
+        const res = await fetch('/dashboard/api/test_send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel_id: channelId.trim(), command: cmd })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Sent test message to #${data.channel}!`);
+        } else {
+          showToast(data.error || 'Failed to send test', true);
+        }
+      } catch(e) {
+        showToast('Connection error', true);
       }
     }
 
@@ -2298,6 +3542,7 @@ def setup(app: web.Application, bot: discord.Client, *,
     app.router.add_get("/dashboard/api/me", api_me)
 
     # Commands & Prefixes
+    app.router.add_get("/dashboard/api/stats", api_get_stats)
     app.router.add_get("/dashboard/api/commands", api_get_commands)
     app.router.add_post("/dashboard/api/commands", api_save_command)
     app.router.add_delete("/dashboard/api/commands/{id}", api_delete_command)
