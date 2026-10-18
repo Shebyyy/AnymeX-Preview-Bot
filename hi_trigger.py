@@ -16,6 +16,7 @@
 import os
 import re
 import json
+import time
 import asyncio
 import unicodedata
 import aiohttp
@@ -28,7 +29,35 @@ import discord
 TARGET_USER_IDS    = {1331083395614380090, 1400504783097561098}
 REPLY_MESSAGE      = "Single yet? 🤔"
 WEBHOOK_USERNAME   = "𝕾𝖍𝖊𝖇𝖞 D. ツ"
-WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/cf5d3f43c29516523531f21b09d4a743.png?size=1024"
+WEBHOOK_USER_ID    = 612532963938271232
+WEBHOOK_AVATAR_URL = "https://cdn.discordapp.com/avatars/612532963938271232/4c1cafd22612d4dc9da44c66b923b086.png?size=1024"
+
+_bot: discord.Client | None = None
+_cached_avatar_url: str = WEBHOOK_AVATAR_URL
+_last_avatar_fetch: float = 0.0
+
+
+async def _get_current_avatar_url() -> str:
+    """Fetch live avatar for user from Discord with automatic fallback."""
+    global _cached_avatar_url, _last_avatar_fetch
+    now = time.time()
+    # Cache for 1 hour to prevent spamming Discord API
+    if now - _last_avatar_fetch < 3600 and _cached_avatar_url:
+        return _cached_avatar_url
+
+    if _bot:
+        try:
+            user = _bot.get_user(WEBHOOK_USER_ID)
+            if not user:
+                user = await _bot.fetch_user(WEBHOOK_USER_ID)
+            if user and user.display_avatar:
+                _cached_avatar_url = str(user.display_avatar.url)
+                _last_avatar_fetch = now
+                return _cached_avatar_url
+        except Exception as e:
+            print(f"[hi_trigger] Could not fetch live avatar from Discord: {e}")
+
+    return _cached_avatar_url or WEBHOOK_AVATAR_URL
 
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -129,6 +158,8 @@ POLLINATIONS_MODELS = [
 
 # OpenRouter free models (needs OPENROUTER_API_KEY)
 OPENROUTER_MODELS = [
+    "stealth/ox-alpha",
+    "z-ai/glm-5.3:free",
     "openrouter/free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
@@ -505,10 +536,11 @@ async def _trigger(message: discord.Message):
         webhook = await _get_or_create_webhook(message.channel)
         if webhook:
             async with aiohttp.ClientSession() as session:
+                avatar = await _get_current_avatar_url()
                 payload = {
                     "content": f"<@{message.author.id}> {REPLY_MESSAGE}",
                     "username": WEBHOOK_USERNAME,
-                    "avatar_url": WEBHOOK_AVATAR_URL,
+                    "avatar_url": avatar,
                     "allowed_mentions": {"parse": ["users"]},
                 }
                 async with session.post(

@@ -44,6 +44,8 @@ OPENROUTER_API_URL  = "https://openrouter.ai/api/v1/chat/completions"
 
 # Free vision models on OpenRouter (ordered by preference)
 OPENROUTER_VISION_MODELS = [
+    "stealth/ox-alpha",
+    "z-ai/glm-5.3:free",
     "nvidia/nemotron-nano-12b-v2-vl:free",     # Best free vision — detected greeting image!
     "google/gemma-4-26b-a4b-it:free",            # Google vision model
     "google/gemma-4-31b-it:free",                # Google vision model (bigger)
