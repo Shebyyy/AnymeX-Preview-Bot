@@ -17,6 +17,7 @@ COPY desk_sync.py .
 COPY custom_triggers.py .
 COPY nickname_lock.py .
 COPY emoji_copy.py .
+COPY role_copy.py .
 COPY dashboard.py .
 
 EXPOSE 8080

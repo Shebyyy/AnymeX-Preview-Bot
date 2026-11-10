@@ -11254,6 +11254,12 @@ async def main():
     except Exception as e:
         print(f"⚠️ Failed to load emoji_copy: {e}")
 
+    try:
+        import role_copy
+        role_copy.setup(bot, owner_id=OWNER_ID)
+    except Exception as e:
+        print(f"⚠️ Failed to load role_copy: {e}")
+
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
     asyncio.create_task(_load_log_queue())
