@@ -203,7 +203,7 @@ Base URL: `https://anymex-preview-bot.onrender.com`
 | `/locknick remove user:<pick>` | Remove a nickname lock (autocomplete lists locked users + nicknames; you can't remove your own) | Manage Nicknames |
 | `/locknick list` | Show all locked nicknames in the server | Manage Nicknames |
 | `/copyemojis source:<server> target:<server>` | Copy all custom emojis from one server to another (both pickable from the bot's servers; skips names that already exist) | Manage Expressions in both servers |
-| `/copyroles source:<server> target:<server> [roles:names]` | Copy roles (name + colour, shown separately) between servers; defaults to the leveling roles | Manage Roles in both servers |
+| `/copyroles target:<server> [source:<server>] [roles:names] [source_server_id] [source_token]` | Copy roles (name + colour, shown separately) from a server the bot is in, or from any server via ID + a bot token (token mode is owner-only); defaults to the leveling roles | Manage Roles |
 
 The prefix form works too: `?locknick set @user Name`, `?locknick remove @user`, `?locknick list`. The bot needs **Manage Nicknames**, and its role must sit above the locked members' roles.
 
