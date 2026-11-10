@@ -1402,6 +1402,7 @@ FILE_USERS = "users.json"
 FILE_TIMEZONES = "timezones.json"
 FILE_PREFIXES = "prefixes.json"
 FILE_CUSTOM_COMMANDS = "custom_commands.json"
+FILE_LOCKED_NICKS = "bot_data/locked_nicknames.json"  # main repo (beta), own folder; see nickname_lock.py
 FILE_SERVER_CFG = "server_config.json"  # stores allowed_roles per server
 FILE_VOTES = "votes.json"               # upvote/downvote records per media item
 FILE_FAQ = "faq.json"
@@ -8195,7 +8196,8 @@ async def prefix_commands(ctx, command_name: str = None):
             "faq": f"`{p}<number>` or `!faq<number>`\nDisplay FAQ item by number (e.g. `{p}1`). Supports reply tagging.",
             "rule": f"`!rule<number>` or `!r<number>`\nDisplay server rule item by number (e.g. `!rule1`). Supports reply tagging.",
             "rules": f"`!rule<number>` or `!r<number>`\nDisplay server rule item by number.",
-            "hi": f"`!hi` or `!single`\nPlayful greeting trigger response when replying to a user message."
+            "hi": f"`!hi` or `!single`\nPlayful greeting trigger response when replying to a user message.",
+            "locknick": f"`/locknick set|remove|list` or `{p}locknick set @user <nickname>`\nLock a member's nickname so it's restored if changed. Needs Manage Nicknames.",
         }
 
         # Check if in custom commands from dashboard
@@ -8248,7 +8250,8 @@ async def prefix_commands(ctx, command_name: str = None):
     triggers_info = (
         f"`{p}<1-12>` or `!faq<1-12>` - Show FAQ entry\n"
         f"`!rule<1-10>` - Show server rule entry\n"
-        f"`!hi` / `!single` - Trigger response"
+        f"`!hi` / `!single` - Trigger response\n"
+        f"`{p}locknick set|remove|list` - Lock a member's nickname (Manage Nicknames)"
     )
     embed.add_field(name="Built-in Triggers", value=triggers_info, inline=False)
 
@@ -11232,6 +11235,18 @@ async def main():
         )
     except Exception as e:
         print(f"⚠️ Failed to load custom_triggers: {e}")
+
+    try:
+        import nickname_lock
+        nickname_lock.setup(
+            bot,
+            get_prefixes_fn=lambda: _prefix_cache,
+            github_read_fn=github_read_json,
+            github_write_fn=github_write_json,
+            send_log_fn=_send_log,
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to load nickname_lock: {e}")
 
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call

@@ -199,6 +199,11 @@ Base URL: `https://anymex-preview-bot.onrender.com`
 | `/fix_discord_info` | Backfill Discord avatars and usernames for all entries | Admin |
 | `?setprefix add/remove/list [prefix]` | Manage bot prefixes | Admin |
 | `?sync` | Force re-sync all slash commands | Admin |
+| `/locknick set user:@User nickname:Name` | Lock a member's nickname; the bot restores it if changed | Manage Nicknames |
+| `/locknick remove user:@User` | Remove a nickname lock | Manage Nicknames |
+| `/locknick list` | Show all locked nicknames in the server | Manage Nicknames |
+
+The prefix form works too: `?locknick set @user Name`, `?locknick remove @user`, `?locknick list`. The bot needs **Manage Nicknames**, and its role must sit above the locked members' roles.
 
 ---
 
@@ -233,6 +238,7 @@ All data is stored as JSON files across two GitHub repositories:
 | `prefixes.json` | Bot command prefix list |
 | `server_config.json` | Per-server allowed roles configuration |
 | `faq.json` | FAQ entries for support channel |
+| `bot_data/locked_nicknames.json` | Nickname locks per server and user (also backed up to `/root/bot_data` on the VPS) |
 
 ### Private Repo (`clients-userdata`, branch: `main`)
 
