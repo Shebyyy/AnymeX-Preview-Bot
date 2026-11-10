@@ -7,7 +7,8 @@
 # Commands (slash and prefix). All three need Manage Nicknames or Administrator,
 # checked server-side on every call, plus Discord's role-hierarchy rule:
 #   /locknick set @user <nickname>      ?locknick set @user <nickname>
-#   /locknick remove @user              ?locknick remove @user
+#   /locknick remove <autocomplete>     ?locknick remove @user
+#       (nobody can remove their own lock, even with the permission)
 #   /locknick list                      ?locknick list
 #
 # Storage (same pattern as custom_triggers.py):
@@ -350,6 +351,10 @@ async def _do_set(guild: discord.Guild, invoker: discord.Member, target: discord
 async def _do_remove(guild: discord.Guild, invoker: discord.Member, target_id: int) -> str:
     if not _can_manage(invoker):
         return "❌ You need **Manage Nicknames** or **Administrator**."
+    # Nobody can lift their own lock, even with Manage Nicknames / Administrator
+    # (and the server owner too). Someone else has to do it.
+    if invoker.id == target_id:
+        return "❌ You can't remove your own nickname lock. Ask another moderator to do it."
     users = LOCKS.get(str(guild.id), {})
     if str(target_id) not in users:
         return "ℹ️ That user doesn't have a nickname lock."
@@ -387,6 +392,30 @@ def _list_embed(guild: discord.Guild) -> discord.Embed:
     embed.description = text
     embed.set_footer(text=f"{len(users)} lock(s)")
     return embed
+
+
+async def _locked_user_choices(interaction: discord.Interaction, current: str):
+    """Autocomplete for /locknick remove: locked users in this guild + their nickname."""
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member) or not _can_manage(interaction.user):
+        return []
+    q = (current or "").strip().lower()
+    out = []
+    for uid, info in LOCKS.get(str(guild.id), {}).items():
+        if int(uid) == interaction.user.id:
+            continue  # can't remove your own lock, so don't offer it
+        member = guild.get_member(int(uid))
+        user_name = member.name if member else "unknown user"
+        display = member.display_name if member else uid
+        nick = info.get("nickname", "?")
+        haystack = f"{display} {user_name} {nick} {uid}".lower()
+        if q and q not in haystack:
+            continue
+        label = f"{display} (@{user_name}) → {nick}"
+        out.append(app_commands.Choice(name=label[:100], value=uid))
+        if len(out) >= 25:
+            break
+    return out
 
 
 # ── Prefix command handling ───────────────────────────────────────────────────
@@ -482,11 +511,19 @@ def setup(
         await interaction.followup.send(msg, ephemeral=True)
 
     @group.command(name="remove", description="Remove a member's nickname lock")
-    @app_commands.describe(user="Member to unlock")
-    async def _remove(interaction: discord.Interaction, user: discord.User):
+    @app_commands.describe(user="Locked member to unlock (pick from the list)")
+    async def _remove(interaction: discord.Interaction, user: str):
         await interaction.response.defer(ephemeral=True)
-        msg = await _do_remove(interaction.guild, interaction.user, user.id)
+        m = re.search(r"\d{15,22}", user)
+        if not m:
+            await interaction.followup.send("❌ Pick a locked user from the list.", ephemeral=True)
+            return
+        msg = await _do_remove(interaction.guild, interaction.user, int(m.group(0)))
         await interaction.followup.send(msg, ephemeral=True)
+
+    @_remove.autocomplete("user")
+    async def _remove_autocomplete(interaction: discord.Interaction, current: str):
+        return await _locked_user_choices(interaction, current)
 
     @group.command(name="list", description="Show locked nicknames in this server")
     async def _list(interaction: discord.Interaction):
