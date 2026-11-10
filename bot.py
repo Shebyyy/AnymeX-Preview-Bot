@@ -11248,6 +11248,12 @@ async def main():
     except Exception as e:
         print(f"⚠️ Failed to load nickname_lock: {e}")
 
+    try:
+        import emoji_copy
+        emoji_copy.setup(bot, owner_id=OWNER_ID, send_log_fn=_send_log)
+    except Exception as e:
+        print(f"⚠️ Failed to load emoji_copy: {e}")
+
     await start_health_server()
     # Load log queue in background — don't delay bot connect for a GitHub call
     asyncio.create_task(_load_log_queue())
